@@ -25,6 +25,7 @@ enum CliCommand {
     Delete(DeleteArgs),
     Exec(ExecArgs),
     Logs(LogsArgs),
+    Validate(ValidateArgs),
 }
 
 #[derive(Args)]
@@ -41,7 +42,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.5.0")]
+    #[arg(long, default_value = "v0.6.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -151,6 +152,19 @@ struct LogsArgs {
 }
 
 #[derive(Args)]
+struct ValidateArgs {
+    name: String,
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    /// Skip the container (Pyxis) smoke test.
+    #[arg(long, default_value_t = false)]
+    no_container: bool,
+    /// Run nvidia-smi via srun (requires a GPU pool with nodes up).
+    #[arg(long, default_value_t = false)]
+    gpu: bool,
+}
+
+#[derive(Args)]
 struct ScaleArgs {
     name: String,
     pool: String,
@@ -189,6 +203,7 @@ fn main() -> Result<()> {
         CliCommand::Delete(args) => delete(args),
         CliCommand::Exec(args) => exec(args),
         CliCommand::Logs(args) => logs(args),
+        CliCommand::Validate(args) => validate(args),
     }
 }
 
@@ -695,4 +710,59 @@ fn logs(args: LogsArgs) -> Result<()> {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn validate(args: ValidateArgs) -> Result<()> {
+    let state = ClusterState::load(&args.name)?;
+    let host = state.login_public_ip.as_deref().ok_or_else(|| {
+        anyhow!(
+            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
+            args.name
+        )
+    })?;
+    let login_target = format!("{}@{}", state.admin_username, host);
+
+    let mut checks: Vec<(&str, String)> = vec![
+        ("sinfo", "sinfo -h -o '%P %D %T %N'".into()),
+        (
+            "srun hostname",
+            "timeout 60 srun -N1 --time=1 hostname".into(),
+        ),
+    ];
+    if !args.no_container {
+        checks.push((
+            "srun pyxis alpine",
+            "timeout 180 srun -N1 --time=2 --container-image=docker://alpine:latest hostname"
+                .into(),
+        ));
+    }
+    if args.gpu {
+        checks.push((
+            "srun gpu nvidia-smi",
+            "timeout 180 srun -N1 --gres=gpu:1 --time=2 nvidia-smi -L".into(),
+        ));
+    }
+
+    let mut all_ok = true;
+    for (label, remote) in &checks {
+        eprintln!("==> [{label}] {remote}");
+        let mut cmd = Command::new("ssh");
+        cmd.args(["-A", "-o", "StrictHostKeyChecking=accept-new"]);
+        if let Some(id) = &args.identity {
+            cmd.args(["-i", &id.display().to_string()]);
+        }
+        cmd.arg(&login_target).arg(remote);
+        let st = cmd.status().context("spawn ssh validate")?;
+        if !st.success() {
+            eprintln!("==> [{label}] FAILED ({})", st);
+            all_ok = false;
+        } else {
+            eprintln!("==> [{label}] OK");
+        }
+    }
+    if !all_ok {
+        bail!("one or more validation checks failed");
+    }
+    eprintln!("==> all checks passed");
+    Ok(())
 }

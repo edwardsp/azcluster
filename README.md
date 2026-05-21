@@ -69,6 +69,14 @@ azcluster logs demo --component login --follow
 azcluster logs demo --component demo-gpu-0001
 ```
 
+Validate cluster end-to-end:
+
+```bash
+azcluster validate demo                # sinfo + srun hostname + Pyxis srun
+azcluster validate demo --gpu          # also nvidia-smi via srun (requires a GPU node up)
+azcluster validate demo --no-container # skip Pyxis if you don't want to pull alpine
+```
+
 SSH in:
 
 ```bash

@@ -113,6 +113,9 @@ write_files:
       MaxNodeCount=128
       TreeWidth=65533
       PlugStackConfig=/etc/slurm/plugstack.conf
+      HealthCheckProgram=/usr/local/sbin/azcluster-healthcheck
+      HealthCheckInterval=300
+      HealthCheckNodeState=ANY,CYCLE
       {{PARTITIONS}}
       EOF
 
