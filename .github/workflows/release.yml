@@ -75,9 +75,47 @@ jobs:
           name: dist-assets
           path: dist/
 
+  pyxis:
+    name: Build spank_pyxis.so
+    runs-on: ubuntu-24.04
+    env:
+      PYXIS_VERSION: '0.21.0'
+    steps:
+      - name: Add Microsoft Slurm apt repo
+        run: |
+          set -e
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          ARCH=$(dpkg --print-architecture)
+          UBUNTU_VERSION=$(. /etc/os-release; echo "${VERSION_ID}")
+          echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${UBUNTU_VERSION//./} stable main" | sudo tee /etc/apt/sources.list.d/slurm.list
+          sudo apt-get update
+      - name: Install build deps
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libcap-dev \
+            libtool \
+            automake \
+            libmd-dev \
+            slurm-smd-dev
+      - name: Fetch + build pyxis
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME}"
+          curl -fsSL -o pyxis.tar.gz "https://github.com/NVIDIA/pyxis/archive/refs/tags/v${PYXIS_VERSION}.tar.gz"
+          tar -xzf pyxis.tar.gz
+          cd "pyxis-${PYXIS_VERSION}"
+          make
+          mkdir -p ../dist
+          install -m 0644 spank_pyxis.so "../dist/spank_pyxis-${VERSION}-x86_64-linux.so"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-pyxis
+          path: dist/
+
   release:
     name: Publish release
-    needs: [build, assets]
+    needs: [build, assets, pyxis]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -88,13 +126,14 @@ jobs:
       - name: Generate SHA256SUMS
         run: |
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz *.so > SHA256SUMS
           cat SHA256SUMS
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
+            dist/*.so
             dist/SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true

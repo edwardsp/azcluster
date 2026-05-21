@@ -8,13 +8,17 @@ param sshPublicKey string
 param adminUsername string
 param publicIp bool
 param schedulerPrivateIp string
+param anfMountIp string
+param anfExportPath string
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/login.yaml.tmpl')
-var cloudInit = replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
-    '{{SCHEDULER_IP}}', schedulerPrivateIp)
+    '{{SCHEDULER_IP}}', schedulerPrivateIp),
+    '{{ANF_MOUNT_IP}}', anfMountIp),
+    '{{ANF_EXPORT_PATH}}', anfExportPath)
 
 resource pip 'Microsoft.Network/publicIPAddresses@2024-01-01' = if (publicIp) {
   name: 'pip-${clusterName}-login'

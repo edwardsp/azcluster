@@ -14,6 +14,7 @@ pub struct Cluster {
     /// interactive pool, etc.) is not a breaking change. Do not collapse to
     /// a single `NodePool` field.
     pub pools: Vec<NodePool>,
+    pub storage: StorageSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,10 +25,10 @@ pub struct NodeSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodePool {
-    /// Slurm partition name.
-    pub name: String,
+    pub slurm_partition: String,
     pub sku: String,
-    pub count: u32,
+    pub desired_count: u32,
+    pub max_count: u32,
     pub role: PoolRole,
     pub image: ImageSpec,
 }
@@ -47,7 +48,6 @@ pub struct ImageSpec {
 }
 
 impl ImageSpec {
-    /// Default base image for v1: Ubuntu HPC 24.04 marketplace image.
     pub fn ubuntu_hpc_2404() -> Self {
         Self {
             publisher: "microsoft-dsvm".to_string(),
@@ -67,6 +67,36 @@ impl ImageSpec {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageSpec {
+    pub anf: Option<AnfSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnfSpec {
+    pub size_tib: u32,
+    pub service_level: AnfServiceLevel,
+    pub mount_path: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum AnfServiceLevel {
+    Standard,
+    Premium,
+    Ultra,
+}
+
+impl AnfServiceLevel {
+    pub fn as_arm_str(&self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Premium => "Premium",
+            Self::Ultra => "Ultra",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,5 +112,27 @@ mod tests {
         assert_eq!(img.publisher, "microsoft-dsvm");
         assert_eq!(img.offer, "ubuntu-hpc");
         assert_eq!(img.sku, "2404");
+    }
+
+    #[test]
+    fn pool_max_count_invariant() {
+        let pool = NodePool {
+            slurm_partition: "gpu".into(),
+            sku: "Standard_ND96isr_H200_v5".into(),
+            desired_count: 0,
+            max_count: 2,
+            role: PoolRole::Compute { gpus_per_node: Some(8) },
+            image: ImageSpec::ubuntu_hpc_2404(),
+        };
+        assert!(pool.desired_count <= pool.max_count);
+    }
+
+    #[test]
+    fn anf_service_levels_round_trip() {
+        for sl in [AnfServiceLevel::Standard, AnfServiceLevel::Premium, AnfServiceLevel::Ultra] {
+            let s = serde_json::to_string(&sl).unwrap();
+            let back: AnfServiceLevel = serde_json::from_str(&s).unwrap();
+            assert_eq!(sl, back);
+        }
     }
 }

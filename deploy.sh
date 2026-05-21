@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Deploys a Phase 0 azcluster cluster (scheduler + login VM, no compute, no storage).
 set -euo pipefail
 
 usage() {
@@ -18,11 +17,16 @@ Options:
   --azcluster-version TAG    GitHub release tag (default: v0.0.1)
   --azcluster-repo OWNER/REPO  GitHub repo (default: edwardsp/azcluster)
   --ubuntu 2204|2404         Ubuntu HPC image SKU (default: 2404)
+  --anf-size-tib N           ANF capacity pool size in TiB (default: 2)
+  --anf-tier TIER            ANF service level: Standard|Premium|Ultra (default: Standard)
+  --compute-pool NAME        Compute pool / Slurm partition name (default: gpu)
+  --compute-sku SKU          Compute VM SKU (default: Standard_ND96isr_H200_v5)
+  --compute-count N          Initial VMSS Flex capacity (default: 0)
   --what-if                  Dry-run only; show what would change
   -h, --help                 Show this help
 
 Example:
-  $0 --name demo --location uksouth --login-public-ip
+  $0 --name demo --location southafricanorth --login-public-ip --compute-count 2
 EOF
 }
 
@@ -32,9 +36,14 @@ EXISTING_RG=""
 SSH_KEY=""
 LOGIN_PUBLIC_IP="false"
 ALLOWED_SSH_CIDRS=""
-AZCLUSTER_VERSION="v0.0.1"
+AZCLUSTER_VERSION="v0.1.0"
 AZCLUSTER_REPO="edwardsp/azcluster"
 UBUNTU_SKU="2404"
+ANF_SIZE_TIB="2"
+ANF_TIER="Standard"
+COMPUTE_POOL="gpu"
+COMPUTE_SKU="Standard_ND96isr_H200_v5"
+COMPUTE_COUNT="0"
 WHAT_IF="false"
 
 while [[ $# -gt 0 ]]; do
@@ -48,6 +57,11 @@ while [[ $# -gt 0 ]]; do
     --azcluster-version) AZCLUSTER_VERSION="$2"; shift 2 ;;
     --azcluster-repo) AZCLUSTER_REPO="$2"; shift 2 ;;
     --ubuntu) UBUNTU_SKU="$2"; shift 2 ;;
+    --anf-size-tib) ANF_SIZE_TIB="$2"; shift 2 ;;
+    --anf-tier) ANF_TIER="$2"; shift 2 ;;
+    --compute-pool) COMPUTE_POOL="$2"; shift 2 ;;
+    --compute-sku) COMPUTE_SKU="$2"; shift 2 ;;
+    --compute-count) COMPUTE_COUNT="$2"; shift 2 ;;
     --what-if) WHAT_IF="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
@@ -105,6 +119,8 @@ cat >&2 <<EOF
     Login public IP: $LOGIN_PUBLIC_IP
     Allowed SSH:  ${ALLOWED_SSH_CIDRS:-(any, since login public IP is off or no narrowing)}
     Ubuntu SKU:   $UBUNTU_SKU
+    ANF:          ${ANF_SIZE_TIB} TiB / $ANF_TIER
+    Compute:      $COMPUTE_POOL = $COMPUTE_COUNT x $COMPUTE_SKU
     azcluster:    $AZCLUSTER_REPO @ $AZCLUSTER_VERSION
 EOF
 
@@ -125,6 +141,11 @@ ARGS=(
     azclusterRepo="$AZCLUSTER_REPO"
     ubuntuSku="$UBUNTU_SKU"
     existingResourceGroup="$EXISTING_RG"
+    anfSizeTiB="$ANF_SIZE_TIB"
+    anfServiceLevel="$ANF_TIER"
+    computePoolName="$COMPUTE_POOL"
+    computeSku="$COMPUTE_SKU"
+    computeCount="$COMPUTE_COUNT"
 )
 
 if [[ "$WHAT_IF" == "true" ]]; then

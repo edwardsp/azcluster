@@ -88,6 +88,20 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           }
         }
       }
+      {
+        name: 'anf'
+        properties: {
+          addressPrefix: cidrSubnet(vnetAddressPrefix, 26, 0)
+          delegations: [
+            {
+              name: 'netapp'
+              properties: {
+                serviceName: 'Microsoft.Netapp/volumes'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -95,3 +109,4 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
 output schedulerSubnetId string = '${vnet.id}/subnets/scheduler'
 output loginSubnetId string = '${vnet.id}/subnets/login'
 output computeSubnetId string = '${vnet.id}/subnets/compute'
+output anfSubnetId string = '${vnet.id}/subnets/anf'

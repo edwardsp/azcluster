@@ -46,6 +46,28 @@ param azclusterRepo string = 'edwardsp/azcluster'
 @description('VNet address space.')
 param vnetAddressPrefix string = '10.42.0.0/16'
 
+@description('ANF capacity pool size in TiB. Minimum 1 (Premium/Ultra) or 2 (Standard).')
+@minValue(1)
+param anfSizeTiB int = 2
+
+@description('ANF service level.')
+@allowed([
+  'Standard'
+  'Premium'
+  'Ultra'
+])
+param anfServiceLevel string = 'Standard'
+
+@description('Compute pool name (becomes Slurm partition name).')
+param computePoolName string = 'gpu'
+
+@description('Compute VM SKU for the default pool.')
+param computeSku string = 'Standard_ND96isr_H200_v5'
+
+@description('Initial VMSS Flex capacity for the compute pool. 0 means pool is provisioned empty.')
+@minValue(0)
+param computeCount int = 0
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -78,6 +100,11 @@ module cluster 'cluster.bicep' = {
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
     vnetAddressPrefix: vnetAddressPrefix
+    anfSizeTiB: anfSizeTiB
+    anfServiceLevel: anfServiceLevel
+    computePoolName: computePoolName
+    computeSku: computeSku
+    computeCount: computeCount
     tags: commonTags
   }
 }
@@ -85,3 +112,5 @@ module cluster 'cluster.bicep' = {
 output resourceGroupName string = rgName
 output loginPublicIp string = cluster.outputs.loginPublicIp
 output schedulerPrivateIp string = cluster.outputs.schedulerPrivateIp
+output anfMountIp string = cluster.outputs.anfMountIp
+output computeVmssName string = cluster.outputs.computeVmssName

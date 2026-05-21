@@ -1,0 +1,158 @@
+#cloud-config
+manage_etc_hosts: false
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - ca-certificates
+  - jq
+  - nfs-common
+  - munge
+  - libmunge2
+  - libcap2
+  - squashfs-tools
+  - parallel
+  - fuse-overlayfs
+  - pigz
+  - zstd
+
+write_files:
+  - path: /etc/azcluster/install.env
+    permissions: '0644'
+    content: |
+      AZCLUSTER_VERSION={{AZCLUSTER_VERSION}}
+      AZCLUSTER_REPO={{AZCLUSTER_REPO}}
+      AZCLUSTER_NAME={{CLUSTER_NAME}}
+      AZCLUSTER_ROLE=compute
+      AZCLUSTER_POOL={{CLUSTER_NAME}}-compute
+      SCHEDULER_IP={{SCHEDULER_IP}}
+      ANF_MOUNT_IP={{ANF_MOUNT_IP}}
+      ANF_EXPORT_PATH={{ANF_EXPORT_PATH}}
+      ENROOT_VERSION=4.0.1
+  - path: /etc/apt/preferences.d/slurm-repository-pin-990
+    permissions: '0644'
+    content: |
+      Package: slurm-smd*
+      Pin: origin "packages.microsoft.com"
+      Pin-Priority: 990
+  - path: /etc/systemd/system/slurmd.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Slurm node daemon (dynamic, configless)
+      After=network-online.target munge.service remote-fs.target
+      Wants=network-online.target munge.service
+      ConditionPathExists=/etc/munge/munge.key
+
+      [Service]
+      Type=simple
+      EnvironmentFile=/etc/default/slurmd
+      ExecStart=/usr/sbin/slurmd -D -Z $SLURMD_OPTIONS
+      KillMode=process
+      LimitNOFILE=131072
+      LimitMEMLOCK=infinity
+      LimitSTACK=infinity
+      Restart=on-failure
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /opt/azcluster/install-compute.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      . /etc/azcluster/install.env
+
+      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /var/lib/enroot /var/lib/enroot-data /run/enroot
+
+      IFACE=$(ip -4 -o route show default | awk '{print $5; exit}')
+      IPV4=$(ip -4 -o addr show "${IFACE}" | awk '{print $4}' | cut -d/ -f1)
+      OCT3=$(echo "${IPV4}" | cut -d. -f3)
+      OCT4=$(echo "${IPV4}" | cut -d. -f4)
+      NODE_INDEX=$(( (OCT3 * 256 + OCT4) - (4 * 256 + 4) + 1 ))
+      NEW_HOSTNAME="${AZCLUSTER_NAME}-cn-$(printf '%04d' ${NODE_INDEX})"
+      hostnamectl set-hostname "${NEW_HOSTNAME}"
+      sed -i '/127\.0\.1\.1/d' /etc/hosts
+      echo "127.0.1.1 ${NEW_HOSTNAME}" >> /etc/hosts
+
+      if ! grep -q " /shared " /etc/fstab; then
+        echo "${ANF_MOUNT_IP}:/${ANF_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
+      fi
+      mountpoint -q /shared || mount /shared
+
+      SCHED_DIR="/shared/sched/${AZCLUSTER_NAME}"
+      for i in $(seq 1 120); do
+        [ -f "${SCHED_DIR}/munge.key" ] && break
+        sleep 5
+      done
+      install -o munge -g munge -m 0400 "${SCHED_DIR}/munge.key" /etc/munge/munge.key
+
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+      ARCH=$(dpkg --print-architecture)
+      UBUNTU_VERSION=$(. /etc/os-release; echo "${VERSION_ID}")
+      echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${UBUNTU_VERSION//./} stable main" > /etc/apt/sources.list.d/slurm.list
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        slurm-smd \
+        slurm-smd-client \
+        slurm-smd-slurmd \
+        slurm-smd-libnss-slurm \
+        slurm-smd-libpam-slurm-adopt
+
+      getent group slurm >/dev/null || groupadd -g 11100 slurm
+      id slurm >/dev/null 2>&1 || useradd -u 11100 -g 11100 -d /var/lib/slurm -s /usr/sbin/nologin -c "Slurm" slurm
+      chown -R slurm:slurm /var/spool/slurmd /var/log/slurm
+
+      cd /tmp
+      curl -fsSL --retry 8 --retry-delay 5 -o enroot.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${ARCH}.deb"
+      curl -fsSL --retry 8 --retry-delay 5 -o enroot-caps.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot+caps_${ENROOT_VERSION}-1_${ARCH}.deb"
+      apt-get install -y ./enroot.deb ./enroot-caps.deb
+
+      mkdir -p /etc/enroot
+      cat > /etc/enroot/enroot.conf <<'EOF'
+      ENROOT_RUNTIME_PATH    /var/lib/enroot/runtime/user-$(id -u)
+      ENROOT_CACHE_PATH      /var/lib/enroot-data/cache
+      ENROOT_DATA_PATH       /var/lib/enroot-data/user-$(id -u)
+      ENROOT_TEMP_PATH       /run/enroot
+      ENROOT_SQUASH_OPTIONS  -comp lzo -noI
+      ENROOT_MOUNT_HOME      yes
+      ENROOT_RESTRICT_DEV    yes
+      ENROOT_ROOTFS_WRITABLE yes
+      EOF
+
+      BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
+      curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so "${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so"
+      chmod 0755 /opt/pyxis/spank_pyxis.so
+
+      CPUS=$(nproc)
+      MEM=$(awk '/^MemTotal/ {printf "%d\n", $2/1024 * 0.95}' /proc/meminfo)
+      GRES_OPT=""
+      FEATURES="cloud"
+      if command -v nvidia-smi >/dev/null 2>&1; then
+        GPU_COUNT=$(nvidia-smi -L | wc -l || echo 0)
+        if [ "${GPU_COUNT}" -gt 0 ]; then
+          GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 | awk '{print tolower($NF)}')
+          GRES_OPT="Gres=gpu:${GPU_NAME}:${GPU_COUNT}"
+          FEATURES="${FEATURES},gpu,${GPU_NAME}"
+          : > /etc/slurm/gres.conf
+          for i in $(seq 0 $((GPU_COUNT-1))); do
+            echo "Name=gpu Type=${GPU_NAME} File=/dev/nvidia${i}" >> /etc/slurm/gres.conf
+          done
+        fi
+      fi
+
+      cat > /etc/default/slurmd <<EOF
+      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "CPUs=${CPUS} RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}"
+      EOF
+
+      systemctl daemon-reload
+      systemctl enable --now munge
+      systemctl enable --now slurmd
+
+      touch /var/log/azcluster/ready
+
+runcmd:
+  - bash -lc '/opt/azcluster/install-compute.sh 2>&1 | tee -a /var/log/azcluster/install.log'
