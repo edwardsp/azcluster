@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/azcluster-core",
+    "crates/azcluster-server",
+    "crates/azcluster-cli",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.78"
+license = "MIT"
+authors = ["edwardsp"]
+repository = "https://github.com/edwardsp/azcluster"
+homepage = "https://github.com/edwardsp/azcluster"
+
+[workspace.dependencies]
+azcluster-core = { path = "crates/azcluster-core" }
+
+anyhow = "1"
+axum = "0.7"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

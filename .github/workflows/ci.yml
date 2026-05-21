@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace --all-targets
+
+  bicep:
+    name: Bicep (build + lint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: bicep build (all .bicep files)
+        run: |
+          set -e
+          shopt -s globstar nullglob
+          for f in bicep/**/*.bicep; do
+            echo "==> $f"
+            az bicep build --file "$f" --stdout > /dev/null
+          done
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+          shellcheck deploy.sh
+          # Phase 1+: shellcheck scripts/*.sh once those exist.
+
+  cloud-init:
+    name: cloud-init schema
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cloud-init
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y cloud-init
+      - name: Render templates and validate
+        run: |
+          set -e
+          mkdir -p /tmp/rendered
+          for tmpl in cloud-init/*.yaml.tmpl; do
+            out="/tmp/rendered/$(basename "$tmpl" .tmpl)"
+            # Substitute placeholders with dummy values just to satisfy YAML/schema validation.
+            sed \
+              -e 's|{{AZCLUSTER_VERSION}}|v0.0.1|g' \
+              -e 's|{{AZCLUSTER_REPO}}|edwardsp/azcluster|g' \
+              -e 's|{{ADMIN_USER}}|azureuser|g' \
+              -e 's|{{CLUSTER_NAME}}|citest|g' \
+              -e 's|{{SCHEDULER_IP}}|10.42.1.4|g' \
+              "$tmpl" > "$out"
+            echo "==> validating $out"
+            cloud-init schema --config-file "$out"
+          done

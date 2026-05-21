@@ -1,0 +1,44 @@
+#cloud-config
+hostname: {{CLUSTER_NAME}}-scheduler
+manage_etc_hosts: true
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - ca-certificates
+  - jq
+
+write_files:
+  - path: /etc/systemd/system/azcluster-server.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=azcluster daemon
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/azcluster-server
+      Restart=on-failure
+      RestartSec=5
+      Environment=AZCLUSTER_BIND=0.0.0.0:8443
+      Environment=RUST_LOG=info
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/azcluster/install.env
+    permissions: '0644'
+    content: |
+      AZCLUSTER_VERSION={{AZCLUSTER_VERSION}}
+      AZCLUSTER_REPO={{AZCLUSTER_REPO}}
+      AZCLUSTER_ROLE=scheduler
+
+runcmd:
+  - mkdir -p /opt/azcluster /var/lib/azcluster /var/log/azcluster
+  - bash -lc 'set -euo pipefail; . /etc/azcluster/install.env; VERSION="$AZCLUSTER_VERSION"; REPO="$AZCLUSTER_REPO"; ARCH="x86_64-linux"; BASE="https://github.com/${REPO}/releases/download/${VERSION}"; TARBALL="azcluster-server-${VERSION}-${ARCH}.tar.gz"; cd /tmp; curl -fsSL --retry 8 --retry-delay 5 -o "$TARBALL" "${BASE}/${TARBALL}"; curl -fsSL --retry 8 --retry-delay 5 -o SHA256SUMS "${BASE}/SHA256SUMS"; grep " ${TARBALL}\\$" SHA256SUMS | sha256sum -c -; tar -xzf "$TARBALL" -C /usr/local/bin/; chmod +x /usr/local/bin/azcluster-server'
+  - systemctl daemon-reload
+  - systemctl enable --now azcluster-server.service
+  - touch /var/log/azcluster/ready

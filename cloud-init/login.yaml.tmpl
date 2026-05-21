@@ -1,0 +1,28 @@
+#cloud-config
+hostname: {{CLUSTER_NAME}}-login
+manage_etc_hosts: true
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - ca-certificates
+  - jq
+
+write_files:
+  - path: /etc/azcluster/cluster.env
+    permissions: '0644'
+    content: |
+      AZCLUSTER_NAME={{CLUSTER_NAME}}
+      AZCLUSTER_SCHEDULER={{SCHEDULER_IP}}
+      AZCLUSTER_ROLE=login
+  - path: /etc/profile.d/azcluster.sh
+    permissions: '0644'
+    content: |
+      export AZCLUSTER_NAME={{CLUSTER_NAME}}
+      export AZCLUSTER_SCHEDULER={{SCHEDULER_IP}}
+
+runcmd:
+  - mkdir -p /var/log/azcluster
+  - touch /var/log/azcluster/ready

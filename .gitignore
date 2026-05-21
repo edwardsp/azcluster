@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+/research/
+
+.azcluster/
+.sisyphus/
+*.swp
+.DS_Store
+
+# Bicep transpile output
+*.json.bicep
+bicep/**/*.json
