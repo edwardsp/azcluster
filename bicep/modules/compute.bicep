@@ -14,11 +14,7 @@ param schedulerPrivateIp string
 param anfMountIp string
 param anfExportPath string
 param amlfsMountCommand string
-param spot bool = false
-param spotMaxPrice string = '-1'
 param tags object
-
-var spotMaxPriceNum = json(spotMaxPrice)
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/compute.yaml.tmpl')
 var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
@@ -45,11 +41,6 @@ resource vmss 'Microsoft.Compute/virtualMachineScaleSets@2024-07-01' = {
     platformFaultDomainCount: 1
     singlePlacementGroup: false
     virtualMachineProfile: {
-      priority: spot ? 'Spot' : 'Regular'
-      evictionPolicy: spot ? 'Deallocate' : null
-      billingProfile: spot ? {
-        maxPrice: spotMaxPriceNum
-      } : null
       osProfile: {
         computerNamePrefix: '${clusterName}-${poolName}-'
         adminUsername: adminUsername

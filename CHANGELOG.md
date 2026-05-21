@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-21
+
+### Removed
+- **Per-pool Azure Spot support** (`--pool ...,spot[,max_price=N]`). Not all Azure SKUs offer Spot capacity, so the per-pool flag was misleading; deploying a Spot pool on an unsupported SKU failed at VMSS validation time. If Spot is needed in the future it will return as a region/SKU-aware feature.
+- `spot` / `max_price` tokens from `parse_pool` and the related unit tests.
+- `spot` / `spotMaxPrice` parameters from `bicep/modules/compute.bicep`; `priority`/`evictionPolicy`/`billingProfile` no longer set on the VMSS VM profile.
+- Spot Quickstart snippets from `README.md`.
+
+### Changed
+- Workspace version 0.7.1 → 0.8.0 (breaking CLI: removes `spot`/`max_price` pool tokens).
+- CLI default `--azcluster-version` bumped to `v0.8.0`.
+
 ## [0.7.1] - 2026-05-21
 
 ### Fixed

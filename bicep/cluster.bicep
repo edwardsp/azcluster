@@ -140,8 +140,6 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     anfMountIp: anf.outputs.mountIp
     anfExportPath: anf.outputs.mountPath
     amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
-    spot: bool(pool.?spot ?? false)
-    spotMaxPrice: pool.?maxPrice ?? '-1'
     tags: tags
   }
 }]
