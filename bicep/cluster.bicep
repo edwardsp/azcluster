@@ -75,7 +75,7 @@ module amlfs 'modules/amlfs.bicep' = if (amlfsSizeTiB > 0) {
   }
 }
 
-var partitionsConf = join(map(pools, p => 'PartitionName=${p.name} State=UP MaxTime=INFINITE${p.?default == true ? ' Default=YES' : ''}'), '\n      ')
+var partitionsConf = join(map(pools, p => 'NodeSet=${p.name}set Feature=pool_${p.name}\n      PartitionName=${p.name} Nodes=${p.name}set State=UP MaxTime=INFINITE${p.?default == true ? ' Default=YES' : ''}'), '\n      ')
 
 module scheduler 'modules/scheduler.bicep' = {
   name: 'scheduler'
@@ -141,7 +141,7 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     anfExportPath: anf.outputs.mountPath
     amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
     spot: bool(pool.?spot ?? false)
-    spotMaxPrice: string(pool.?maxPrice ?? '-1')
+    spotMaxPrice: pool.?maxPrice ?? '-1'
     tags: tags
   }
 }]

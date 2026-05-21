@@ -110,7 +110,7 @@ write_files:
 
       if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
         mkdir -p /amlfs
-        apt-get install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get install -y --no-install-recommends amlfs-lustre-client || true
+        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client || true
         if ! mountpoint -q /amlfs; then
           eval "${AMLFS_MOUNT_CMD} /amlfs" || echo "AMLFS mount failed; continuing" >&2
         fi
@@ -124,8 +124,8 @@ write_files:
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
-      apt-get update
-      apt-get install -y --no-install-recommends \
+      apt-get -o DPkg::Lock::Timeout=600 update
+      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-slurmd \
@@ -139,7 +139,7 @@ write_files:
       cd /tmp
       curl -fsSL --retry 8 --retry-delay 5 -o enroot.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${ARCH}.deb"
       curl -fsSL --retry 8 --retry-delay 5 -o enroot-caps.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot+caps_${ENROOT_VERSION}-1_${ARCH}.deb"
-      apt-get install -y ./enroot.deb ./enroot-caps.deb
+      apt-get -o DPkg::Lock::Timeout=600 install -y ./enroot.deb ./enroot-caps.deb
 
       mkdir -p /etc/enroot
       cat > /etc/enroot/enroot.conf <<'EOF'
@@ -164,10 +164,10 @@ write_files:
       CPUS=$(nproc)
       MEM=$(awk '/^MemTotal/ {printf "%d\n", $2/1024 * 0.95}' /proc/meminfo)
       GRES_OPT=""
-      FEATURES="cloud"
+      FEATURES="cloud,pool_${AZCLUSTER_POOL}"
       GPU_COUNT=0
       if command -v nvidia-smi >/dev/null 2>&1; then
-        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l)
+        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -cE '^GPU [0-9]+:' || true)
       fi
       if [ "${GPU_COUNT}" -gt 0 ]; then
         GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 | awk '{print tolower($NF)}')
@@ -196,7 +196,7 @@ write_files:
       fi
 
       cat > /etc/default/slurmd <<EOF
-      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "CPUs=${CPUS} RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES} Partitions=${AZCLUSTER_POOL}"
+      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "CPUs=${CPUS} RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}"
       EOF
 
       cat > /usr/local/sbin/azcluster-healthcheck <<'EOF'
@@ -235,4 +235,7 @@ write_files:
       touch /var/log/azcluster/ready
 
 runcmd:
+  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'
   - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-compute.sh 2>&1 | tee -a /var/log/azcluster/install.log'

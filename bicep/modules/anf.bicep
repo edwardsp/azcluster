@@ -58,6 +58,12 @@ resource volume 'Microsoft.NetApp/netAppAccounts/capacityPools/volumes@2024-03-0
           nfsv41: true
           allowedClients: '0.0.0.0/0'
           hasRootAccess: true
+          kerberos5ReadOnly: false
+          kerberos5ReadWrite: false
+          kerberos5iReadOnly: false
+          kerberos5iReadWrite: false
+          kerberos5pReadOnly: false
+          kerberos5pReadWrite: false
         }
       ]
     }

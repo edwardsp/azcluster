@@ -70,8 +70,8 @@ write_files:
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
-      apt-get update
-      apt-get install -y --no-install-recommends \
+      apt-get -o DPkg::Lock::Timeout=600 update
+      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-slurmctld \
@@ -125,6 +125,11 @@ write_files:
       ConstrainRAMSpace=yes
       ConstrainDevices=yes
       EOF
+
+      mkdir -p /opt/pyxis
+      BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
+      curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so "${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so"
+      chmod 0755 /opt/pyxis/spank_pyxis.so
 
       cat > /etc/slurm/plugstack.conf <<EOF
       required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
@@ -201,4 +206,7 @@ write_files:
       touch /var/log/azcluster/ready
 
 runcmd:
+  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'
   - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-scheduler.sh 2>&1 | tee -a /var/log/azcluster/install.log'

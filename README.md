@@ -106,7 +106,7 @@ sbatch /shared/examples/nccl-allreduce.sbatch
 
 - **scheduler VM**: runs `slurmctld` + `azcluster-server` (control plane on `:8443`).
 - **login VM**: user entry point. Public IP optional (off by default).
-- **compute VMSS Flex**: one VMSS per pool; nodes register dynamically with slurmd `--conf-server` + `--conf Partitions=<pool>`.
+- **compute VMSS Flex**: one VMSS per pool; nodes register dynamically with `slurmd --conf-server` and self-tag with `Feature=pool_<name>`, which `slurm.conf`'s `NodeSet` matches into the corresponding partition.
 - **Storage**: ANF NFSv4.1 mounted on `/shared` (configurable tier + size). AMLFS planned for v0.2+.
 - **Egress**: NAT Gateway on all subnets (no public IPs required on compute/scheduler).
 

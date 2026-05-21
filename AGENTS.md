@@ -41,6 +41,9 @@ If a PR touches code but skips any of these three, it is incomplete.
 - VMSS Flex VMs surface as `Microsoft.Compute/virtualMachines` named `vmss-<cluster>-<pool>_<hex>`, not under the VMSS resource.
 - Image: `microsoft-dsvm:ubuntu-hpc:2404` (default), `2204` fallback.
 - Slurm 25.11 + Pyxis 0.21.0 ABI match. NVIDIA Pyxis 0.24.0 exists; only bump if Slurm 26 is needed.
+- Slurm 25.11 dynamic nodes: `slurmd --conf "...Partitions=<pool>"` is rejected ("Failed to parse nodeline"). Use the **NodeSet+Feature** pattern: emit `NodeSet=<pool>set Feature=pool_<pool>` and `PartitionName=<pool> Nodes=<pool>set ...` in `slurm.conf`; the compute slurmd registers with `--conf "...Feature=pool_<pool>"` and slurmctld places it in the matching NodeSet/partition.
+- Pyxis spank library (`spank_pyxis.so`) must be installed on **every** node that may submit `srun` — scheduler, login, and compute — because `plugstack.conf` loads at submit time. Forgetting it on scheduler crashes any `srun` invoked from there with `Dlopen of plugin file failed`.
+- The `microsoft-dsvm:ubuntu-hpc` image ships `nvidia-smi` even on CPU SKUs, so `command -v nvidia-smi` cannot be used as a GPU presence check. Use `nvidia-smi -L | grep -cE '^GPU [0-9]+:' || true` instead.
 - Phase 1+ test region: `southafricanorth`, RG `paul-azcluster`, max 2 GPU nodes.
 
 ## Subnetting (VNet `10.42.0.0/16`)

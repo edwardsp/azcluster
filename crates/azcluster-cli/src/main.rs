@@ -42,7 +42,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.7.0")]
+    #[arg(long, default_value = "v0.7.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -70,7 +70,7 @@ struct DeployArgs {
     what_if: bool,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 struct PoolSpec {
     name: String,
     sku: String,
@@ -79,7 +79,7 @@ struct PoolSpec {
     is_default: bool,
     spot: bool,
     #[serde(rename = "maxPrice")]
-    max_price: f64,
+    max_price: String,
 }
 
 fn parse_pool(spec: &str) -> Result<PoolSpec> {
@@ -88,7 +88,7 @@ fn parse_pool(spec: &str) -> Result<PoolSpec> {
     let mut count: u32 = 0;
     let mut is_default = false;
     let mut spot = false;
-    let mut max_price: f64 = -1.0;
+    let mut max_price: String = "-1".to_string();
     for kv in spec.split(',') {
         let kv = kv.trim();
         if kv.is_empty() {
@@ -111,7 +111,10 @@ fn parse_pool(spec: &str) -> Result<PoolSpec> {
             "count" => count = v.trim().parse().context("pool count")?,
             "default" => is_default = v.trim().parse::<bool>().context("pool default")?,
             "spot" => spot = v.trim().parse::<bool>().context("pool spot")?,
-            "max_price" => max_price = v.trim().parse::<f64>().context("pool max_price")?,
+            "max_price" => {
+                let parsed: f64 = v.trim().parse().context("pool max_price")?;
+                max_price = parsed.to_string();
+            }
             other => bail!("pool spec '{spec}': unknown key '{other}'"),
         }
     }
@@ -137,7 +140,7 @@ mod tests {
         assert_eq!(p.count, 2);
         assert!(!p.is_default);
         assert!(!p.spot);
-        assert_eq!(p.max_price, -1.0);
+        assert_eq!(p.max_price, "-1");
     }
 
     #[test]
@@ -150,14 +153,14 @@ mod tests {
     fn parse_pool_spot_flag() {
         let p = parse_pool("name=g,sku=X,count=1,spot").unwrap();
         assert!(p.spot);
-        assert_eq!(p.max_price, -1.0);
+        assert_eq!(p.max_price, "-1");
     }
 
     #[test]
     fn parse_pool_spot_with_max_price() {
         let p = parse_pool("name=g,sku=X,count=1,spot,max_price=0.5").unwrap();
         assert!(p.spot);
-        assert_eq!(p.max_price, 0.5);
+        assert_eq!(p.max_price, "0.5");
     }
 
     #[test]
@@ -396,7 +399,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
             count: 0,
             is_default: true,
             spot: false,
-            max_price: -1.0,
+            max_price: "-1".into(),
         }]
     } else {
         args.pools

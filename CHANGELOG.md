@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-21
+
+### Fixed
+- **Dynamic node → partition assignment** (Slurm 25.11): `slurmd --conf "...Partitions=<pool>"` is rejected ("Failed to parse nodeline"). Switched to NodeSet+Feature pattern: each pool emits `NodeSet=<pool>set Feature=pool_<pool>` plus `PartitionName=<pool> Nodes=<pool>set ...` in `slurm.conf`; compute nodes register with `Feature=pool_<pool>`.
+- **Pyxis missing on scheduler**: scheduler `plugstack.conf` referenced `/opt/pyxis/spank_pyxis.so` but the plugin was never downloaded, so `srun` from the scheduler crashed with `Dlopen of plugin file failed`. Scheduler cloud-init now fetches `spank_pyxis-<ver>-x86_64-linux.so` from the release assets (matches login/compute).
+- **`nvidia-smi` false positive on CPU SKUs**: the `microsoft-dsvm:ubuntu-hpc` image ships `nvidia-smi` even on non-GPU VMs, so `command -v nvidia-smi` succeeded on D-series, then `nvidia-smi -L | wc -l` returned a bogus count and downstream `nvidia-smi -i 0` aborted the install script under `set -e`. Now counts lines matching `^GPU [0-9]+:` with `|| true`.
+- **ANF preflight failure** (API `2024-03-01`): `exportPolicy.rules` now requires `kerberos5{,i,p}{ReadOnly,ReadWrite}` fields; added them to `bicep/modules/anf.bicep`.
+- **Spot `maxPrice` serialization**: ARM rejected the JSON `Float` form of `maxPrice`; CLI now serializes `max_price` as a quoted string and Bicep converts via `json(spotMaxPrice)`.
+- **apt-lock race with `unattended-upgrades` on first boot**: cloud-init now masks `unattended-upgrades.service` and the `apt-daily{,-upgrade}.{service,timer}` units, and passes `-o DPkg::Lock::Timeout=600` to every `apt-get` invocation in scheduler/login/compute templates.
+
+### Changed
+- Workspace version 0.7.0 → 0.7.1.
+- CLI default `--azcluster-version` bumped to `v0.7.1`.
+
 ## [0.7.0] - 2026-05-21
 
 ### Added

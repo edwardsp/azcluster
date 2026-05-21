@@ -53,7 +53,7 @@ write_files:
 
       if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
         mkdir -p /amlfs
-        apt-get install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get install -y --no-install-recommends amlfs-lustre-client || true
+        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client || true
         if ! mountpoint -q /amlfs; then
           eval "${AMLFS_MOUNT_CMD} /amlfs" || echo "AMLFS mount failed; continuing" >&2
         fi
@@ -67,8 +67,8 @@ write_files:
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
-      apt-get update
-      apt-get install -y --no-install-recommends \
+      apt-get -o DPkg::Lock::Timeout=600 update
+      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-sackd
@@ -114,4 +114,7 @@ write_files:
       touch /var/log/azcluster/ready
 
 runcmd:
+  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'
   - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-login.sh 2>&1 | tee -a /var/log/azcluster/install.log'
