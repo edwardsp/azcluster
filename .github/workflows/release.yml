@@ -84,7 +84,8 @@ jobs:
       - name: Add Microsoft Slurm apt repo
         run: |
           set -e
-          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+            | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
           ARCH=$(dpkg --print-architecture)
           UBUNTU_VERSION=$(. /etc/os-release; echo "${VERSION_ID}")
           echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${UBUNTU_VERSION//./} stable main" | sudo tee /etc/apt/sources.list.d/slurm.list
