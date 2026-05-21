@@ -16,11 +16,12 @@ param anfExportPath string
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/compute.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
+    '{{POOL_NAME}}', poolName),
     '{{SCHEDULER_IP}}', schedulerPrivateIp),
     '{{ANF_MOUNT_IP}}', anfMountIp),
     '{{ANF_EXPORT_PATH}}', anfExportPath)

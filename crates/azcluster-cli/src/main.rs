@@ -37,7 +37,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.1.0")]
+    #[arg(long, default_value = "v0.2.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -47,16 +47,64 @@ struct DeployArgs {
     anf_size_tib: u32,
     #[arg(long, default_value = "Standard")]
     anf_tier: String,
-    #[arg(long, default_value = "gpu")]
-    compute_pool: String,
-    #[arg(long, default_value = "Standard_ND96isr_H200_v5")]
-    compute_sku: String,
+    /// AMLFS (Azure Managed Lustre) capacity in TiB. 0 disables AMLFS.
     #[arg(long, default_value_t = 0)]
-    compute_count: u32,
+    amlfs_size_tib: u32,
+    /// AMLFS SKU: 40, 125, 250, 500 (MB/s per TiB).
+    #[arg(long, default_value = "AMLFS-Durable-Premium-250")]
+    amlfs_sku: String,
+    /// Availability zone for AMLFS.
+    #[arg(long, default_value = "1")]
+    amlfs_zone: String,
+    /// Compute pool spec, repeatable. Format: name=cpu,sku=Standard_D8s_v5,count=0[,default]
+    #[arg(long = "pool")]
+    pools: Vec<String>,
     #[arg(long)]
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     what_if: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PoolSpec {
+    name: String,
+    sku: String,
+    count: u32,
+    #[serde(rename = "default")]
+    is_default: bool,
+}
+
+fn parse_pool(spec: &str) -> Result<PoolSpec> {
+    let mut name = None;
+    let mut sku = None;
+    let mut count: u32 = 0;
+    let mut is_default = false;
+    for kv in spec.split(',') {
+        let kv = kv.trim();
+        if kv.is_empty() {
+            continue;
+        }
+        if kv == "default" {
+            is_default = true;
+            continue;
+        }
+        let (k, v) = kv.split_once('=').ok_or_else(|| {
+            anyhow!("pool spec '{spec}': expected key=value or 'default', got '{kv}'")
+        })?;
+        match k.trim() {
+            "name" => name = Some(v.trim().to_string()),
+            "sku" => sku = Some(v.trim().to_string()),
+            "count" => count = v.trim().parse().context("pool count")?,
+            "default" => is_default = v.trim().parse::<bool>().context("pool default")?,
+            other => bail!("pool spec '{spec}': unknown key '{other}'"),
+        }
+    }
+    Ok(PoolSpec {
+        name: name.ok_or_else(|| anyhow!("pool spec '{spec}': missing name="))?,
+        sku: sku.ok_or_else(|| anyhow!("pool spec '{spec}': missing sku="))?,
+        count,
+        is_default,
+    })
 }
 
 #[derive(Args)]
@@ -205,6 +253,21 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     let deployment_name = format!("azcluster-{}-{}", args.name, utc_stamp());
 
+    let pools: Vec<PoolSpec> = if args.pools.is_empty() {
+        vec![PoolSpec {
+            name: "gpu".into(),
+            sku: "Standard_ND96isr_H200_v5".into(),
+            count: 0,
+            is_default: true,
+        }]
+    } else {
+        args.pools
+            .iter()
+            .map(|s| parse_pool(s))
+            .collect::<Result<_>>()?
+    };
+    let pools_json = serde_json::to_string(&pools).context("encode pools")?;
+
     let params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
         ("location", args.location.clone()),
@@ -220,9 +283,10 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ),
         ("anfSizeTiB", args.anf_size_tib.to_string()),
         ("anfServiceLevel", args.anf_tier.clone()),
-        ("computePoolName", args.compute_pool.clone()),
-        ("computeSku", args.compute_sku.clone()),
-        ("computeCount", args.compute_count.to_string()),
+        ("amlfsSizeTiB", args.amlfs_size_tib.to_string()),
+        ("amlfsSkuName", args.amlfs_sku.clone()),
+        ("amlfsZone", args.amlfs_zone.clone()),
+        ("pools", pools_json),
     ];
 
     let mut az_args: Vec<String> = vec![
@@ -298,7 +362,16 @@ fn deploy(args: DeployArgs) -> Result<()> {
         login_public_ip,
         scheduler_private_ip,
         anf_mount_ip: pick("anfMountIp"),
-        compute_vmss_name: pick("computeVmssName"),
+        compute_vmss_names: outputs
+            .get("computeVmssNames")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());

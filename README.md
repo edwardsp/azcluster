@@ -6,11 +6,11 @@ One `az deployment sub create` triggers everything. No daemons on your laptop.
 
 ## Status
 
-**Phase 0** (current): scheduler VM + login VM, both running Ubuntu HPC, `azcluster-server` daemon serving `/v1/healthz`. No compute pools, no shared filesystems yet.
+**Phase 0** (shipped, v0.0.1): scheduler VM + login VM, `azcluster-server` serving `/v1/healthz`.
 
-**Phase 1** (planned): VMSS Flex compute pools, ANF + AMLFS, Slurm + Pyxis + Enroot fully wired, manual scale via `azcluster-cli`.
+**Phase 1** (shipped, v0.1.x): VMSS Flex compute pool, ANF shared filesystem, Slurm + Pyxis + Enroot fully wired, `azcluster scale` flips VMSS capacity. Live-validated on `southafricanorth`: `srun --container-image=docker://alpine:latest hostname` works end-to-end.
 
-**Phase 2** (planned): NDv5 H100, NCCL validation, multi-partition (CPU + GPU pools), production hardening.
+**Phase 2** (in progress, v0.2.0): multi-pool partitions (CPU + GPU side-by-side), IB/NCCL tunings for NDv5 H100/H200, AMLFS (optional), GPU smoke + NCCL all-reduce validation.
 
 ## Prerequisites
 
@@ -19,33 +19,53 @@ One `az deployment sub create` triggers everything. No daemons on your laptop.
 - An SSH key (`~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub`)
 - Permissions to create resource groups in the target subscription
 
-## Quickstart (Phase 0)
+## Quickstart
+
+Single GPU pool (default, H200, count=0):
 
 ```bash
-./deploy.sh \
+azcluster deploy \
   --name demo \
-  --location uksouth \
+  --location southafricanorth \
+  --resource-group my-rg \
   --login-public-ip
 ```
 
-After ~5 min:
+Multi-pool (CPU + GPU):
 
 ```bash
-LOGIN_IP=$(az deployment sub show --name <deployment-name> --query properties.outputs.loginPublicIp.value -o tsv)
-ssh -L 8443:scheduler:8443 azureuser@$LOGIN_IP
-# In another shell:
-curl -k https://localhost:8443/v1/healthz
-# => {"status":"ok","version":"..."}
+azcluster deploy \
+  --name demo \
+  --location southafricanorth \
+  --resource-group my-rg \
+  --pool name=cpu,sku=Standard_D8as_v5,count=2,default \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=0 \
+  --login-public-ip
+```
+
+Scale a pool:
+
+```bash
+azcluster scale demo gpu 0/2
+```
+
+SSH in:
+
+```bash
+azcluster ssh demo
+sinfo
+srun -N1 --container-image=docker://alpine:latest hostname
 ```
 
 ## Architecture
 
-- **scheduler VM**: runs `slurmctld` (Phase 1+) and the `azcluster-server` daemon (control plane).
+- **scheduler VM**: runs `slurmctld` + `azcluster-server` (control plane on `:8443`).
 - **login VM**: user entry point. Public IP optional (off by default).
-- **compute VMSS** (Phase 1+): one VMSS Flex per `NodePool`.
-- **Storage** (Phase 1+): ANF (default) and/or AMLFS, configurable tier + size.
+- **compute VMSS Flex**: one VMSS per pool; nodes register dynamically with slurmd `--conf-server` + `--conf Partitions=<pool>`.
+- **Storage**: ANF NFSv4.1 mounted on `/shared` (configurable tier + size). AMLFS planned for v0.2+.
+- **Egress**: NAT Gateway on all subnets (no public IPs required on compute/scheduler).
 
-Binaries are distributed via GitHub Releases (built by CI on tag push). Cloud-init on the scheduler fetches the release tarball, verifies SHA256, and starts a systemd unit.
+Binaries are distributed via GitHub Releases (built by CI on tag push). Cloud-init on each node fetches the release tarball, verifies SHA256, and starts the relevant systemd unit.
 
 ## Repo Layout
 
@@ -58,7 +78,9 @@ bicep/               main.bicep + cluster.bicep + modules/
 cloud-init/          *.yaml.tmpl templates
 .github/workflows/   ci.yml + release.yml
 research/            local reference checkouts (gitignored)
-deploy.sh            wrapper around `az deployment sub create`
+.sisyphus/           planning artifacts (gitignored)
+CHANGELOG.md         every user-visible change, per release
+AGENTS.md            instructions for AI agents working on this repo
 ```
 
 ## Development
@@ -74,7 +96,7 @@ done
 
 ## Releasing
 
-Tag-triggered. Push a `vX.Y.Z` tag and CI builds `azcluster-server-x86_64-linux`, `azcluster-cli-x86_64-linux`, `azcluster-cli-aarch64-darwin`, a tarball, and `SHA256SUMS`, attaching them to the GitHub Release.
+Tag-triggered. The agent maintains `CHANGELOG.md` per [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). To release: move `Unreleased` content under a new `[X.Y.Z] - YYYY-MM-DD` heading, bump `Cargo.toml` versions and the `--azcluster-version` CLI default, commit, then `git tag vX.Y.Z && git push --tags`. CI builds `azcluster-server-x86_64-linux`, `azcluster-cli-x86_64-linux`, `azcluster-cli-aarch64-darwin`, a versioned tarball, `spank_pyxis-vX.Y.Z-x86_64-linux.so`, and `SHA256SUMS`.
 
 ## License
 

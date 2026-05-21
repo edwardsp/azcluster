@@ -15,9 +15,10 @@ param azclusterRepo string
 param vnetAddressPrefix string
 param anfSizeTiB int
 param anfServiceLevel string
-param computePoolName string
-param computeSku string
-param computeCount int
+param amlfsSizeTiB int
+param amlfsSkuName string
+param amlfsZone string
+param pools array
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -61,6 +62,21 @@ module anf 'modules/anf.bicep' = {
   }
 }
 
+module amlfs 'modules/amlfs.bicep' = if (amlfsSizeTiB > 0) {
+  name: 'amlfs'
+  params: {
+    clusterName: clusterName
+    location: location
+    subnetId: network.outputs.amlfsSubnetId
+    sizeTiB: amlfsSizeTiB
+    skuName: amlfsSkuName
+    zone: amlfsZone
+    tags: tags
+  }
+}
+
+var partitionsConf = join(map(pools, p => 'PartitionName=${p.name} State=UP MaxTime=INFINITE${p.?default == true ? ' Default=YES' : ''}'), '\n      ')
+
 module scheduler 'modules/scheduler.bicep' = {
   name: 'scheduler'
   dependsOn: [
@@ -78,8 +94,7 @@ module scheduler 'modules/scheduler.bicep' = {
     azclusterRepo: azclusterRepo
     anfMountIp: anf.outputs.mountIp
     anfExportPath: anf.outputs.mountPath
-    computePoolName: computePoolName
-    computeSku: computeSku
+    partitionsConf: partitionsConf
     userAssignedIdentityId: uai.id
     userAssignedIdentityClientId: uai.properties.clientId
     tags: tags
@@ -106,18 +121,18 @@ module login 'modules/login.bicep' = {
   }
 }
 
-module compute 'modules/compute.bicep' = {
-  name: 'compute-${computePoolName}'
+module compute 'modules/compute.bicep' = [for pool in pools: {
+  name: 'compute-${pool.name}'
   params: {
     clusterName: clusterName
-    poolName: computePoolName
+    poolName: pool.name
     location: location
-    vmSku: computeSku
+    vmSku: pool.sku
     ubuntuSku: ubuntuSku
     subnetId: network.outputs.computeSubnetId
     sshPublicKey: sshPublicKey
     adminUsername: adminUsername
-    desiredCount: computeCount
+    desiredCount: pool.count
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
     schedulerPrivateIp: scheduler.outputs.privateIp
@@ -125,9 +140,11 @@ module compute 'modules/compute.bicep' = {
     anfExportPath: anf.outputs.mountPath
     tags: tags
   }
-}
+}]
 
 output loginPublicIp string = login.outputs.publicIp
 output schedulerPrivateIp string = scheduler.outputs.privateIp
 output anfMountIp string = anf.outputs.mountIp
-output computeVmssName string = compute.outputs.vmssName
+output amlfsMgsAddress string = amlfsSizeTiB > 0 ? amlfs.outputs.mgsAddress : ''
+output amlfsMountCommand string = amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
+output computeVmssNames array = [for (pool, i) in pools: compute[i].outputs.vmssName]

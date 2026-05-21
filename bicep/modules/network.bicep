@@ -140,6 +140,12 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           ]
         }
       }
+      {
+        name: 'amlfs'
+        properties: {
+          addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 3)
+        }
+      }
     ]
   }
 }
@@ -148,3 +154,4 @@ output schedulerSubnetId string = '${vnet.id}/subnets/scheduler'
 output loginSubnetId string = '${vnet.id}/subnets/login'
 output computeSubnetId string = '${vnet.id}/subnets/compute'
 output anfSubnetId string = '${vnet.id}/subnets/anf'
+output amlfsSubnetId string = '${vnet.id}/subnets/amlfs'

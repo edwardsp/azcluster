@@ -26,7 +26,7 @@ write_files:
       AZCLUSTER_REPO={{AZCLUSTER_REPO}}
       AZCLUSTER_NAME={{CLUSTER_NAME}}
       AZCLUSTER_ROLE=compute
-      AZCLUSTER_POOL={{CLUSTER_NAME}}-compute
+      AZCLUSTER_POOL={{POOL_NAME}}
       SCHEDULER_IP={{SCHEDULER_IP}}
       ANF_MOUNT_IP={{ANF_MOUNT_IP}}
       ANF_EXPORT_PATH={{ANF_EXPORT_PATH}}
@@ -69,12 +69,35 @@ write_files:
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /var/lib/enroot/runtime /var/lib/enroot-data/cache /run/enroot
       chmod 1777 /var/lib/enroot /var/lib/enroot/runtime /var/lib/enroot-data /var/lib/enroot-data/cache /run/enroot
 
+      cat > /etc/security/limits.d/99-azcluster.conf <<'EOF'
+      * soft memlock unlimited
+      * hard memlock unlimited
+      * soft stack unlimited
+      * hard stack unlimited
+      * soft nofile 1048576
+      * hard nofile 1048576
+      EOF
+
+      cat > /etc/modprobe.d/azcluster-mlx5.conf <<'EOF'
+      options mlx5_core prof_sel=3
+      EOF
+
+      if lspci -d 15b3: 2>/dev/null | grep -q .; then
+        for dev in $(ls /sys/class/net 2>/dev/null); do
+          drv=$(ethtool -i "$dev" 2>/dev/null | awk '/^driver:/ {print $2}')
+          if [ "$drv" = "mlx5_core" ]; then
+            ethtool --set-priv-flags "$dev" pcie_relaxed_ordering_enable on 2>/dev/null || true
+            ethtool -C "$dev" adaptive-rx on adaptive-tx on 2>/dev/null || true
+          fi
+        done
+      fi
+
       IFACE=$(ip -4 -o route show default | awk '{print $5; exit}')
       IPV4=$(ip -4 -o addr show "${IFACE}" | awk '{print $4}' | cut -d/ -f1)
       OCT3=$(echo "${IPV4}" | cut -d. -f3)
       OCT4=$(echo "${IPV4}" | cut -d. -f4)
       NODE_INDEX=$(( (OCT3 * 256 + OCT4) - (4 * 256 + 4) + 1 ))
-      NEW_HOSTNAME="${AZCLUSTER_NAME}-cn-$(printf '%04d' ${NODE_INDEX})"
+      NEW_HOSTNAME="${AZCLUSTER_NAME}-${AZCLUSTER_POOL}-$(printf '%04d' ${NODE_INDEX})"
       hostnamectl set-hostname "${NEW_HOSTNAME}"
       sed -i '/127\.0\.1\.1/d' /etc/hosts
       echo "127.0.1.1 ${NEW_HOSTNAME}" >> /etc/hosts
@@ -133,21 +156,38 @@ write_files:
       MEM=$(awk '/^MemTotal/ {printf "%d\n", $2/1024 * 0.95}' /proc/meminfo)
       GRES_OPT=""
       FEATURES="cloud"
+      GPU_COUNT=0
       if command -v nvidia-smi >/dev/null 2>&1; then
-        GPU_COUNT=$(nvidia-smi -L | wc -l || echo 0)
-        if [ "${GPU_COUNT}" -gt 0 ]; then
-          GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 | awk '{print tolower($NF)}')
-          GRES_OPT="Gres=gpu:${GPU_NAME}:${GPU_COUNT}"
-          FEATURES="${FEATURES},gpu,${GPU_NAME}"
-          : > /etc/slurm/gres.conf
-          for i in $(seq 0 $((GPU_COUNT-1))); do
-            echo "Name=gpu Type=${GPU_NAME} File=/dev/nvidia${i}" >> /etc/slurm/gres.conf
-          done
-        fi
+        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l)
+      fi
+      if [ "${GPU_COUNT}" -gt 0 ]; then
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 | awk '{print tolower($NF)}')
+        GRES_OPT="Gres=gpu:${GPU_NAME}:${GPU_COUNT}"
+        FEATURES="${FEATURES},gpu,${GPU_NAME}"
+        : > /etc/slurm/gres.conf
+        for i in $(seq 0 $((GPU_COUNT-1))); do
+          echo "Name=gpu Type=${GPU_NAME} File=/dev/nvidia${i}" >> /etc/slurm/gres.conf
+        done
+
+        nvidia-smi -pm 1 2>/dev/null || true
+        for i in $(seq 0 $((GPU_COUNT-1))); do
+          nvidia-smi -i ${i} -c EXCLUSIVE_PROCESS 2>/dev/null || true
+        done
+
+        cat > /etc/profile.d/nccl-azcluster.sh <<'EOF'
+        export NCCL_IB_DISABLE=0
+        export NCCL_IB_HCA=mlx5
+        export NCCL_IB_PCI_RELAXED_ORDERING=1
+        export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml
+        export NCCL_SOCKET_IFNAME=eth0
+        export NCCL_MIN_NCHANNELS=32
+        export UCX_TLS=tcp
+        EOF
+        chmod 0644 /etc/profile.d/nccl-azcluster.sh
       fi
 
       cat > /etc/default/slurmd <<EOF
-      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "CPUs=${CPUS} RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}"
+      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "CPUs=${CPUS} RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES} Partitions=${AZCLUSTER_POOL}"
       EOF
 
       systemctl daemon-reload

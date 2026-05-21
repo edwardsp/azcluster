@@ -24,8 +24,6 @@ write_files:
       AZCLUSTER_ROLE=scheduler
       ANF_MOUNT_IP={{ANF_MOUNT_IP}}
       ANF_EXPORT_PATH={{ANF_EXPORT_PATH}}
-      COMPUTE_POOL_NAME={{COMPUTE_POOL_NAME}}
-      COMPUTE_SKU={{COMPUTE_SKU}}
   - path: /etc/systemd/system/azcluster-server.service
     permissions: '0644'
     content: |
@@ -115,7 +113,7 @@ write_files:
       MaxNodeCount=128
       TreeWidth=65533
       PlugStackConfig=/etc/slurm/plugstack.conf
-      PartitionName=${COMPUTE_POOL_NAME} Nodes=ALL Default=YES MaxTime=INFINITE State=UP
+      {{PARTITIONS}}
       EOF
 
       cat > /etc/slurm/cgroup.conf <<EOF

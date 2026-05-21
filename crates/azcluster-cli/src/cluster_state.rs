@@ -13,7 +13,8 @@ pub struct ClusterState {
     pub login_public_ip: Option<String>,
     pub scheduler_private_ip: String,
     pub anf_mount_ip: Option<String>,
-    pub compute_vmss_name: Option<String>,
+    #[serde(default)]
+    pub compute_vmss_names: Vec<String>,
 }
 
 fn project_dirs() -> Result<ProjectDirs> {

@@ -58,15 +58,31 @@ param anfSizeTiB int = 2
 ])
 param anfServiceLevel string = 'Standard'
 
-@description('Compute pool name (becomes Slurm partition name).')
-param computePoolName string = 'gpu'
-
-@description('Compute VM SKU for the default pool.')
-param computeSku string = 'Standard_ND96isr_H200_v5'
-
-@description('Initial VMSS Flex capacity for the compute pool. 0 means pool is provisioned empty.')
+@description('AMLFS (Azure Managed Lustre) capacity in TiB. 0 disables AMLFS.')
 @minValue(0)
-param computeCount int = 0
+param amlfsSizeTiB int = 0
+
+@description('AMLFS SKU. Throughput is MB/s per TiB.')
+@allowed([
+  'AMLFS-Durable-Premium-40'
+  'AMLFS-Durable-Premium-125'
+  'AMLFS-Durable-Premium-250'
+  'AMLFS-Durable-Premium-500'
+])
+param amlfsSkuName string = 'AMLFS-Durable-Premium-250'
+
+@description('Availability zone for AMLFS.')
+param amlfsZone string = '1'
+
+@description('Compute pools. Each: { name: string, sku: string, count: int, default: bool }. Default: one gpu pool, H200, 0.')
+param pools array = [
+  {
+    name: 'gpu'
+    sku: 'Standard_ND96isr_H200_v5'
+    count: 0
+    default: true
+  }
+]
 
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
@@ -102,9 +118,10 @@ module cluster 'cluster.bicep' = {
     vnetAddressPrefix: vnetAddressPrefix
     anfSizeTiB: anfSizeTiB
     anfServiceLevel: anfServiceLevel
-    computePoolName: computePoolName
-    computeSku: computeSku
-    computeCount: computeCount
+    amlfsSizeTiB: amlfsSizeTiB
+    amlfsSkuName: amlfsSkuName
+    amlfsZone: amlfsZone
+    pools: pools
     tags: commonTags
   }
 }
@@ -113,4 +130,6 @@ output resourceGroupName string = rgName
 output loginPublicIp string = cluster.outputs.loginPublicIp
 output schedulerPrivateIp string = cluster.outputs.schedulerPrivateIp
 output anfMountIp string = cluster.outputs.anfMountIp
-output computeVmssName string = cluster.outputs.computeVmssName
+output amlfsMgsAddress string = cluster.outputs.amlfsMgsAddress
+output amlfsMountCommand string = cluster.outputs.amlfsMountCommand
+output computeVmssNames array = cluster.outputs.computeVmssNames

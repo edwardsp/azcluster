@@ -10,22 +10,20 @@ param azclusterVersion string
 param azclusterRepo string
 param anfMountIp string
 param anfExportPath string
-param computePoolName string
-param computeSku string
+param partitionsConf string
 param userAssignedIdentityId string
 param userAssignedIdentityClientId string
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
     '{{ANF_MOUNT_IP}}', anfMountIp),
     '{{ANF_EXPORT_PATH}}', anfExportPath),
-    '{{COMPUTE_POOL_NAME}}', computePoolName),
-    '{{COMPUTE_SKU}}', computeSku),
+    '{{PARTITIONS}}', partitionsConf),
     '{{UAI_CLIENT_ID}}', userAssignedIdentityClientId)
 
 resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
