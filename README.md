@@ -43,6 +43,19 @@ azcluster deploy \
   --login-public-ip
 ```
 
+Spot GPU pool (capacity-evicted, no price cap):
+
+```bash
+azcluster deploy --name demo --resource-group my-rg \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,spot
+```
+
+Spot with max price (USD/hr):
+
+```bash
+--pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,spot,max_price=8.0
+```
+
 Scale a pool:
 
 ```bash

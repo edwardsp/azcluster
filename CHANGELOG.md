@@ -5,7 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-05-21
+## [0.7.0] - 2026-05-21
+
+### Added
+- Per-pool Azure Spot support: `--pool name=g,sku=...,count=N,spot[,max_price=0.5]`. Defaults to `Regular` with `maxPrice=-1` (no cap, evicted only by capacity).
+- 8 unit tests for `parse_pool` covering minimal spec, default flag, spot flag, spot with max_price, missing name/sku, unknown key, malformed token.
+
+### Changed
+- Workspace version 0.6.0 → 0.7.0.
+- CLI default `--azcluster-version` bumped to `v0.7.0`.
+- `compute.bicep` now accepts `spot` (bool) and `spotMaxPrice` (string-encoded number) params; sets `priority`/`evictionPolicy`/`billingProfile` on VMSS VM profile when spot.
+
+
 
 ### Added
 - `azcluster validate <name> [--gpu] [--no-container]` — smoke-test the cluster: sinfo, `srun hostname`, Pyxis container srun, optional GPU srun. Fails non-zero if any check fails.
@@ -113,7 +124,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.7.0
 [0.6.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.6.0
 [0.5.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.5.0
 [0.4.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.4.0

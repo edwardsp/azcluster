@@ -42,7 +42,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.6.0")]
+    #[arg(long, default_value = "v0.7.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -61,7 +61,7 @@ struct DeployArgs {
     /// Availability zone for AMLFS.
     #[arg(long, default_value = "1")]
     amlfs_zone: String,
-    /// Compute pool spec, repeatable. Format: name=cpu,sku=Standard_D8s_v5,count=0[,default]
+    /// Compute pool spec, repeatable. Format: name=cpu,sku=Standard_D8s_v5,count=0[,default][,spot][,max_price=-1]
     #[arg(long = "pool")]
     pools: Vec<String>,
     #[arg(long)]
@@ -70,13 +70,16 @@ struct DeployArgs {
     what_if: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 struct PoolSpec {
     name: String,
     sku: String,
     count: u32,
     #[serde(rename = "default")]
     is_default: bool,
+    spot: bool,
+    #[serde(rename = "maxPrice")]
+    max_price: f64,
 }
 
 fn parse_pool(spec: &str) -> Result<PoolSpec> {
@@ -84,6 +87,8 @@ fn parse_pool(spec: &str) -> Result<PoolSpec> {
     let mut sku = None;
     let mut count: u32 = 0;
     let mut is_default = false;
+    let mut spot = false;
+    let mut max_price: f64 = -1.0;
     for kv in spec.split(',') {
         let kv = kv.trim();
         if kv.is_empty() {
@@ -93,14 +98,20 @@ fn parse_pool(spec: &str) -> Result<PoolSpec> {
             is_default = true;
             continue;
         }
+        if kv == "spot" {
+            spot = true;
+            continue;
+        }
         let (k, v) = kv.split_once('=').ok_or_else(|| {
-            anyhow!("pool spec '{spec}': expected key=value or 'default', got '{kv}'")
+            anyhow!("pool spec '{spec}': expected key=value, 'default', or 'spot', got '{kv}'")
         })?;
         match k.trim() {
             "name" => name = Some(v.trim().to_string()),
             "sku" => sku = Some(v.trim().to_string()),
             "count" => count = v.trim().parse().context("pool count")?,
             "default" => is_default = v.trim().parse::<bool>().context("pool default")?,
+            "spot" => spot = v.trim().parse::<bool>().context("pool spot")?,
+            "max_price" => max_price = v.trim().parse::<f64>().context("pool max_price")?,
             other => bail!("pool spec '{spec}': unknown key '{other}'"),
         }
     }
@@ -109,7 +120,67 @@ fn parse_pool(spec: &str) -> Result<PoolSpec> {
         sku: sku.ok_or_else(|| anyhow!("pool spec '{spec}': missing sku="))?,
         count,
         is_default,
+        spot,
+        max_price,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pool_minimal() {
+        let p = parse_pool("name=cpu,sku=Standard_D8as_v5,count=2").unwrap();
+        assert_eq!(p.name, "cpu");
+        assert_eq!(p.sku, "Standard_D8as_v5");
+        assert_eq!(p.count, 2);
+        assert!(!p.is_default);
+        assert!(!p.spot);
+        assert_eq!(p.max_price, -1.0);
+    }
+
+    #[test]
+    fn parse_pool_default_flag() {
+        let p = parse_pool("name=gpu,sku=X,count=0,default").unwrap();
+        assert!(p.is_default);
+    }
+
+    #[test]
+    fn parse_pool_spot_flag() {
+        let p = parse_pool("name=g,sku=X,count=1,spot").unwrap();
+        assert!(p.spot);
+        assert_eq!(p.max_price, -1.0);
+    }
+
+    #[test]
+    fn parse_pool_spot_with_max_price() {
+        let p = parse_pool("name=g,sku=X,count=1,spot,max_price=0.5").unwrap();
+        assert!(p.spot);
+        assert_eq!(p.max_price, 0.5);
+    }
+
+    #[test]
+    fn parse_pool_missing_name() {
+        assert!(parse_pool("sku=X,count=1").is_err());
+    }
+
+    #[test]
+    fn parse_pool_missing_sku() {
+        assert!(parse_pool("name=g,count=1").is_err());
+    }
+
+    #[test]
+    fn parse_pool_unknown_key() {
+        let err = parse_pool("name=g,sku=X,bogus=1").unwrap_err().to_string();
+        assert!(err.contains("unknown key 'bogus'"), "{err}");
+    }
+
+    #[test]
+    fn parse_pool_bad_token() {
+        let err = parse_pool("name=g,sku=X,whatever").unwrap_err().to_string();
+        assert!(err.contains("expected key=value"), "{err}");
+    }
 }
 
 #[derive(Args)]
@@ -324,6 +395,8 @@ fn deploy(args: DeployArgs) -> Result<()> {
             sku: "Standard_ND96isr_H200_v5".into(),
             count: 0,
             is_default: true,
+            spot: false,
+            max_price: -1.0,
         }]
     } else {
         args.pools
