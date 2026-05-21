@@ -65,6 +65,9 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   name: 'vm-${clusterName}-login'
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     hardwareProfile: {
       vmSize: vmSku
@@ -112,3 +115,4 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 output publicIp string = publicIp ? pip!.properties.ipAddress : ''
 output privateIp string = nic.properties.ipConfigurations[0].properties.privateIPAddress
 output vmId string = vm.id
+output vmName string = vm.name

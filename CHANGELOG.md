@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-21
+
+### Added
+- **Managed observability (infra)**: opt-in `--monitoring` flag on `azcluster deploy` provisions an Azure Monitor Workspace (AMW, Managed Prometheus) and Azure Managed Grafana (AMG) Standard with the AMW linked as a data source. Grafana's system MI gets `Monitoring Data Reader` on the AMW; each cluster VM/VMSS system MI gets `Monitoring Metrics Publisher` so they can later push Prometheus metrics.
+- `azcluster monitor <name>` subcommand: prints the Grafana endpoint URL for the named cluster.
+- `enableMonitoring` parameter on `bicep/main.bicep` and `bicep/cluster.bicep`; new `bicep/modules/monitoring.bicep` module.
+- `SystemAssigned` managed identity on the scheduler (in addition to existing `UserAssigned`), login VM, and every compute VMSS, enabling per-VM RBAC for AMW publishing without touching the AzSecPack-managed UAI.
+
+### Changed
+- Workspace version 0.8.0 → 0.9.0.
+- CLI default `--azcluster-version` bumped to `v0.9.0`.
+
+### Notes
+- Exporters (node_exporter, slurm_exporter, dcgm-exporter) and the actual scrape/remote-write path to AMW are deferred to v0.9.1 so the AMW+AMG provisioning can be live-validated first. With v0.9.0, AMW and Grafana exist and are wired together, but no metrics will appear until v0.9.1 installs and configures the exporters.
+
 ## [0.8.0] - 2026-05-21
 
 ### Removed

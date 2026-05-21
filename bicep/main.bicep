@@ -84,6 +84,9 @@ param pools array = [
   }
 ]
 
+@description('Provision Azure Managed Prometheus (AMW + DCR + AMA) and Azure Managed Grafana for the cluster. Off by default.')
+param enableMonitoring bool = false
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -122,6 +125,7 @@ module cluster 'cluster.bicep' = {
     amlfsSkuName: amlfsSkuName
     amlfsZone: amlfsZone
     pools: pools
+    enableMonitoring: enableMonitoring
     tags: commonTags
   }
 }
@@ -133,3 +137,4 @@ output anfMountIp string = cluster.outputs.anfMountIp
 output amlfsMgsAddress string = cluster.outputs.amlfsMgsAddress
 output amlfsMountCommand string = cluster.outputs.amlfsMountCommand
 output computeVmssNames array = cluster.outputs.computeVmssNames
+output grafanaEndpoint string = cluster.outputs.grafanaEndpoint

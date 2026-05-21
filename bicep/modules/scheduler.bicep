@@ -50,7 +50,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   location: location
   tags: tags
   identity: {
-    type: 'UserAssigned'
+    type: 'SystemAssigned, UserAssigned'
     userAssignedIdentities: {
       '${userAssignedIdentityId}': {}
     }
@@ -101,3 +101,4 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 
 output privateIp string = nic.properties.ipConfigurations[0].properties.privateIPAddress
 output vmId string = vm.id
+output vmName string = vm.name

@@ -19,6 +19,7 @@ param amlfsSizeTiB int
 param amlfsSkuName string
 param amlfsZone string
 param pools array
+param enableMonitoring bool
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -150,3 +151,16 @@ output anfMountIp string = anf.outputs.mountIp
 output amlfsMgsAddress string = amlfsSizeTiB > 0 ? amlfs.outputs.mgsAddress : ''
 output amlfsMountCommand string = amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
 output computeVmssNames array = [for (pool, i) in pools: compute[i].outputs.vmssName]
+output grafanaEndpoint string = enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
+
+module monitoring 'modules/monitoring.bicep' = if (enableMonitoring) {
+  name: 'monitoring'
+  params: {
+    clusterName: clusterName
+    location: location
+    schedulerVmName: scheduler.outputs.vmName
+    loginVmName: login.outputs.vmName
+    computeVmssNames: [for (pool, i) in pools: compute[i].outputs.vmssName]
+    tags: tags
+  }
+}

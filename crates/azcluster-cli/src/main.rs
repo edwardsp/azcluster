@@ -26,6 +26,7 @@ enum CliCommand {
     Exec(ExecArgs),
     Logs(LogsArgs),
     Validate(ValidateArgs),
+    Monitor(MonitorArgs),
 }
 
 #[derive(Args)]
@@ -42,7 +43,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.8.0")]
+    #[arg(long, default_value = "v0.9.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -64,6 +65,9 @@ struct DeployArgs {
     /// Compute pool spec, repeatable. Format: name=cpu,sku=Standard_D8s_v5,count=0[,default]
     #[arg(long = "pool")]
     pools: Vec<String>,
+    /// Provision Azure Managed Prometheus + Managed Grafana for the cluster.
+    #[arg(long, default_value_t = false)]
+    monitoring: bool,
     #[arg(long)]
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
@@ -225,6 +229,11 @@ struct DeleteArgs {
     yes: bool,
 }
 
+#[derive(Args)]
+struct MonitorArgs {
+    name: String,
+}
+
 #[derive(Serialize)]
 struct ScaleRequest {
     count: u32,
@@ -246,6 +255,7 @@ fn main() -> Result<()> {
         CliCommand::Exec(args) => exec(args),
         CliCommand::Logs(args) => logs(args),
         CliCommand::Validate(args) => validate(args),
+        CliCommand::Monitor(args) => monitor(args),
     }
 }
 
@@ -394,6 +404,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("amlfsSkuName", args.amlfs_sku.clone()),
         ("amlfsZone", args.amlfs_zone.clone()),
         ("pools", pools_json),
+        ("enableMonitoring", args.monitoring.to_string()),
     ];
 
     let mut az_args: Vec<String> = vec![
@@ -807,4 +818,33 @@ fn validate(args: ValidateArgs) -> Result<()> {
     }
     eprintln!("==> all checks passed");
     Ok(())
+}
+
+fn monitor(args: MonitorArgs) -> Result<()> {
+    let state = ClusterState::load(&args.name)?;
+    let grafana_name = format!("amg-{}", state.name);
+    let endpoint = az_json(&[
+        "grafana",
+        "show",
+        "--name",
+        &grafana_name,
+        "--resource-group",
+        &state.resource_group,
+        "--query",
+        "properties.endpoint",
+        "-o",
+        "json",
+    ])
+    .ok()
+    .and_then(|v| v.as_str().map(String::from));
+    match endpoint {
+        Some(url) if !url.is_empty() => {
+            println!("{url}");
+            Ok(())
+        }
+        _ => bail!(
+            "Grafana endpoint not found for cluster '{}'. Was --monitoring enabled at deploy?",
+            state.name
+        ),
+    }
 }
