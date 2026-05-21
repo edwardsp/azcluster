@@ -56,13 +56,13 @@ async fn scale_pool(
     let output = Command::new("az")
         .args([
             "vmss",
-            "update",
+            "scale",
             "--resource-group",
             &resource_group,
             "--name",
             &vmss_name,
-            "--set",
-            &format!("sku.capacity={}", req.count),
+            "--new-capacity",
+            &req.count.to_string(),
         ])
         .output()
         .await
@@ -70,8 +70,8 @@ async fn scale_pool(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        error!(%vmss_name, %stderr, "az vmss update failed");
-        return Err(internal(&format!("az vmss update failed: {stderr}")));
+        error!(%vmss_name, %stderr, "az vmss scale failed");
+        return Err(internal(&format!("az vmss scale failed: {stderr}")));
     }
 
     Ok(Json(ScaleResponse {

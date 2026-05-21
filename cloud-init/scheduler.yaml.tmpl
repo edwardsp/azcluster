@@ -68,7 +68,7 @@ write_files:
       SCHED_DIR="/shared/sched/${AZCLUSTER_NAME}"
       mkdir -p "${SCHED_DIR}"
 
-      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
@@ -126,10 +126,6 @@ write_files:
       EOF
 
       cat > /etc/slurm/plugstack.conf <<EOF
-      include /etc/slurm/plugstack.conf.d/*.conf
-      EOF
-      mkdir -p /etc/slurm/plugstack.conf.d
-      cat > /etc/slurm/plugstack.conf.d/pyxis.conf <<EOF
       required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
       EOF
 
@@ -137,10 +133,11 @@ write_files:
 
       BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
       cd /tmp
-      curl -fsSL --retry 8 --retry-delay 5 -o azcluster-server.tar.gz "${BASE}/azcluster-server-${AZCLUSTER_VERSION}-x86_64-linux.tar.gz"
-      curl -fsSL --retry 8 --retry-delay 5 -o SHA256SUMS "${BASE}/SHA256SUMS"
+      TARBALL="azcluster-server-${AZCLUSTER_VERSION}-x86_64-linux.tar.gz"
+      curl -fsSL --retry 8 --retry-delay 5 -O "${BASE}/${TARBALL}"
+      curl -fsSL --retry 8 --retry-delay 5 -O "${BASE}/SHA256SUMS"
       sha256sum --ignore-missing -c SHA256SUMS
-      tar -xzf azcluster-server.tar.gz -C /usr/local/bin/
+      tar -xzf "${TARBALL}" -C /usr/local/bin/
       chmod +x /usr/local/bin/azcluster-server
 
       RG=$(curl -fsSL -H Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
@@ -151,14 +148,15 @@ write_files:
       EOF
 
       curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
-      az login --identity --only-show-errors >/dev/null
+      az login --identity --client-id {{UAI_CLIENT_ID}} --only-show-errors >/dev/null
 
       systemctl daemon-reload
-      systemctl enable --now munge
+      systemctl enable munge
+      systemctl restart munge
       systemctl enable --now slurmctld
       systemctl enable --now azcluster-server.service
 
       touch /var/log/azcluster/ready
 
 runcmd:
-  - bash -lc '/opt/azcluster/install-scheduler.sh 2>&1 | tee -a /var/log/azcluster/install.log'
+  - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-scheduler.sh 2>&1 | tee -a /var/log/azcluster/install.log'

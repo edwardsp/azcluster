@@ -12,10 +12,12 @@ param anfMountIp string
 param anfExportPath string
 param computePoolName string
 param computeSku string
+param userAssignedIdentityId string
+param userAssignedIdentityClientId string
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -23,7 +25,8 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{ANF_MOUNT_IP}}', anfMountIp),
     '{{ANF_EXPORT_PATH}}', anfExportPath),
     '{{COMPUTE_POOL_NAME}}', computePoolName),
-    '{{COMPUTE_SKU}}', computeSku)
+    '{{COMPUTE_SKU}}', computeSku),
+    '{{UAI_CLIENT_ID}}', userAssignedIdentityClientId)
 
 resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
   name: 'nic-${clusterName}-scheduler'
@@ -49,7 +52,10 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   location: location
   tags: tags
   identity: {
-    type: 'SystemAssigned'
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${userAssignedIdentityId}': {}
+    }
   }
   properties: {
     hardwareProfile: {
@@ -97,4 +103,3 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 
 output privateIp string = nic.properties.ipConfigurations[0].properties.privateIPAddress
 output vmId string = vm.id
-output principalId string = vm.identity.principalId

@@ -31,6 +31,24 @@ module network 'modules/network.bicep' = {
   }
 }
 
+resource uai 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'uai-${clusterName}-scheduler'
+  location: location
+  tags: tags
+}
+
+var contributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')
+
+resource schedulerContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, uai.id, contributorRoleId)
+  scope: resourceGroup()
+  properties: {
+    principalId: uai.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: contributorRoleId
+  }
+}
+
 module anf 'modules/anf.bicep' = {
   name: 'anf'
   params: {
@@ -45,6 +63,9 @@ module anf 'modules/anf.bicep' = {
 
 module scheduler 'modules/scheduler.bicep' = {
   name: 'scheduler'
+  dependsOn: [
+    schedulerContributor
+  ]
   params: {
     clusterName: clusterName
     location: location
@@ -59,6 +80,8 @@ module scheduler 'modules/scheduler.bicep' = {
     anfExportPath: anf.outputs.mountPath
     computePoolName: computePoolName
     computeSku: computeSku
+    userAssignedIdentityId: uai.id
+    userAssignedIdentityClientId: uai.properties.clientId
     tags: tags
   }
 }
@@ -77,6 +100,8 @@ module login 'modules/login.bicep' = {
     schedulerPrivateIp: scheduler.outputs.privateIp
     anfMountIp: anf.outputs.mountIp
     anfExportPath: anf.outputs.mountPath
+    azclusterVersion: azclusterVersion
+    azclusterRepo: azclusterRepo
     tags: tags
   }
 }
@@ -98,7 +123,6 @@ module compute 'modules/compute.bicep' = {
     schedulerPrivateIp: scheduler.outputs.privateIp
     anfMountIp: anf.outputs.mountIp
     anfExportPath: anf.outputs.mountPath
-    scalePrincipalId: scheduler.outputs.principalId
     tags: tags
   }
 }

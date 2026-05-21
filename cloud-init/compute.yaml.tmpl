@@ -66,7 +66,8 @@ write_files:
       set -euo pipefail
       . /etc/azcluster/install.env
 
-      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /var/lib/enroot /var/lib/enroot-data /run/enroot
+      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /var/lib/enroot/runtime /var/lib/enroot-data/cache /run/enroot
+      chmod 1777 /var/lib/enroot /var/lib/enroot/runtime /var/lib/enroot-data /var/lib/enroot-data/cache /run/enroot
 
       IFACE=$(ip -4 -o route show default | awk '{print $5; exit}')
       IPV4=$(ip -4 -o addr show "${IFACE}" | awk '{print $4}' | cut -d/ -f1)
@@ -84,13 +85,10 @@ write_files:
       mountpoint -q /shared || mount /shared
 
       SCHED_DIR="/shared/sched/${AZCLUSTER_NAME}"
-      for i in $(seq 1 120); do
-        [ -f "${SCHED_DIR}/munge.key" ] && break
-        sleep 5
-      done
+      while [ ! -f "${SCHED_DIR}/munge.key" ]; do sleep 5; done
       install -o munge -g munge -m 0400 "${SCHED_DIR}/munge.key" /etc/munge/munge.key
 
-      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
@@ -127,6 +125,10 @@ write_files:
       curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so "${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so"
       chmod 0755 /opt/pyxis/spank_pyxis.so
 
+      cat > /etc/slurm/plugstack.conf <<EOF
+      required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
+      EOF
+
       CPUS=$(nproc)
       MEM=$(awk '/^MemTotal/ {printf "%d\n", $2/1024 * 0.95}' /proc/meminfo)
       GRES_OPT=""
@@ -149,10 +151,11 @@ write_files:
       EOF
 
       systemctl daemon-reload
-      systemctl enable --now munge
+      systemctl enable munge
+      systemctl restart munge
       systemctl enable --now slurmd
 
       touch /var/log/azcluster/ready
 
 runcmd:
-  - bash -lc '/opt/azcluster/install-compute.sh 2>&1 | tee -a /var/log/azcluster/install.log'
+  - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-compute.sh 2>&1 | tee -a /var/log/azcluster/install.log'

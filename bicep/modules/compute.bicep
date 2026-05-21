@@ -13,7 +13,6 @@ param azclusterRepo string
 param schedulerPrivateIp string
 param anfMountIp string
 param anfExportPath string
-param scalePrincipalId string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/compute.yaml.tmpl')
@@ -96,15 +95,3 @@ resource vmss 'Microsoft.Compute/virtualMachineScaleSets@2024-07-01' = {
 
 output vmssName string = vmss.name
 output vmssId string = vmss.id
-
-var contributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')
-
-resource scaleRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(scalePrincipalId)) {
-  name: guid(vmss.id, scalePrincipalId, contributorRoleId)
-  scope: vmss
-  properties: {
-    principalId: scalePrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: contributorRoleId
-  }
-}

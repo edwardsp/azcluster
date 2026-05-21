@@ -10,15 +10,19 @@ param publicIp bool
 param schedulerPrivateIp string
 param anfMountIp string
 param anfExportPath string
+param azclusterVersion string
+param azclusterRepo string
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/login.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
     '{{SCHEDULER_IP}}', schedulerPrivateIp),
     '{{ANF_MOUNT_IP}}', anfMountIp),
-    '{{ANF_EXPORT_PATH}}', anfExportPath)
+    '{{ANF_EXPORT_PATH}}', anfExportPath),
+    '{{AZCLUSTER_VERSION}}', azclusterVersion),
+    '{{AZCLUSTER_REPO}}', azclusterRepo)
 
 resource pip 'Microsoft.Network/publicIPAddresses@2024-01-01' = if (publicIp) {
   name: 'pip-${clusterName}-login'

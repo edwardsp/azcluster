@@ -50,6 +50,35 @@ resource internalNsg 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   }
 }
 
+resource natPip 'Microsoft.Network/publicIPAddresses@2024-01-01' = {
+  name: 'pip-${clusterName}-nat'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    publicIPAllocationMethod: 'Static'
+  }
+}
+
+resource natGw 'Microsoft.Network/natGateways@2024-01-01' = {
+  name: 'natgw-${clusterName}'
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard'
+  }
+  properties: {
+    idleTimeoutInMinutes: 10
+    publicIpAddresses: [
+      {
+        id: natPip.id
+      }
+    ]
+  }
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: 'vnet-${clusterName}'
   location: location
@@ -68,6 +97,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           networkSecurityGroup: {
             id: internalNsg.id
           }
+          natGateway: {
+            id: natGw.id
+          }
         }
       }
       {
@@ -77,6 +109,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           networkSecurityGroup: {
             id: loginNsg.id
           }
+          natGateway: {
+            id: natGw.id
+          }
         }
       }
       {
@@ -85,6 +120,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           addressPrefix: cidrSubnet(vnetAddressPrefix, 22, 1)
           networkSecurityGroup: {
             id: internalNsg.id
+          }
+          natGateway: {
+            id: natGw.id
           }
         }
       }

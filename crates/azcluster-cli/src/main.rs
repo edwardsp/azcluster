@@ -393,7 +393,9 @@ fn scale(args: ScaleArgs) -> Result<()> {
         "==> POST {url} (requires `azcluster tunnel {}` to be running in another shell)",
         state.name
     );
-    let res = reqwest::blocking::Client::new()
+    let res = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?
         .post(&url)
         .json(&ScaleRequest { count: args.count })
         .send()?;
