@@ -66,9 +66,11 @@ azcluster delete demo
 Provision observability (opt-in, additional cost):
 
 ```bash
-azcluster deploy --name demo --location southafricanorth --monitoring ...
+azcluster deploy --name demo --location southafricanorth --grafana-location uksouth --monitoring ...
 azcluster monitor demo                       # prints the Grafana URL
 ```
+
+`--grafana-location` defaults to `--location`; override when the cluster region does not host Azure Managed Grafana (e.g. `southafricanorth` -> `uksouth`).
 
 Tail install logs (debugging):
 

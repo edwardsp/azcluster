@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-21
+
+### Fixed
+- **Monitoring Data Reader role GUID**: v0.9.0 used `b0d8363b-78d5-41c0-9c38-6abe57b51537`, which does not exist (`RoleDefinitionDoesNotExist`). Correct GUID is `b0d8363b-8ddd-447d-831f-62ca05bff136` (looked up via `az role definition list --name "Monitoring Data Reader"`). The AMG → AMW role assignment now provisions.
+- **VMSS Flex SystemAssigned identity rejected** in subscriptions where AzSecPack policy mandates UserAssigned only (`InvalidParameter: The value 'SystemAssigned' of parameter 'identity' is not allowed`). Dropped SystemAssigned MI from compute VMSS; the per-compute `Monitoring Metrics Publisher` role assignment is deferred (scheduler + login still publish). Compute-side metric publishing returns in a later release via the existing AzSecPack UAI or a dedicated UAI per pool.
+
+### Added
+- `--grafana-location` CLI flag and `grafanaLocation` Bicep param. Defaults to `--location` but can be overridden when the cluster region does not host Azure Managed Grafana (e.g. `southafricanorth` -> `uksouth`). Without this, `--monitoring` in `southafricanorth` failed with `LocationNotAvailableForResourceType` for `Microsoft.Dashboard/grafana`.
+
+### Changed
+- Workspace version 0.9.0 -> 0.9.1.
+- CLI default `--azcluster-version` bumped to `v0.9.1`.
+
+### Validated
+- Live deploy in `southafricanorth` (RG `paul-azcluster`) with `--monitoring --grafana-location uksouth --pool name=cpu,sku=Standard_D8as_v5,count=0,default`: AMW provisions in `southafricanorth`, AMG in `uksouth` linked to AMW, 3 role assignments materialise (2 Metrics Publisher on AMW for scheduler+login VM MIs, 1 Data Reader for Grafana MI), `azcluster monitor mon` returns the Grafana endpoint URL, endpoint responds (HTTP 401 = auth required, server up).
+
 ## [0.9.0] - 2026-05-21
 
 ### Added

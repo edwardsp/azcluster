@@ -1,5 +1,6 @@
 param clusterName string
 param location string
+param grafanaLocation string
 param schedulerVmName string
 param loginVmName string
 param computeVmssNames array
@@ -7,7 +8,7 @@ param tags object
 
 var amwName = 'amw-${clusterName}'
 var grafanaName = 'amg-${clusterName}'
-var monitoringDataReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b0d8363b-78d5-41c0-9c38-6abe57b51537')
+var monitoringDataReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b0d8363b-8ddd-447d-831f-62ca05bff136')
 var metricsPublisherRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')
 
 resource amw 'Microsoft.Monitor/accounts@2023-04-03' = {
@@ -48,19 +49,10 @@ resource raLogin 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource raCompute 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for (name, i) in computeVmssNames: {
-  scope: amw
-  name: guid(amw.id, computeVmss[i].id, metricsPublisherRoleId)
-  properties: {
-    roleDefinitionId: metricsPublisherRoleId
-    principalId: computeVmss[i].identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}]
 
 resource grafana 'Microsoft.Dashboard/grafana@2024-10-01' = {
   name: grafanaName
-  location: location
+  location: grafanaLocation
   tags: tags
   sku: {
     name: 'Standard'

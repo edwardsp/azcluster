@@ -32,9 +32,6 @@ resource vmss 'Microsoft.Compute/virtualMachineScaleSets@2024-07-01' = {
   name: 'vmss-${clusterName}-${poolName}'
   location: location
   tags: tags
-  identity: {
-    type: 'SystemAssigned'
-  }
   sku: {
     name: vmSku
     capacity: desiredCount

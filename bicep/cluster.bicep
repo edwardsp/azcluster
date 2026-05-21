@@ -20,6 +20,7 @@ param amlfsSkuName string
 param amlfsZone string
 param pools array
 param enableMonitoring bool
+param grafanaLocation string
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -158,6 +159,7 @@ module monitoring 'modules/monitoring.bicep' = if (enableMonitoring) {
   params: {
     clusterName: clusterName
     location: location
+    grafanaLocation: grafanaLocation
     schedulerVmName: scheduler.outputs.vmName
     loginVmName: login.outputs.vmName
     computeVmssNames: [for (pool, i) in pools: compute[i].outputs.vmssName]

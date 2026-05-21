@@ -87,6 +87,9 @@ param pools array = [
 @description('Provision Azure Managed Prometheus (AMW + DCR + AMA) and Azure Managed Grafana for the cluster. Off by default.')
 param enableMonitoring bool = false
 
+@description('Azure region for Managed Grafana. Defaults to the cluster location. Override when the cluster region does not host Managed Grafana (e.g. southafricanorth -> uksouth).')
+param grafanaLocation string = location
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -126,6 +129,7 @@ module cluster 'cluster.bicep' = {
     amlfsZone: amlfsZone
     pools: pools
     enableMonitoring: enableMonitoring
+    grafanaLocation: grafanaLocation
     tags: commonTags
   }
 }

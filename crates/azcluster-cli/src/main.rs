@@ -43,7 +43,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.9.0")]
+    #[arg(long, default_value = "v0.9.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -68,6 +68,9 @@ struct DeployArgs {
     /// Provision Azure Managed Prometheus + Managed Grafana for the cluster.
     #[arg(long, default_value_t = false)]
     monitoring: bool,
+    /// Azure region for Managed Grafana when --monitoring is set. Defaults to --location. Override when --location does not host Managed Grafana.
+    #[arg(long)]
+    grafana_location: Option<String>,
     #[arg(long)]
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
@@ -405,6 +408,12 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("amlfsZone", args.amlfs_zone.clone()),
         ("pools", pools_json),
         ("enableMonitoring", args.monitoring.to_string()),
+        (
+            "grafanaLocation",
+            args.grafana_location
+                .clone()
+                .unwrap_or_else(|| args.location.clone()),
+        ),
     ];
 
     let mut az_args: Vec<String> = vec![
