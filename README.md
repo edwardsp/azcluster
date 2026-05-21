@@ -64,9 +64,13 @@ azcluster delete demo
 SSH in:
 
 ```bash
-azcluster ssh demo
+azcluster ssh demo                  # interactive shell on login
+azcluster ssh demo --scheduler      # hop through login to scheduler
+azcluster exec demo -- sinfo        # one-shot command on login
+azcluster exec demo --scheduler -- squeue
 sinfo
 srun -N1 --container-image=docker://alpine:latest hostname
+sbatch /shared/examples/nccl-allreduce.sbatch
 ```
 
 ## Architecture

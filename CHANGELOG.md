@@ -5,7 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-05-21
+## [0.4.0] - 2026-05-21
+
+### Added
+- `azcluster exec <name> -- <cmd...>` — run a one-shot command on the login VM (or scheduler with `--scheduler`).
+- `azcluster ssh --scheduler` — SSH straight to the scheduler VM, hopping through login as jumpbox (`ssh -J`).
+- Scheduler stages example job scripts in `/shared/examples/`: `hostname.sbatch`, `pyxis-alpine.sbatch`, `gpu-smi.sbatch`, `nccl-allreduce.sbatch` (2x8 H100/H200 via Pyxis + nvcr pytorch container).
+- `ssh -A` forward-agent flag on `azcluster ssh` (lets you push the next hop without re-authing).
+
+### Changed
+- Workspace version 0.3.0 → 0.4.0.
+- CLI default `--azcluster-version` bumped to `v0.4.0`.
 
 ### Added
 - `azcluster status <name>` — prints saved state and live VMSS capacity per pool.
@@ -85,7 +95,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.4.0
 [0.3.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.3.0
 [0.2.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.2.0
 [0.1.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.1.1

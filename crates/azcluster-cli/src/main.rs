@@ -23,6 +23,7 @@ enum CliCommand {
     Scale(ScaleArgs),
     Status(StatusArgs),
     Delete(DeleteArgs),
+    Exec(ExecArgs),
 }
 
 #[derive(Args)]
@@ -39,7 +40,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.3.0")]
+    #[arg(long, default_value = "v0.4.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -116,6 +117,21 @@ struct ConnectArgs {
     local_port: u16,
     #[arg(long)]
     identity: Option<PathBuf>,
+    /// Hop through login to the scheduler VM.
+    #[arg(long, default_value_t = false)]
+    scheduler: bool,
+}
+
+#[derive(Args)]
+struct ExecArgs {
+    name: String,
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    /// Hop through login to the scheduler VM.
+    #[arg(long, default_value_t = false)]
+    scheduler: bool,
+    #[arg(trailing_var_arg = true, required = true)]
+    cmd: Vec<String>,
 }
 
 #[derive(Args)]
@@ -155,6 +171,7 @@ fn main() -> Result<()> {
         CliCommand::Scale(args) => scale(args),
         CliCommand::Status(args) => status(args),
         CliCommand::Delete(args) => delete(args),
+        CliCommand::Exec(args) => exec(args),
     }
 }
 
@@ -430,15 +447,21 @@ fn ssh(args: ConnectArgs) -> Result<()> {
             args.name
         )
     })?;
-    let target = format!("{}@{}", state.admin_username, host);
+    let login_target = format!("{}@{}", state.admin_username, host);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
-    cmd.args(["-L", &forward]);
+    cmd.args(["-A", "-L", &forward]);
     if let Some(id) = &args.identity {
         cmd.args(["-i", &id.display().to_string()]);
     }
-    cmd.arg(&target);
-    eprintln!("==> ssh -L {forward} {target}");
+    if args.scheduler {
+        let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
+        cmd.args(["-J", &login_target, &sched_target]);
+        eprintln!("==> ssh -J {login_target} {sched_target}");
+    } else {
+        cmd.arg(&login_target);
+        eprintln!("==> ssh -L {forward} {login_target}");
+    }
     let status = cmd.status().context("spawn ssh")?;
     std::process::exit(status.code().unwrap_or(1));
 }
@@ -582,4 +605,31 @@ fn delete(args: DeleteArgs) -> Result<()> {
         eprintln!("==> removed local state {}", path.display());
     }
     Ok(())
+}
+
+fn exec(args: ExecArgs) -> Result<()> {
+    let state = ClusterState::load(&args.name)?;
+    let host = state.login_public_ip.as_deref().ok_or_else(|| {
+        anyhow!(
+            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
+            args.name
+        )
+    })?;
+    let login_target = format!("{}@{}", state.admin_username, host);
+    let mut cmd = Command::new("ssh");
+    if let Some(id) = &args.identity {
+        cmd.args(["-i", &id.display().to_string()]);
+    }
+    if args.scheduler {
+        let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
+        cmd.args(["-J", &login_target, &sched_target]);
+    } else {
+        cmd.arg(&login_target);
+    }
+    cmd.arg("--");
+    for part in &args.cmd {
+        cmd.arg(part);
+    }
+    let status = cmd.status().context("spawn ssh exec")?;
+    std::process::exit(status.code().unwrap_or(1));
 }

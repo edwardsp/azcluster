@@ -129,6 +129,47 @@ write_files:
 
       chown -R slurm:slurm /etc/slurm
 
+      EXAMPLES_DIR=/shared/examples
+      mkdir -p "${EXAMPLES_DIR}"
+      cat > "${EXAMPLES_DIR}/hostname.sbatch" <<'EOF'
+      #!/usr/bin/env bash
+      #SBATCH --job-name=hostname
+      #SBATCH --output=hostname-%j.out
+      #SBATCH --nodes=1
+      #SBATCH --ntasks-per-node=1
+      srun hostname
+      EOF
+      cat > "${EXAMPLES_DIR}/pyxis-alpine.sbatch" <<'EOF'
+      #!/usr/bin/env bash
+      #SBATCH --job-name=pyxis-alpine
+      #SBATCH --output=pyxis-alpine-%j.out
+      #SBATCH --nodes=1
+      #SBATCH --ntasks-per-node=1
+      srun --container-image=docker://alpine:latest hostname
+      EOF
+      cat > "${EXAMPLES_DIR}/gpu-smi.sbatch" <<'EOF'
+      #!/usr/bin/env bash
+      #SBATCH --job-name=gpu-smi
+      #SBATCH --output=gpu-smi-%j.out
+      #SBATCH --nodes=1
+      #SBATCH --gres=gpu:1
+      srun nvidia-smi
+      EOF
+      cat > "${EXAMPLES_DIR}/nccl-allreduce.sbatch" <<'EOF'
+      #!/usr/bin/env bash
+      #SBATCH --job-name=nccl-allreduce
+      #SBATCH --output=nccl-allreduce-%j.out
+      #SBATCH --nodes=2
+      #SBATCH --ntasks-per-node=8
+      #SBATCH --gpus-per-node=8
+      #SBATCH --exclusive
+      srun --container-image=nvcr.io#nvidia/pytorch:24.10-py3 \
+        --container-mounts=/shared:/shared \
+        bash -lc '/opt/nccl-tests/build/all_reduce_perf -b 8M -e 16G -f 2 -g 1'
+      EOF
+      chmod 0644 "${EXAMPLES_DIR}"/*.sbatch
+      chown -R "${AZCLUSTER_NAME:-azureuser}":users "${EXAMPLES_DIR}" 2>/dev/null || true
+
       BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
       cd /tmp
       TARBALL="azcluster-server-${AZCLUSTER_VERSION}-x86_64-linux.tar.gz"
