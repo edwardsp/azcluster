@@ -24,6 +24,7 @@ enum CliCommand {
     Status(StatusArgs),
     Delete(DeleteArgs),
     Exec(ExecArgs),
+    Logs(LogsArgs),
 }
 
 #[derive(Args)]
@@ -40,7 +41,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.4.0")]
+    #[arg(long, default_value = "v0.5.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -135,6 +136,21 @@ struct ExecArgs {
 }
 
 #[derive(Args)]
+struct LogsArgs {
+    name: String,
+    /// Which node's install log: scheduler, login, or a compute hostname.
+    #[arg(long, default_value = "scheduler")]
+    component: String,
+    /// Tail N lines (0 = full file).
+    #[arg(long, default_value_t = 200)]
+    tail: u32,
+    #[arg(long, default_value_t = false)]
+    follow: bool,
+    #[arg(long)]
+    identity: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct ScaleArgs {
     name: String,
     pool: String,
@@ -172,6 +188,7 @@ fn main() -> Result<()> {
         CliCommand::Status(args) => status(args),
         CliCommand::Delete(args) => delete(args),
         CliCommand::Exec(args) => exec(args),
+        CliCommand::Logs(args) => logs(args),
     }
 }
 
@@ -632,4 +649,50 @@ fn exec(args: ExecArgs) -> Result<()> {
     }
     let status = cmd.status().context("spawn ssh exec")?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn logs(args: LogsArgs) -> Result<()> {
+    let state = ClusterState::load(&args.name)?;
+    let host = state.login_public_ip.as_deref().ok_or_else(|| {
+        anyhow!(
+            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
+            args.name
+        )
+    })?;
+    let login_target = format!("{}@{}", state.admin_username, host);
+    let log_path = "/var/log/azcluster/install.log";
+    let tail_arg = if args.follow {
+        format!("tail -F -n {} {}", args.tail, log_path)
+    } else if args.tail == 0 {
+        format!("cat {}", log_path)
+    } else {
+        format!("tail -n {} {}", args.tail, log_path)
+    };
+    let remote_cmd = match args.component.as_str() {
+        "login" => tail_arg.clone(),
+        "scheduler" => format!(
+            "ssh -o StrictHostKeyChecking=accept-new {}@{} {}",
+            state.admin_username,
+            state.scheduler_private_ip,
+            shell_quote(&tail_arg),
+        ),
+        other => format!(
+            "ssh -o StrictHostKeyChecking=accept-new {}@{} {}",
+            state.admin_username,
+            other,
+            shell_quote(&tail_arg),
+        ),
+    };
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-A"]);
+    if let Some(id) = &args.identity {
+        cmd.args(["-i", &id.display().to_string()]);
+    }
+    cmd.arg(&login_target).arg(&remote_cmd);
+    let status = cmd.status().context("spawn ssh logs")?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

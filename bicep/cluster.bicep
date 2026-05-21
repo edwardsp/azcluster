@@ -117,6 +117,7 @@ module login 'modules/login.bicep' = {
     anfExportPath: anf.outputs.mountPath
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
+    amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
     tags: tags
   }
 }

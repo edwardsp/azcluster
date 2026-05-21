@@ -24,6 +24,7 @@ write_files:
       AZCLUSTER_ROLE=login
       ANF_MOUNT_IP={{ANF_MOUNT_IP}}
       ANF_EXPORT_PATH={{ANF_EXPORT_PATH}}
+      AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
   - path: /etc/profile.d/azcluster.sh
     permissions: '0644'
     content: |
@@ -49,6 +50,14 @@ write_files:
         echo "${ANF_MOUNT_IP}:/${ANF_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
       fi
       mountpoint -q /shared || mount /shared
+
+      if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
+        mkdir -p /amlfs
+        apt-get install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get install -y --no-install-recommends amlfs-lustre-client || true
+        if ! mountpoint -q /amlfs; then
+          eval "${AMLFS_MOUNT_CMD} /amlfs" || echo "AMLFS mount failed; continuing" >&2
+        fi
+      fi
 
       SCHED_DIR="/shared/sched/${AZCLUSTER_NAME}"
       while [ ! -f "${SCHED_DIR}/munge.key" ]; do sleep 5; done

@@ -5,7 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-05-21
+## [0.5.0] - 2026-05-21
+
+### Added
+- `azcluster logs <name> [--component scheduler|login|<compute-host>] [--tail N] [--follow]` — tail `/var/log/azcluster/install.log` on any cluster node via login as jumpbox.
+- AMLFS auto-mount on login node (was compute-only). When `--amlfs-size-tib > 0`, login installs `amlfs-lustre-client` and mounts at `/amlfs` so users can stage data via `azcluster ssh`/`scp`.
+
+### Changed
+- `login.bicep` accepts `amlfsMountCommand`; `login.yaml.tmpl` substitutes `{{AMLFS_MOUNT_CMD}}`.
+- Workspace version 0.4.0 → 0.5.0.
+- CLI default `--azcluster-version` bumped to `v0.5.0`.
 
 ### Added
 - `azcluster exec <name> -- <cmd...>` — run a one-shot command on the login VM (or scheduler with `--scheduler`).
@@ -95,7 +104,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.5.0
 [0.4.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.4.0
 [0.3.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.3.0
 [0.2.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.2.0

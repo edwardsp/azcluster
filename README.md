@@ -61,6 +61,14 @@ Tear it down:
 azcluster delete demo
 ```
 
+Tail install logs (debugging):
+
+```bash
+azcluster logs demo --component scheduler --tail 200
+azcluster logs demo --component login --follow
+azcluster logs demo --component demo-gpu-0001
+```
+
 SSH in:
 
 ```bash
