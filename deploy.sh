@@ -90,6 +90,11 @@ fi
 
 SSH_KEY_CONTENT="$(cat "$SSH_KEY")"
 
+if [[ -n "$EXISTING_RG" ]]; then
+  echo "==> Ensuring resource group $EXISTING_RG exists in $LOCATION" >&2
+  az group create --name "$EXISTING_RG" --location "$LOCATION" --tags azcluster=true "azcluster-name=$CLUSTER_NAME" -o none
+fi
+
 cat >&2 <<EOF
 ==> Deployment plan
     Subscription: $SUBSCRIPTION_NAME ($SUBSCRIPTION_ID)
