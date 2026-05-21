@@ -20,10 +20,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Version,
-    Scale {
-        pool: String,
-        count: u32,
-    },
+    Scale { pool: String, count: u32 },
 }
 
 #[derive(Serialize)]
@@ -43,11 +40,7 @@ fn main() -> Result<()> {
 }
 
 fn scale(base_url: &str, pool: &str, count: u32) -> Result<()> {
-    let url = format!(
-        "{}/v1/pools/{}/scale",
-        base_url.trim_end_matches('/'),
-        pool
-    );
+    let url = format!("{}/v1/pools/{}/scale", base_url.trim_end_matches('/'), pool);
     let res = reqwest::blocking::Client::new()
         .post(&url)
         .json(&ScaleRequest { count })

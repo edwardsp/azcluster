@@ -121,7 +121,9 @@ mod tests {
             sku: "Standard_ND96isr_H200_v5".into(),
             desired_count: 0,
             max_count: 2,
-            role: PoolRole::Compute { gpus_per_node: Some(8) },
+            role: PoolRole::Compute {
+                gpus_per_node: Some(8),
+            },
             image: ImageSpec::ubuntu_hpc_2404(),
         };
         assert!(pool.desired_count <= pool.max_count);
@@ -129,7 +131,11 @@ mod tests {
 
     #[test]
     fn anf_service_levels_round_trip() {
-        for sl in [AnfServiceLevel::Standard, AnfServiceLevel::Premium, AnfServiceLevel::Ultra] {
+        for sl in [
+            AnfServiceLevel::Standard,
+            AnfServiceLevel::Premium,
+            AnfServiceLevel::Ultra,
+        ] {
             let s = serde_json::to_string(&sl).unwrap();
             let back: AnfServiceLevel = serde_json::from_str(&s).unwrap();
             assert_eq!(sl, back);
