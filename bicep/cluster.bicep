@@ -138,6 +138,7 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     schedulerPrivateIp: scheduler.outputs.privateIp
     anfMountIp: anf.outputs.mountIp
     anfExportPath: anf.outputs.mountPath
+    amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
     tags: tags
   }
 }]

@@ -5,7 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-05-21
+## [0.3.0] - 2026-05-21
+
+### Added
+- `azcluster status <name>` — prints saved state and live VMSS capacity per pool.
+- `azcluster delete <name>` — `az group delete --no-wait` with typed-name confirmation (`--yes` to skip), removes local state file.
+- AMLFS auto-mount on compute nodes: when `--amlfs-size-tib > 0`, compute installs `amlfs-lustre-client` and mounts the filesystem at `/amlfs` from cloud-init.
+- `amlfsMountCommand` threaded through `cluster.bicep` → `compute.bicep` → `compute.yaml.tmpl` (`{{AMLFS_MOUNT_CMD}}`).
+
+### Changed
+- Workspace version 0.2.0 → 0.3.0.
+- CLI default `--azcluster-version` bumped to `v0.3.0`.
 
 ### Added
 - Multi-pool support: `pools` Bicep param iterates `module compute = [for pool in pools]`; `partitionsConf` joined from pool names.
@@ -75,7 +85,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.3.0
 [0.2.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.2.0
 [0.1.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.1.1
 [0.1.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.1.0

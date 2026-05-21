@@ -21,6 +21,8 @@ enum CliCommand {
     Ssh(ConnectArgs),
     Tunnel(ConnectArgs),
     Scale(ScaleArgs),
+    Status(StatusArgs),
+    Delete(DeleteArgs),
 }
 
 #[derive(Args)]
@@ -37,7 +39,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.2.0")]
+    #[arg(long, default_value = "v0.3.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -123,6 +125,18 @@ struct ScaleArgs {
     count: u32,
 }
 
+#[derive(Args)]
+struct StatusArgs {
+    name: String,
+}
+
+#[derive(Args)]
+struct DeleteArgs {
+    name: String,
+    #[arg(long, default_value_t = false)]
+    yes: bool,
+}
+
 #[derive(Serialize)]
 struct ScaleRequest {
     count: u32,
@@ -139,6 +153,8 @@ fn main() -> Result<()> {
         CliCommand::Ssh(args) => ssh(args),
         CliCommand::Tunnel(args) => tunnel(args),
         CliCommand::Scale(args) => scale(args),
+        CliCommand::Status(args) => status(args),
+        CliCommand::Delete(args) => delete(args),
     }
 }
 
@@ -478,5 +494,92 @@ fn scale(args: ScaleArgs) -> Result<()> {
         bail!("scale request failed ({status}): {body}");
     }
     println!("{body}");
+    Ok(())
+}
+
+fn status(args: StatusArgs) -> Result<()> {
+    let state = ClusterState::load(&args.name)?;
+    println!("name:              {}", state.name);
+    println!("resource group:    {}", state.resource_group);
+    println!("location:          {}", state.location);
+    println!("scheduler ip:      {}", state.scheduler_private_ip);
+    println!(
+        "login public ip:   {}",
+        state.login_public_ip.as_deref().unwrap_or("<none>")
+    );
+    println!(
+        "anf mount ip:      {}",
+        state.anf_mount_ip.as_deref().unwrap_or("<none>")
+    );
+    println!("compute pools:");
+    if state.compute_vmss_names.is_empty() {
+        println!("  <none>");
+    } else {
+        for vmss in &state.compute_vmss_names {
+            print!("  {vmss}: ");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+            let out = Command::new("az")
+                .args([
+                    "vmss",
+                    "show",
+                    "--resource-group",
+                    &state.resource_group,
+                    "--name",
+                    vmss,
+                    "--query",
+                    "sku.capacity",
+                    "-o",
+                    "tsv",
+                ])
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    println!("capacity={}", String::from_utf8_lossy(&o.stdout).trim())
+                }
+                Ok(o) => println!("ERR ({})", String::from_utf8_lossy(&o.stderr).trim()),
+                Err(e) => println!("ERR ({e})"),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn delete(args: DeleteArgs) -> Result<()> {
+    ensure_az()?;
+    let state = ClusterState::load(&args.name)?;
+    if !args.yes {
+        eprint!(
+            "Delete resource group '{}' (cluster '{}')? Type cluster name to confirm: ",
+            state.resource_group, state.name
+        );
+        std::io::Write::flush(&mut std::io::stderr()).ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if line.trim() != state.name {
+            bail!("aborted");
+        }
+    }
+    eprintln!(
+        "==> az group delete --name {} --yes --no-wait",
+        state.resource_group
+    );
+    let st = Command::new("az")
+        .args([
+            "group",
+            "delete",
+            "--name",
+            &state.resource_group,
+            "--yes",
+            "--no-wait",
+        ])
+        .status()?;
+    if !st.success() {
+        bail!("az group delete failed");
+    }
+    let path = cluster_state::state_path(&state.name)?;
+    if path.exists() {
+        std::fs::remove_file(&path).ok();
+        eprintln!("==> removed local state {}", path.display());
+    }
     Ok(())
 }

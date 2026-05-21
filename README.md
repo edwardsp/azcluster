@@ -49,6 +49,18 @@ Scale a pool:
 azcluster scale demo gpu 0/2
 ```
 
+Inspect state:
+
+```bash
+azcluster status demo
+```
+
+Tear it down:
+
+```bash
+azcluster delete demo
+```
+
 SSH in:
 
 ```bash
