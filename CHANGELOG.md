@@ -5,8 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+
+## [0.13.6] - 2026-05-22
+
+### Added
+- **Cross-node containerised MPI now works (CCWS-style runtime fix).** Slurm 25.11 + Pyxis + Enroot can now launch a single MPI world across multiple Pyxis containers with `srun --mpi=pmix --container-image=...`. Two cooperating pieces, both shipped in `cloud-init/compute.yaml.tmpl`:
+  - **slurmd `EnvironmentFile`** (`/etc/default/slurmd`) now exports `PMIX_MCA_ptl=^usock`, `PMIX_MCA_psec=none`, `PMIX_SYSTEM_TMPDIR=/var/empty`, `PMIX_MCA_gds=hash`, `HWLOC_COMPONENTS=-opencl`. Pins the PMIx server transport / security / GDS modules so all ranks negotiate the same channel regardless of host autodetect.
+  - **Enroot PMI hooks** at `/etc/enroot/hooks.d/50-slurm-pmi.sh` and `50-slurm-pytorch.sh` (upstream NVIDIA Enroot, Apache 2.0, pinned in-tree). `50-slurm-pmi.sh` copies all `PMIX_*` and `SLURM_*` env into the container's `${ENROOT_ENVIRON}` and bind-mounts `$PMIX_SERVER_TMPDIR` into the container via `${ENROOT_MOUNTS}`. `50-slurm-pytorch.sh` derives `MASTER_ADDR` / `MASTER_PORT` / `RANK` / `LOCAL_RANK` / `WORLD_SIZE` from `SLURM_*` for any container exposing `PYTORCH_VERSION` (NeMo, NGC PyTorch, Megatron, etc.).
+- **`/shared/examples/dgxc-nemo-multinode-smoke.sbatch`** — 2-node × 8-GPU = 16-rank NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02`, exercising the v0.13.6 cross-node containerised path end-to-end.
+
+### Changed
+- Workspace version `0.13.5` -> `0.13.6`.
+- CLI default `--azcluster-version` bumped to `v0.13.6`.
+- Removed the "cross-node Pyxis container = broken" caveats from `nccl-allreduce.sbatch` and `dgxc-nemo-container-smoke.sbatch` comments now that the multi-node container path is supported.
+- AGENTS.md "PMIx 4 vs 5 ABI" gotcha replaced with the corrected "Cross-node containerised MPI via Pyxis needs slurmd PMIx env + enroot PMI hooks" entry. The earlier ABI-incompatibility framing was a misdiagnosis: NGC PyTorch/NeMo containers ship HPC-X 2.20-2.21 → PMIx 4.2.x (matching the host's `mpi_pmix_v4.so`). The actual failure mode was missing `PMIX_MCA_*` env on slurmd and missing PMI propagation into containers — both of which the CCWS pattern fixes without rebuilding any package.
+
 ### Verified
-- **NGC container PMIx version audit (v0.13.6 decision).** Comprehensive research across NVIDIA NGC training containers (PyTorch 24.10–25.05, NeMo 25.07, TensorFlow 24.05) and HPC-X versions 2.18–2.26 confirms: all major NGC training containers from 2024–2025 ship HPC-X 2.20–2.25, all bundling PMIx 4.2.x. The `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest` image uses HPC-X 2.26, which also bundles PMIx 4.2.9 (not PMIx 5.x as previously claimed). No PMIx 5 found in production NGC containers as of May 2026. Conclusion: azcluster v0.13.6 ships only `mpi_pmix_v4.so` (no PMIx 5 rebuild required). The CCWS-style runtime fix (slurmd EnvironmentFile + enroot hooks) is sufficient for cross-node containerised MPI. Evidence: NVIDIA HPC-X release notes, Azure HPC image specifications, NGC container release notes. See AGENTS.md "Cross-node containerised MPI via Pyxis" section for implementation details.
+- **NGC container PMIx version audit (v0.13.6 decision).** Comprehensive research across NVIDIA NGC training containers (PyTorch 24.10-25.05, NeMo 25.07, TensorFlow 24.05) and HPC-X versions 2.18-2.26 confirms: all major NGC training containers from 2024-2025 ship HPC-X 2.20-2.25, all bundling PMIx 4.2.x. The `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest` image uses HPC-X 2.26, which also bundles PMIx 4.2.9. No PMIx 5 found in production NGC containers as of May 2026. Conclusion: azcluster v0.13.6 ships only `mpi_pmix_v4.so` (no PMIx 5 rebuild required). Evidence: NVIDIA HPC-X release notes, Azure HPC image specifications, NGC container release notes. See AGENTS.md "Cross-node containerised MPI via Pyxis" section for implementation details.
 
 
 ## [0.13.5] - 2026-05-22
