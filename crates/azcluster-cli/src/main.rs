@@ -46,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.12.1")]
+    #[arg(long, default_value = "v0.13.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -74,7 +74,7 @@ struct DeployArgs {
     /// Disable Managed Prometheus + Grafana for rapid test deploys (skips ~3 min provision time).
     #[arg(long, default_value_t = false, overrides_with = "monitoring")]
     no_monitoring: bool,
-    /// Provision Slurm accounting (managed MySQL + slurmdbd) (default: on). [reserved, v0.13.x]
+    /// Provision Slurm accounting (Azure Database for MySQL Flexible Server + slurmdbd) (default: on).
     #[arg(long, default_value_t = true, overrides_with = "no_accounting", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     accounting: bool,
     /// Disable Slurm accounting for rapid test deploys.
@@ -433,6 +433,11 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     let monitoring_enabled = args.monitoring && !args.no_monitoring;
     let accounting_enabled = args.accounting && !args.no_accounting;
+    let mysql_password = if accounting_enabled {
+        gen_mysql_password()?
+    } else {
+        String::new()
+    };
 
     let mut params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
@@ -456,6 +461,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("enableMonitoring", monitoring_enabled.to_string()),
         ("sharedStorageMode", args.shared_storage.clone()),
         ("enableAccounting", accounting_enabled.to_string()),
+        ("mysqlAdminPassword", mysql_password.clone()),
         (
             "grafanaLocation",
             args.grafana_location
@@ -705,6 +711,25 @@ fn utc_stamp() -> String {
     let s = secs_today % 60;
     let (y, mo, d) = civil_from_days(days as i64);
     format!("{y:04}{mo:02}{d:02}-{h:02}{m:02}{s:02}")
+}
+
+// Azure MySQL Flexible Server requires 8-128 chars containing at least 3 of:
+// uppercase, lowercase, digit, non-alphanumeric. The fixed "Aa1!" suffix
+// guarantees all four classes regardless of the random body.
+fn gen_mysql_password() -> Result<String> {
+    use std::io::Read;
+    let mut buf = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .context("open /dev/urandom")?
+        .read_exact(&mut buf)
+        .context("read /dev/urandom")?;
+    let alphabet: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    let mut out: String = buf
+        .iter()
+        .map(|b| alphabet[(*b as usize) % alphabet.len()] as char)
+        .collect();
+    out.push_str("Aa1!");
+    Ok(out)
 }
 
 fn civil_from_days(z: i64) -> (i64, u32, u32) {

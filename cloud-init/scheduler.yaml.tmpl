@@ -25,6 +25,15 @@ write_files:
       SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}
       SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       RUN_NFS_SERVER={{RUN_NFS_SERVER}}
+      ENABLE_ACCOUNTING={{ENABLE_ACCOUNTING}}
+      ACCT_MYSQL_FQDN={{ACCT_MYSQL_FQDN}}
+      ACCT_MYSQL_USER={{ACCT_MYSQL_USER}}
+      ACCT_MYSQL_DB={{ACCT_MYSQL_DB}}
+  - path: /etc/azcluster/accounting.password
+    permissions: '0600'
+    owner: 'root:root'
+    content: |
+      {{ACCT_MYSQL_PASSWORD}}
   - path: /etc/systemd/system/azcluster-server.service
     permissions: '0644'
     content: |
@@ -75,7 +84,10 @@ write_files:
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
       EXTRA_PKGS=""
       if [ "${RUN_NFS_SERVER:-false}" = "true" ]; then
-        EXTRA_PKGS="nfs-kernel-server"
+        EXTRA_PKGS="${EXTRA_PKGS} nfs-kernel-server"
+      fi
+      if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
+        EXTRA_PKGS="${EXTRA_PKGS} slurm-smd-slurmdbd mariadb-client"
       fi
       apt-get -o DPkg::Lock::Timeout=600 update
       apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
@@ -133,8 +145,19 @@ write_files:
       HealthCheckProgram=/usr/local/sbin/azcluster-healthcheck
       HealthCheckInterval=300
       HealthCheckNodeState=ANY,CYCLE
+      JobAcctGatherType=jobacct_gather/cgroup
+      JobAcctGatherFrequency=30
       {{PARTITIONS}}
       EOF
+
+      if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
+        cat >> /etc/slurm/slurm.conf <<EOF
+      AccountingStorageType=accounting_storage/slurmdbd
+      AccountingStorageHost=localhost
+      AccountingStoragePort=6819
+      AccountingStorageEnforce=associations,limits,qos
+      EOF
+      fi
 
       cat > /etc/slurm/cgroup.conf <<EOF
       CgroupPlugin=cgroup/v2
@@ -239,84 +262,60 @@ write_files:
       systemctl restart munge
       systemctl enable --now node_exporter
 
-      SLURM_EXP_VER=1.8.0
-      cd /tmp
-      curl -fsSL --retry 8 --retry-delay 5 -o psle.deb "https://github.com/rivosinc/prometheus-slurm-exporter/releases/download/v${SLURM_EXP_VER}/prometheus-slurm-exporter_${SLURM_EXP_VER}_linux_amd64.deb"
-      dpkg -i psle.deb
-      cat > /etc/systemd/system/prometheus-slurm-exporter.service <<'EOF'
-      [Unit]
-      Description=Prometheus Slurm Exporter
-      After=network-online.target slurmctld.service
-      Wants=network-online.target
-      [Service]
-      User=slurm
-      ExecStart=/usr/bin/prometheus-slurm-exporter -web.listen-address=127.0.0.1:8081
-      Restart=on-failure
-      RestartSec=10
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-      systemctl daemon-reload
-      systemctl enable --now prometheus-slurm-exporter
+      if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
+        # Fetch DigiCert Global Root CA for MySQL Flex TLS.
+        install -d -m 0755 /etc/slurm/ssl
+        curl -fsSL --retry 8 --retry-delay 5 -o /etc/slurm/ssl/DigiCertGlobalRootCA.crt.pem \
+          https://dl.cacerts.digicert.com/DigiCertGlobalRootCA.crt.pem
+        chmod 0644 /etc/slurm/ssl/DigiCertGlobalRootCA.crt.pem
 
-      MON_UAI_CLIENT_ID="{{MON_UAI_CLIENT_ID}}"
-      AMW_INGEST_URL="{{AMW_INGEST_URL}}"
-      if [ -n "${MON_UAI_CLIENT_ID}" ] && [ -n "${AMW_INGEST_URL}" ]; then
-        PROM_VER=3.3.0
-        cd /tmp
-        curl -fsSL --retry 8 --retry-delay 5 -O "https://github.com/prometheus/prometheus/releases/download/v${PROM_VER}/prometheus-${PROM_VER}.linux-amd64.tar.gz"
-        tar -xzf "prometheus-${PROM_VER}.linux-amd64.tar.gz"
-        install -d /opt/prometheus
-        install -m 0755 "prometheus-${PROM_VER}.linux-amd64/prometheus" /opt/prometheus/prometheus
-        install -d /mnt/prometheus/data
-        id -u prometheus >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin prometheus
-        chown -R prometheus:prometheus /opt/prometheus /mnt/prometheus
-        INSTANCE_NAME=$(hostname)
-        SUBSCRIPTION_ID="{{SUBSCRIPTION_ID}}"
-        RG_NAME=$(curl -fsSL -H Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
-        cat > /opt/prometheus/prometheus.yml <<EOF
-      global:
-        scrape_interval: 15s
-        evaluation_interval: 15s
-        external_labels:
-          subscription: ${SUBSCRIPTION_ID}
-          cluster: ${RG_NAME}/{{CLUSTER_NAME}}
-          instance: ${INSTANCE_NAME}
-          role: scheduler
-      remote_write:
-        - url: "${AMW_INGEST_URL}"
-          azuread:
-            cloud: AzurePublic
-            managed_identity:
-              client_id: ${MON_UAI_CLIENT_ID}
-      scrape_configs:
-        - job_name: node_exporter
-          static_configs:
-            - targets: ['127.0.0.1:9100']
-        - job_name: slurm_exporter
-          static_configs:
-            - targets: ['127.0.0.1:8081']
+        ACCT_PASSWORD=$(cat /etc/azcluster/accounting.password)
+        cat > /etc/slurm/slurmdbd.conf <<EOF
+      AuthType=auth/munge
+      DbdHost=localhost
+      DbdPort=6819
+      SlurmUser=slurm
+      DebugLevel=info
+      LogFile=/var/log/slurm/slurmdbd.log
+      PidFile=/var/run/slurmdbd.pid
+      StorageType=accounting_storage/mysql
+      StorageHost=${ACCT_MYSQL_FQDN}
+      StoragePort=3306
+      StorageUser=${ACCT_MYSQL_USER}
+      StoragePass=${ACCT_PASSWORD}
+      StorageLoc=${ACCT_MYSQL_DB}
+      StorageParameters=SSL_CA=/etc/slurm/ssl/DigiCertGlobalRootCA.crt.pem
       EOF
-        chmod 0644 /opt/prometheus/prometheus.yml
-        cat > /etc/systemd/system/prometheus.service <<'EOF'
-      [Unit]
-      Description=Prometheus
-      After=network-online.target
-      Wants=network-online.target
-      [Service]
-      User=prometheus
-      ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/mnt/prometheus/data --web.listen-address=127.0.0.1:9090
-      Restart=on-failure
-      RestartSec=10
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-        systemctl daemon-reload
-        systemctl enable --now prometheus
+        chown slurm:slurm /etc/slurm/slurmdbd.conf
+        chmod 0600 /etc/slurm/slurmdbd.conf
+        unset ACCT_PASSWORD
+
+        # Wait for MySQL Flex to be reachable on :3306 before starting slurmdbd.
+        for i in $(seq 1 60); do
+          if (echo > /dev/tcp/${ACCT_MYSQL_FQDN}/3306) >/dev/null 2>&1; then
+            break
+          fi
+          sleep 5
+        done
+
+        systemctl enable --now slurmdbd
+        # Give slurmdbd a moment to open its socket before slurmctld registers.
+        sleep 5
       fi
 
       systemctl enable --now slurmctld
       systemctl enable --now azcluster-server.service
+
+      if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
+        # Register the cluster with slurmdbd (no-op if already auto-registered).
+        for i in $(seq 1 12); do
+          if sacctmgr -i show cluster "${AZCLUSTER_NAME}" 2>/dev/null | grep -q "${AZCLUSTER_NAME}"; then
+            break
+          fi
+          sacctmgr -i add cluster "${AZCLUSTER_NAME}" >/dev/null 2>&1 || true
+          sleep 5
+        done
+      fi
 
       touch /var/log/azcluster/ready
 

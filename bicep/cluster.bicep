@@ -24,6 +24,9 @@ param grafanaLocation string
 param deployerPrincipalId string = ''
 param deployerPrincipalType string = 'User'
 param sharedStorageMode string = 'anf'
+param enableAccounting bool = false
+@secure()
+param mysqlAdminPassword string = ''
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -96,6 +99,17 @@ module monitoring 'modules/monitoring.bicep' = if (enableMonitoring) {
   }
 }
 
+module accounting 'modules/accounting.bicep' = if (enableAccounting) {
+  name: 'accounting'
+  params: {
+    clusterName: clusterName
+    location: location
+    delegatedSubnetId: network.outputs.databaseSubnetId
+    adminPassword: mysqlAdminPassword
+    tags: tags
+  }
+}
+
 module scheduler 'modules/scheduler.bicep' = {
   name: 'scheduler'
   dependsOn: [
@@ -120,6 +134,11 @@ module scheduler 'modules/scheduler.bicep' = {
     monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
     amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
+    enableAccounting: enableAccounting
+    accountingMysqlFqdn: enableAccounting ? accounting!.outputs.fqdn : ''
+    accountingMysqlUser: enableAccounting ? accounting!.outputs.adminLogin : ''
+    accountingMysqlDatabase: enableAccounting ? accounting!.outputs.databaseName : ''
+    mysqlAdminPassword: mysqlAdminPassword
     tags: tags
   }
 }

@@ -146,6 +146,25 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 3)
         }
       }
+      {
+        name: 'database'
+        properties: {
+          addressPrefix: cidrSubnet(vnetAddressPrefix, 29, 256)
+          delegations: [
+            {
+              name: 'mysql-flex'
+              properties: {
+                serviceName: 'Microsoft.DBforMySQL/flexibleServers'
+              }
+            }
+          ]
+          serviceEndpoints: [
+            {
+              service: 'Microsoft.Storage'
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -155,3 +174,5 @@ output loginSubnetId string = '${vnet.id}/subnets/login'
 output computeSubnetId string = '${vnet.id}/subnets/compute'
 output anfSubnetId string = '${vnet.id}/subnets/anf'
 output amlfsSubnetId string = '${vnet.id}/subnets/amlfs'
+output databaseSubnetId string = '${vnet.id}/subnets/database'
+output vnetId string = vnet.id

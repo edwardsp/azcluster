@@ -5,6 +5,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-05-22
+
+### Added
+- **Slurm accounting backend (Azure Database for MySQL Flexible Server + `slurmdbd`).** `--accounting` (default on) provisions a `Standard_B2ms` MySQL Flexible Server (`mysql-<cluster>`, MySQL 8.0.21, 50 GB autogrow, public network disabled, VNet-integrated) and a `slurm_acct_db` database in a new delegated `database` subnet (`10.42.8.0/29`). The scheduler cloud-init installs `slurm-smd-slurmdbd` + `mariadb-client`, fetches the DigiCert Global Root CA, writes `/etc/slurm/slurmdbd.conf` (mode 0600, owned by `slurm:slurm`) with TLS enabled (`StorageParameters=SSL_CA=…`), waits for `:3306` to be reachable, starts `slurmdbd` before `slurmctld`, and registers the cluster with `sacctmgr -i add cluster`. `slurm.conf` now emits `AccountingStorageType=accounting_storage/slurmdbd`, `AccountingStorageEnforce=associations,limits,qos`, and `JobAcctGatherType=jobacct_gather/cgroup` whenever accounting is on. Pass `--no-accounting` to skip the entire MySQL + slurmdbd path for rapid test deploys.
+- **`bicep/modules/accounting.bicep`** — MySQL Flexible Server + database + three slurmdbd-recommended server parameters (`innodb_lock_wait_timeout=900`, `max_allowed_packet=16M`, `log_bin_trust_function_creators=ON`).
+- **Auto-generated MySQL admin password.** CLI reads 32 bytes from `/dev/urandom`, alphabet-encodes to an ambiguity-free 32-char body, appends `Aa1!` to satisfy Azure MySQL Flex's four-character-class complexity policy, and threads it through as a secure Bicep parameter. The password lands on the scheduler only via the encrypted `customData` channel (`/etc/azcluster/accounting.password`, mode 0600 root:root) and is read into `slurmdbd.conf` then `unset` in the bootstrap shell.
+- **`database` subnet** (`10.42.8.0/29`) added to `bicep/modules/network.bicep`, delegated to `Microsoft.DBforMySQL/flexibleServers`. The existing `nsg-<cluster>-internal` `allow-vnet-inbound` rule already covers scheduler → MySQL :3306 traffic.
+
+### Changed
+- `enableAccounting` is no longer a tag-only flag; it now provisions real infrastructure when true and toggles the accounting branches in `cloud-init/scheduler.yaml.tmpl`.
+- Workspace version 0.12.1 -> 0.13.0.
+- CLI default `--azcluster-version` bumped to `v0.13.0`.
+
 ## [0.12.1] - 2026-05-22
 
 ### Fixed
