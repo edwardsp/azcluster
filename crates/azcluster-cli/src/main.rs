@@ -43,7 +43,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.11.2")]
+    #[arg(long, default_value = "v0.11.3")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -502,6 +502,76 @@ fn deploy(args: DeployArgs) -> Result<()> {
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());
+
+    if args.monitoring {
+        if let Some(grafana_name) = pick("grafanaName") {
+            import_dashboards(&state.resource_group, &grafana_name)?;
+        } else {
+            eprintln!("==> warning: monitoring enabled but grafanaName output missing; skipping dashboard import");
+        }
+    }
+
+    Ok(())
+}
+
+const DASHBOARDS: &[(&str, &str)] = &[
+    (
+        "azcluster-node-health",
+        include_str!("../../../grafana/dashboards/node.json"),
+    ),
+    (
+        "azcluster-slurm-scheduler",
+        include_str!("../../../grafana/dashboards/slurm.json"),
+    ),
+    (
+        "azcluster-gpu-ib",
+        include_str!("../../../grafana/dashboards/gpu_ib.json"),
+    ),
+];
+
+fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
+    eprintln!(
+        "==> importing {} Grafana dashboards into {}",
+        DASHBOARDS.len(),
+        grafana_name
+    );
+    let tmp_dir = std::env::temp_dir().join(format!("azcluster-dash-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).context("create tmp dashboard dir")?;
+    for (slug, body) in DASHBOARDS {
+        let dashboard: serde_json::Value =
+            serde_json::from_str(body).with_context(|| format!("parse dashboard {slug}"))?;
+        let envelope = serde_json::json!({
+            "dashboard": dashboard,
+            "overwrite": true,
+            "folderId": 0,
+        });
+        let path = tmp_dir.join(format!("{slug}.json"));
+        std::fs::write(&path, serde_json::to_vec(&envelope)?)
+            .with_context(|| format!("write {}", path.display()))?;
+        let definition_arg = format!("@{}", path.display());
+        let status = Command::new("az")
+            .args([
+                "grafana",
+                "dashboard",
+                "create",
+                "--name",
+                grafana_name,
+                "--resource-group",
+                resource_group,
+                "--definition",
+                &definition_arg,
+                "--overwrite",
+                "true",
+            ])
+            .stdout(Stdio::null())
+            .status()
+            .with_context(|| format!("spawn az grafana dashboard create for {slug}"))?;
+        if !status.success() {
+            bail!("failed to import dashboard {slug}");
+        }
+        eprintln!("    imported {slug}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(())
 }
 

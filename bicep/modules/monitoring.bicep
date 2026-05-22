@@ -71,16 +71,6 @@ module ingestion 'ingestion-endpoint.bicep' = {
   ]
 }
 
-module dashboards 'grafana-dashboards.bicep' = {
-  name: 'grafanaDashboards'
-  params: {
-    grafanaName: grafana.name
-  }
-  dependsOn: [
-    raGrafana
-  ]
-}
-
 output grafanaEndpoint string = grafana.properties.endpoint
 output amwId string = amw.id
 output amwQueryEndpoint string = amw.properties.metrics.prometheusQueryEndpoint
@@ -88,8 +78,4 @@ output monUaiId string = monUai.id
 output monUaiClientId string = monUai.properties.clientId
 output monUaiPrincipalId string = monUai.properties.principalId
 output ingestionEndpoint string = ingestion.outputs.ingestionEndpoint
-output grafanaDashboardIds array = [
-  dashboards.outputs.nodeDashboardId
-  dashboards.outputs.slurmDashboardId
-  dashboards.outputs.gpuIbDashboardId
-]
+output grafanaName string = grafana.name

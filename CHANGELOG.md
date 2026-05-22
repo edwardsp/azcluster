@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-05-22
+
+### Fixed
+- **Grafana dashboard provisioning.** v0.11.2 used `Microsoft.Dashboard/grafana/dashboards@2024-10-01`, which is not a real ARM resource type (Bicep emitted BCP081, ARM preflight rejected the deployment with `ResourceTypeRegistrationNotFound`). Reverted the `grafana-dashboards.bicep` module and the `dashboards` block in `monitoring.bicep`. Dashboard JSONs are unchanged.
+
+### Changed
+- Dashboards are now imported post-deploy by the CLI via `az grafana dashboard create --overwrite true`. The three JSONs in `grafana/dashboards/` are embedded into the CLI binary via `include_str!`, wrapped in the `{dashboard, overwrite, folderId}` envelope, and pushed when `--monitoring` is set. `monitoring.bicep` now exports `grafanaName` for the CLI to target.
+- Workspace version 0.11.2 -> 0.11.3.
+- CLI default `--azcluster-version` bumped to `v0.11.3`.
+
 ## [0.11.2] - 2026-05-22
 
 ### Added
@@ -265,7 +275,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.3
 [0.11.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.2
 [0.11.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.1
 [0.11.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.0
