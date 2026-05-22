@@ -46,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.13.3")]
+    #[arg(long, default_value = "v0.13.4")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -419,7 +419,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
     let pools: Vec<PoolSpec> = if args.pools.is_empty() {
         vec![PoolSpec {
             name: "gpu".into(),
-            sku: "Standard_ND96isr_H200_v5".into(),
+            sku: "Standard_ND96isr_H100_v5".into(),
             count: 0,
             is_default: true,
         }]

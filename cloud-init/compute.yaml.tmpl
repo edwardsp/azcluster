@@ -67,8 +67,22 @@ write_files:
       set -euo pipefail
       . /etc/azcluster/install.env
 
-      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /var/lib/enroot/runtime /var/lib/enroot-data/cache /run/enroot
-      chmod 1777 /var/lib/enroot /var/lib/enroot/runtime /var/lib/enroot-data /var/lib/enroot-data/cache /run/enroot
+      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /run/enroot
+
+      # Azure VMs ship a large NVMe/SSD ephemeral disk at /mnt (956G on
+      # ND96isr_H100_v5; 64G ext4 root fills fast importing multi-GB
+      # container images). Move enroot runtime + cache off the root disk.
+      if [ -d /mnt ] && mountpoint -q /mnt; then
+        mkdir -p /mnt/enroot/runtime /mnt/enroot-data/cache
+        chmod 1777 /mnt/enroot /mnt/enroot/runtime /mnt/enroot-data /mnt/enroot-data/cache
+        # Replace any stale dirs from previous bootstrap attempts.
+        [ -L /var/lib/enroot ] || { rm -rf /var/lib/enroot; ln -s /mnt/enroot /var/lib/enroot; }
+        [ -L /var/lib/enroot-data ] || { rm -rf /var/lib/enroot-data; ln -s /mnt/enroot-data /var/lib/enroot-data; }
+      else
+        mkdir -p /var/lib/enroot/runtime /var/lib/enroot-data/cache
+        chmod 1777 /var/lib/enroot /var/lib/enroot/runtime /var/lib/enroot-data /var/lib/enroot-data/cache
+      fi
+      chmod 1777 /run/enroot
 
       cat > /etc/security/limits.d/99-azcluster.conf <<'EOF'
       * soft memlock unlimited
@@ -85,7 +99,7 @@ write_files:
 
       if lspci -d 15b3: 2>/dev/null | grep -q .; then
         for dev in $(ls /sys/class/net 2>/dev/null); do
-          drv=$(ethtool -i "$dev" 2>/dev/null | awk '/^driver:/ {print $2}')
+          drv=$(ethtool -i "$dev" 2>/dev/null | awk '/^driver:/ {print $2}' || true)
           if [ "$drv" = "mlx5_core" ]; then
             ethtool --set-priv-flags "$dev" pcie_relaxed_ordering_enable on 2>/dev/null || true
             ethtool -C "$dev" adaptive-rx on adaptive-tx on 2>/dev/null || true
@@ -167,22 +181,42 @@ write_files:
       required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
       EOF
 
-      CPUS=$(nproc)
       MEM=$(awk '/^MemTotal/ {printf "%d\n", $2/1024 * 0.95}' /proc/meminfo)
       GRES_OPT=""
+      EXTRA_CONF=""
       FEATURES="cloud,pool_${AZCLUSTER_POOL}"
       GPU_COUNT=0
       if command -v nvidia-smi >/dev/null 2>&1; then
         GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -cE '^GPU [0-9]+:' || true)
       fi
       if [ "${GPU_COUNT}" -gt 0 ]; then
-        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 | awk '{print tolower($NF)}')
+        # Extract short SKU name (h100, h200, a100, ...) from full product
+        # string like "NVIDIA H100 80GB HBM3" — match the first token of
+        # form <letter><digits>+ and lowercase it. Earlier versions used
+        # `$NF` which produced "hbm3" and broke Slurm Gres registration.
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 \
+          | head -1 \
+          | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-Za-z][0-9]+$/) {print tolower($i); exit}}')
+        [ -z "${GPU_NAME}" ] && GPU_NAME="gpu"
+        # Detect HBM tier for feature labelling.
+        HBM=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 \
+          | head -1 \
+          | awk '{for(i=1;i<=NF;i++) if($i ~ /^[Hh][Bb][Mm]/) {print tolower($i); exit}}')
         GRES_OPT="Gres=gpu:${GPU_NAME}:${GPU_COUNT}"
         FEATURES="${FEATURES},gpu,${GPU_NAME}"
-        : > /etc/slurm/gres.conf
-        for i in $(seq 0 $((GPU_COUNT-1))); do
-          echo "Name=gpu Type=${GPU_NAME} File=/dev/nvidia${i}" >> /etc/slurm/gres.conf
-        done
+        [ -n "${HBM}" ] && FEATURES="${FEATURES},${HBM}"
+        # On Azure NDv5 (and similar AI SKUs) Slurm's default S:C:T detection
+        # bunches all cores into one socket, which interacts badly with NCCL
+        # GPU<->NIC affinity. Tell slurmd to treat each L3 cache as a socket.
+        EXTRA_CONF=" Parameters=l3cache_as_socket"
+
+        # Configless distribution does NOT push gres.conf. Each compute
+        # writes its own. AutoDetect=nvml matches the slurmctld gres.conf
+        # and lets slurm-smd discover device files via NVML.
+        cat > /etc/slurm/gres.conf <<EOF
+      AutoDetect=nvml
+      EOF
+        chown slurm:slurm /etc/slurm/gres.conf
 
         nvidia-smi -pm 1 2>/dev/null || true
         for i in $(seq 0 $((GPU_COUNT-1))); do
@@ -191,7 +225,7 @@ write_files:
 
         cat > /etc/profile.d/nccl-azcluster.sh <<'EOF'
         export NCCL_IB_DISABLE=0
-        export NCCL_IB_HCA=mlx5
+        export NCCL_IB_HCA=mlx5_ib
         export NCCL_IB_PCI_RELAXED_ORDERING=1
         export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml
         export NCCL_SOCKET_IFNAME=eth0
@@ -201,8 +235,11 @@ write_files:
         chmod 0644 /etc/profile.d/nccl-azcluster.sh
       fi
 
+      # Note: drop CPUs= from --conf so slurmd autodetects sockets/cores/
+      # threads consistent with Parameters=l3cache_as_socket. Specifying
+      # CPUs= explicitly here loses the L3-as-socket topology.
       cat > /etc/default/slurmd <<EOF
-      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "CPUs=${CPUS} RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}"
+      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}${EXTRA_CONF}"
       EOF
 
       cat > /usr/local/sbin/azcluster-healthcheck <<'EOF'

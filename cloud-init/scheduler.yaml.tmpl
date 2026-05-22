@@ -135,6 +135,8 @@ write_files:
       TaskPlugin=task/affinity,task/cgroup
       SelectType=select/cons_tres
       SelectTypeParameters=CR_Core_Memory
+      GresTypes=gpu
+      AccountingStorageTRES=gres/gpu
       SchedulerType=sched/backfill
       MpiDefault=none
       LaunchParameters=enable_nss_slurm
@@ -165,6 +167,14 @@ write_files:
       ConstrainRAMSpace=yes
       ConstrainDevices=yes
       EOF
+
+      # Configless Slurm distributes slurm.conf to clients but NOT gres.conf;
+      # however slurmctld still parses its local copy to validate GresTypes.
+      # AutoDetect=nvml works because slurm-smd is built with NVML support.
+      cat > /etc/slurm/gres.conf <<EOF
+      AutoDetect=nvml
+      EOF
+      chown slurm:slurm /etc/slurm/gres.conf
 
       mkdir -p /opt/pyxis
       BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
@@ -211,9 +221,32 @@ write_files:
       #SBATCH --ntasks-per-node=8
       #SBATCH --gpus-per-node=8
       #SBATCH --exclusive
-      srun --container-image=nvcr.io#nvidia/pytorch:24.10-py3 \
-        --container-mounts=/shared:/shared \
-        bash -lc '/opt/nccl-tests/build/all_reduce_perf -b 8M -e 16G -f 2 -g 1'
+
+      # Multi-node NCCL all-reduce on Azure NDv5 H100, bare-metal,
+      # using HPC-X (PMIx 4.x) + NCCL preinstalled in the
+      # microsoft-dsvm:ubuntu-hpc:2404 image. Expect ~340 GB/s avg /
+      # ~460 GB/s peak busbw at 16 GiB across 8x NDR400 IB.
+      #
+      # PYXIS NOTE: running this inside a container via
+      # --container-image=... currently fails cross-node because the
+      # nccl-test container ships PMIx 5.x while Slurm 25.11's mpi_pmix
+      # plugin is built for PMIx 4.x. Single-node container runs work.
+
+      HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 2>/dev/null | head -1)
+      if [ -z "${HPCX_DIR}" ]; then
+        echo "HPC-X not found under /opt — wrong image?" >&2
+        exit 1
+      fi
+      source "${HPCX_DIR}/hpcx-init.sh"
+      hpcx_load
+
+      export NCCL_DEBUG=INFO
+      export NCCL_IB_HCA=mlx5_ib
+      export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml
+      export UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1
+
+      srun --mpi=pmix /opt/nccl-tests/build/all_reduce_perf \
+        -b 8M -e 16G -f 2 -g 1
       EOF
       chmod 0644 "${EXAMPLES_DIR}"/*.sbatch
       chown -R "${AZCLUSTER_NAME:-azureuser}":users "${EXAMPLES_DIR}" 2>/dev/null || true

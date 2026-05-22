@@ -20,7 +20,7 @@ Options:
   --anf-size-tib N           ANF capacity pool size in TiB (default: 2)
   --anf-tier TIER            ANF service level: Standard|Premium|Ultra (default: Standard)
   --compute-pool NAME        Compute pool / Slurm partition name (default: gpu)
-  --compute-sku SKU          Compute VM SKU (default: Standard_ND96isr_H200_v5)
+  --compute-sku SKU          Compute VM SKU (default: Standard_ND96isr_H100_v5)
   --compute-count N          Initial VMSS Flex capacity (default: 0)
   --what-if                  Dry-run only; show what would change
   -h, --help                 Show this help
@@ -42,7 +42,7 @@ UBUNTU_SKU="2404"
 ANF_SIZE_TIB="2"
 ANF_TIER="Standard"
 COMPUTE_POOL="gpu"
-COMPUTE_SKU="Standard_ND96isr_H200_v5"
+COMPUTE_SKU="Standard_ND96isr_H100_v5"
 COMPUTE_COUNT="0"
 WHAT_IF="false"
 

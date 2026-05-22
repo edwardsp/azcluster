@@ -118,7 +118,7 @@ mod tests {
     fn pool_max_count_invariant() {
         let pool = NodePool {
             slurm_partition: "gpu".into(),
-            sku: "Standard_ND96isr_H200_v5".into(),
+            sku: "Standard_ND96isr_H100_v5".into(),
             desired_count: 0,
             max_count: 2,
             role: PoolRole::Compute {

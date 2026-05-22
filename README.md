@@ -1,13 +1,13 @@
 # azcluster
 
-Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100/H200. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
+Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.13.0)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) shipped. Live-validated on `southafricanorth`. Next milestone: validate the existing multi-node NCCL all-reduce sample sbatch on a live 2-node NDv5 H200 pool, then ship the v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra, per-SKU NCCL defaults).
+> **Status (v0.13.4)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) + GPU pool live-validated. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand**. Next milestone: resolve PMIx 4↔5 ABI mismatch so Pyxis-containerised NCCL works across nodes; v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
 
 ## Why azcluster
 
 - **Single binary.** Rust CLI shells out to `az` and Bicep. No Python venv, no agent, no laptop-side controller.
-- **AI-first defaults.** Default GPU pool is `Standard_ND96isr_H200_v5` with IB + NCCL tunings preconfigured. Pyxis + Enroot wired from boot: `srun --container-image=docker://...` works the moment a node registers.
+- **AI-first defaults.** Default GPU pool is `Standard_ND96isr_H100_v5` with IB + NCCL tunings preconfigured. Pyxis + Enroot wired from boot: `srun --container-image=docker://...` works the moment a node registers.
 - **Multi-pool, dynamic Slurm.** One VMSS Flex per pool. Nodes register via `slurmd --conf-server` and self-tag with `Feature=pool_<name>`; `slurm.conf` `NodeSet+PartitionName` maps them into partitions.
 - **Managed observability out of the box.** Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, per-VM `prometheus` remote-writing via `azuread.managed_identity`. Three dashboards (node health, Slurm, GPU+IB) auto-imported post-deploy.
 - **Observable provisioning.** Every deploy captures per-resource Azure Resource Manager timings to `~/.config/azcluster/deployments/<cluster>/`. `azcluster timings` prints a sorted table and a trend across runs.
@@ -32,8 +32,9 @@ Legend: ✅ implemented & live-validated · 🟡 implemented, not live-tested th
 | `azcluster validate` (sinfo + srun + Pyxis) | ✅ | — | `--gpu`, `--no-container` | Run every release; v0.12.1 green |
 | `azcluster ssh`, `tunnel`, `exec`, `logs`, `status`, `monitor`, `delete` | ✅ | — | — | Used daily during validation |
 | `azcluster timings` (per-deploy ARM timings, JSON + trend.tsv) | ✅ | — | `--last N`, `--trend` | Live-validated v0.12.0/.1 (18 resources, 417s on mon6) |
-| GPU pool — NCCL + IB + dcgm-exporter wiring | 🟧 | auto-applied on H100/H200 SKUs | — | Bootstrap configured (NCCL env vars in `/etc/profile.d/nccl-azcluster.sh`, IB topology file path, dcgm-exporter unit). **Never live-tested on real H100/H200 in v0.11/v0.12.** All recent validations used `Standard_D8as_v5`. |
-| Multi-node NCCL all-reduce | 🟡 | — | — | A sample sbatch is written to `/shared/examples/nccl-allreduce.sbatch` and invokes `/opt/nccl-tests/build/all_reduce_perf`, which is **pre-built into the `microsoft-dsvm:ubuntu-hpc` image** (no extra compile step). The sample has not been run end-to-end on a live H100/H200 pool against this codebase, but the prerequisites are in place. |
+| GPU pool — NCCL + IB + dcgm-exporter wiring | ✅ | auto-applied on H100 SKUs | — | Bootstrap configured (NCCL env vars in `/etc/profile.d/nccl-azcluster.sh`, IB topology file path, dcgm-exporter unit). Live-validated v0.13.4 on `Standard_ND96isr_H100_v5` x2. |
+| Multi-node NCCL all-reduce (bare-metal, HPC-X) | ✅ | — | — | `/shared/examples/nccl-allreduce.sbatch` uses HPC-X (in-image, PMIx 4.x) + prebuilt `/opt/nccl-tests/build/all_reduce_perf`. Live-validated v0.13.4: **466 GB/s peak / 348 GB/s avg busbw @ 16 GiB** across 2x H100 / 8x NDR400 IB. |
+| Multi-node NCCL all-reduce (Pyxis container) | 🟧 | — | — | Single-node container runs work. Cross-node currently broken: the `nccl-test` container ships PMIx 5.x while Slurm 25.11 ships `mpi_pmix_v4.so` (PMIx 4.x ABI). Tracked for v0.14. |
 | Monitoring — Managed Prometheus (AMW) + Managed Grafana (AMG) | ✅ | on | `--no-monitoring`, `--grafana-location` | Per-VM `prometheus` → AMW DCE via `azuread.managed_identity`. 3 dashboards (node, slurm, gpu+ib) auto-imported with retry on RBAC propagation. Live-validated v0.11.4. |
 | Slurm accounting (Azure DB for MySQL Flex + slurmdbd) | 🟡 | `--accounting=true` | `--no-accounting` | New in v0.13.0. `Standard_B2ms` MySQL Flexible Server (MySQL 8.0.21, 50 GB autogrow, public access disabled, VNet-integrated on delegated `10.42.8.0/29`); CLI auto-generates the admin password and threads it as a secure Bicep param. Scheduler runs `slurmdbd` over TLS (DigiCert Global Root CA) on `localhost:6819`; `slurm.conf` has `AccountingStorageType=accounting_storage/slurmdbd` + `AccountingStorageEnforce=associations,limits,qos` + `JobAcctGatherType=jobacct_gather/cgroup`. Built and bicep-clean, but not yet end-to-end live-validated against a real cluster (next checklist item). |
 | Autoscaling (Slurm power-save → VMSS resize) | 🔜 | — | — | Roadmap, not implemented. Use `azcluster scale` manually. |
@@ -48,7 +49,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 - `azcluster validate mon6` → `sinfo` ✅, `srun -N1 hostname` ✅, `srun -N1 --container-image=docker://alpine:latest hostname` (Pyxis import + run) ✅.
 - `azcluster timings mon6` → 18 resources captured, sorted table prints, JSON snapshot + `trend.tsv` appended.
 
-**Not exercised in v0.12.1**: GPU pool of any kind, NCCL (single- or multi-node), AMLFS, full ANF path, monitoring/Grafana dashboards. Monitoring was validated in v0.11.4, ANF + Pyxis in v0.1.x–v0.2.x. **NCCL all-reduce has never been run end-to-end against this repo on real H100/H200 hardware in any release**, though `/opt/nccl-tests/build/all_reduce_perf` is pre-built in the `microsoft-dsvm:ubuntu-hpc` image so the sample sbatch should run once a GPU pool is deployed. Validating a 2-node NDv5 H200 all-reduce is on the v0.13.x checklist.
+**Not exercised in v0.12.1**: GPU pool of any kind, NCCL (single- or multi-node), AMLFS, full ANF path, monitoring/Grafana dashboards. Monitoring was validated in v0.11.4, ANF + Pyxis in v0.1.x–v0.2.x. **NCCL all-reduce has never been run end-to-end against this repo on real H100 hardware in any release**, though `/opt/nccl-tests/build/all_reduce_perf` is pre-built in the `microsoft-dsvm:ubuntu-hpc` image so the sample sbatch should run once a GPU pool is deployed. Validating a 2-node NDv5 H100 all-reduce is on the v0.13.x checklist.
 
 
 ## Architecture
@@ -126,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.13.3
+VERSION=v0.13.4
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -147,7 +148,7 @@ azcluster deploy \
   --grafana-location uksouth \
   --resource-group my-rg \
   --pool name=cpu,sku=Standard_D8as_v5,count=2,default \
-  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=0 \
+  --pool name=gpu,sku=Standard_ND96isr_H100_v5,count=0 \
   --anf-size-tib 4 --anf-tier Premium \
   --login-public-ip
 ```
@@ -260,7 +261,7 @@ Tag-triggered. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.
 
 ## Roadmap
 
-- **v0.13.x** — Live-validate the new Slurm accounting backend end-to-end on a 2-node H200 cluster; run the existing NCCL all-reduce sample sbatch and confirm `sacct` populates.
+- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw). Remaining: fix PMIx 4↔5 ABI so Pyxis-containerised NCCL works cross-node.
 - **v0.14+** — backlog:
   - **Better scaling.** Drop the `azcluster tunnel` requirement. Either run a daemon on the scheduler that reconciles `--pool` capacity directly via the ARM/Compute REST APIs (no `az` shell-out), or wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
   - **Health checks.** Port the patterns from [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck) into a small Rust binary shipped with the release tarball. Compute nodes invoke it via Slurm `HealthCheckProgram`; failures drain the node automatically.

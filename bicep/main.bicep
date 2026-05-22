@@ -74,11 +74,11 @@ param amlfsSkuName string = 'AMLFS-Durable-Premium-250'
 @description('Availability zone for AMLFS.')
 param amlfsZone string = '1'
 
-@description('Compute pools. Each: { name: string, sku: string, count: int, default: bool }. Default: one gpu pool, H200, 0.')
+@description('Compute pools. Each: { name: string, sku: string, count: int, default: bool }. Default: one gpu pool, H100, 0.')
 param pools array = [
   {
     name: 'gpu'
-    sku: 'Standard_ND96isr_H200_v5'
+    sku: 'Standard_ND96isr_H100_v5'
     count: 0
     default: true
   }

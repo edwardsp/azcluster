@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.13.4] - 2026-05-22
+
+### Fixed
+- **GPU compute nodes registered with the wrong Gres name and never joined the GPU partition.** The compute bootstrap parsed `nvidia-smi --query-gpu=name` with `tolower($NF)`, which on an H100 returned `hbm3` (the last token of "NVIDIA H100 80GB HBM3") rather than `h100`. Slurm then registered `Gres=gpu:hbm3:8` while the scheduler had `GresTypes=gpu` and `--gres=gpu:h100:N` job requests, so every GPU job stayed PENDING with `Resources` reason. Parse the first `<letter><digits>` token instead (`h100`, `h200`, `a100`, ...), and emit an extra `Feature=` tag for the HBM tier so jobs can target it explicitly when wanted.
+- **Compute nodes overrode `CPUs=` on the slurmd command line, defeating `Parameters=l3cache_as_socket`.** On NDv5 (96 cores, 4 NUMA, large L3 cache) the default Slurm S:C:T detection bunches every core into one socket, which interacts badly with NCCL's GPU↔NIC affinity heuristics. Dropped the explicit `CPUs=${CPUS}` from `SLURMD_OPTIONS` and added `Parameters=l3cache_as_socket` so slurmd autodetects 8 sockets matching the 8 L3 cache groups, one per GPU.
+- **Configless Slurm never distributed `gres.conf`, so slurmctld refused to validate `GresTypes=gpu`.** `enable_configless` only distributes `slurm.conf` (not `gres.conf`, `cgroup.conf`, or `plugstack.conf`). Scheduler bootstrap now writes `/etc/slurm/gres.conf` containing `AutoDetect=nvml` so slurmctld can parse the Gres stanza locally; compute bootstrap writes the same file locally so each slurmd discovers its actual `/dev/nvidia*` devices via NVML.
+- **Enroot container imports filled the 64 GB root disk on H100 nodes.** The marketplace `microsoft-dsvm:ubuntu-hpc:2404` image leaves only ~7 GB free on `/` after base install. Importing a ~10 GB CUDA container via Pyxis (e.g. the `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest` image used for multi-node NCCL) ran out of space mid-extraction. Compute bootstrap now relocates `/var/lib/enroot` and `/var/lib/enroot-data` to symlinks under `/mnt`, the Azure ephemeral disk (~956 GB NVMe-backed on NDv5), when `/mnt` is mounted. Falls back to `/var/lib/enroot` for SKUs without an ephemeral disk.
+- **`scheduler.yaml.tmpl` was missing `GresTypes=gpu` and `AccountingStorageTRES=gres/gpu`.** Without these, slurmctld silently dropped any `Gres=gpu:...` registration from compute nodes and `sacct --format=AllocTRES` could not include GPU usage. Now emitted unconditionally — harmless on CPU-only clusters because `GresTypes=gpu` alone does not require any node to have a GPU.
+- **`compute.yaml.tmpl` `ethtool` pipe aborted under `set -euo pipefail` on virtual interfaces.** `drv=$(ethtool -i lo ... | awk ...)` exits non-zero because the awk pattern matches nothing, killing the whole bootstrap before slurmd installs. Added `|| true` inside the command substitution.
+
+### Changed
+- `NCCL_IB_HCA` default in `/etc/profile.d/nccl-azcluster.sh` changed from `mlx5` to `mlx5_ib` to match the device prefix actually present on NDv5 NDR400-IB cards (`mlx5_ib0`-`mlx5_ib7`). The previous value also matched IPoE interfaces and confused NCCL's HCA selection.
+- Replaced the multi-node NCCL all-reduce example sbatch (`/shared/examples/nccl-allreduce.sbatch`). The old template tried to run `all_reduce_perf` inside an `nvcr.io/nvidia/pytorch:24.10-py3` container over Pyxis, but cross-node MPI inside that container fails on this image because the container's PMIx (5.x) does not match Slurm 25.11's `mpi_pmix_v4.so` (PMIx 4.x ABI). New example runs bare-metal using HPC-X (already in the image, PMIx 4.x compatible) + the prebuilt `/opt/nccl-tests/build/all_reduce_perf`. Documented the Pyxis caveat inline.
+- Workspace version `0.13.3` -> `0.13.4`.
+- CLI default `--azcluster-version` bumped to `v0.13.4`.
+
+### Added
+- `walkthrough.md` — end-to-end recipe: deploy a 2-node NDv5 H100 cluster, run the NCCL all-reduce, interpret the results, and tear down. Covers the bare-metal HPC-X path and the (currently broken) Pyxis container path.
+
+### Verified
+- 2-node `Standard_ND96isr_H100_v5` (`paul-azcluster-h100a`, `southafricanorth`) — bare-metal HPC-X NCCL all-reduce across 16 GPUs / 8x NDR400 InfiniBand achieved **466.33 GB/s peak / 348.02 GB/s avg busbw** (16 GiB message size; full size sweep from 8 MiB upward). `NCCL_DEBUG=INFO` confirmed NVLS multicast, `IBext_v11` P2P plugin, HPC-X `nccl_rdma_sharp_plugin`, and IB/SHARP on all 8 `mlx5_ib*` NICs. Pyxis container pull also validated (`ghcr.io#azure/ai-infrastructure-on-azure/nccl-test:latest`, 9.4 GB image imported on both nodes); cross-node container runs reported `busbw=0` due to the PMIx 4/5 ABI mismatch noted in `AGENTS.md`.
+
 ## [0.13.3] - 2026-05-22
 
 ### Fixed
