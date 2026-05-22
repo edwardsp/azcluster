@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.13.5
+VERSION=v0.13.6
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -261,7 +261,7 @@ Tag-triggered. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.
 
 ## Roadmap
 
-- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw). Remaining: fix PMIx 4↔5 ABI so Pyxis-containerised NCCL works cross-node.
+- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw, bare-metal HPC-X path). ✅ v0.13.6 cross-node containerised PMIx world live-validated (16-rank NeMo container all-reduce reached single PMIx world and exited cleanly). Remaining for v0.13.7: container NCCL falls back to OOB ethernet on NDv5 because `ENROOT_REMAP_ROOT yes` blocks uverbs access — fix via enroot hook chmod'ing `/dev/infiniband/uverbs*` for the container view.
 - **v0.14+** — backlog:
   - **Better scaling.** Drop the `azcluster tunnel` requirement. Either run a daemon on the scheduler that reconciles `--pool` capacity directly via the ARM/Compute REST APIs (no `az` shell-out), or wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
   - **Health checks.** Port the patterns from [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck) into a small Rust binary shipped with the release tarball. Compute nodes invoke it via Slurm `HealthCheckProgram`; failures drain the node automatically.

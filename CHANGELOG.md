@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Verified (post-tag, live-validated against `paul-azcluster-h100c` in `southafricanorth`)
+- **v0.13.6 PMIx fix works end-to-end.** 2-node × 8-GPU = 16-rank NCCL all-reduce across two `nvcr.io/nvidia/nemo:25.07.02` Pyxis containers reached a single MPI world (`comm 0x... rank N nranks 16` printed for ranks on both `h100c-gpu-0001` and `h100c-gpu-0002`), completed cleanly (`Destroy COMPLETE` on every rank), and exited 0. Confirms `srun --mpi=pmix --container-image=…` now spawns one PMIx world across containers and the `50-slurm-pmi.sh` enroot hook + slurmd `PMIX_MCA_*` env are doing their job.
+
+### Known issue (queued for v0.13.7)
+- **NCCL falls back to OOB ethernet inside Pyxis containers on NDv5 H100.** Live test of `dgxc-nemo-multinode-smoke.sbatch` showed `NET/IB : No device found.` on every rank inside the NeMo container, even though all 8 `mlx5_ib*` HCAs + `/dev/infiniband/uverbs0..7` exist on the host and `/dev` is rbind-mounted into the container by enroot's default `/etc/enroot/mounts.d/00-default.fstab`. NCCL falls back to `OOB eth0:10.42.4.x` (TCP over the regular Azure VNIC) instead of the 8x NDR400 IB fabric, so cross-node containerised throughput is limited to single-NIC TCP. Bare-metal HPC-X path (`/shared/examples/nccl-allreduce.sbatch`) remains unaffected — it still achieves the v0.13.4 466 GB/s peak / 348 GB/s avg busbw. Most likely root cause: `ENROOT_REMAP_ROOT yes` (added in v0.13.5 for DGXC compat) maps container-root to host-non-root, which cannot open `/dev/infiniband/uverbs*` (default perms `0660 root:root`). Likely fix: add an enroot hook that `chmod 0666`s `/dev/infiniband/uverbs*`/`rdma_cm` for the container's view, OR bind-mount a permission-fixed copy, OR drop `ENROOT_REMAP_ROOT` for non-DGXC paths. CCWS handles this with a privileged cgroup device rule. Track in v0.13.7.
+
 
 ## [0.13.6] - 2026-05-22
 
