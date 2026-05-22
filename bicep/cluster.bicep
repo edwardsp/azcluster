@@ -133,6 +133,9 @@ module login 'modules/login.bicep' = {
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
     amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
+    monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
+    monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
+    amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
     tags: tags
   }
 }
@@ -155,6 +158,9 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     anfMountIp: anf.outputs.mountIp
     anfExportPath: anf.outputs.mountPath
     amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
+    monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
+    monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
+    amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
     tags: tags
   }
 }]

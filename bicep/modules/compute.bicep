@@ -14,10 +14,13 @@ param schedulerPrivateIp string
 param anfMountIp string
 param anfExportPath string
 param amlfsMountCommand string
+param monUaiId string = ''
+param monUaiClientId string = ''
+param amwIngestionEndpoint string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/compute.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -26,12 +29,23 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{SCHEDULER_IP}}', schedulerPrivateIp),
     '{{ANF_MOUNT_IP}}', anfMountIp),
     '{{ANF_EXPORT_PATH}}', anfExportPath),
-    '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand)
+    '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand),
+    '{{MON_UAI_CLIENT_ID}}', monUaiClientId),
+    '{{AMW_INGEST_URL}}', amwIngestionEndpoint),
+    '{{SUBSCRIPTION_ID}}', subscription().subscriptionId)
+
+var hasMonUai = !empty(monUaiId)
 
 resource vmss 'Microsoft.Compute/virtualMachineScaleSets@2024-07-01' = {
   name: 'vmss-${clusterName}-${poolName}'
   location: location
   tags: tags
+  identity: hasMonUai ? {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${monUaiId}': {}
+    }
+  } : null
   sku: {
     name: vmSku
     capacity: desiredCount

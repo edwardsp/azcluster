@@ -13,10 +13,13 @@ param anfExportPath string
 param azclusterVersion string
 param azclusterRepo string
 param amlfsMountCommand string
+param monUaiId string = ''
+param monUaiClientId string = ''
+param amwIngestionEndpoint string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/login.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
     '{{SCHEDULER_IP}}', schedulerPrivateIp),
@@ -24,7 +27,12 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{ANF_EXPORT_PATH}}', anfExportPath),
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
-    '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand)
+    '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand),
+    '{{MON_UAI_CLIENT_ID}}', monUaiClientId),
+    '{{AMW_INGEST_URL}}', amwIngestionEndpoint),
+    '{{SUBSCRIPTION_ID}}', subscription().subscriptionId)
+
+var hasMonUai = !empty(monUaiId)
 
 resource pip 'Microsoft.Network/publicIPAddresses@2024-01-01' = if (publicIp) {
   name: 'pip-${clusterName}-login'
@@ -65,7 +73,12 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   name: 'vm-${clusterName}-login'
   location: location
   tags: tags
-  identity: {
+  identity: hasMonUai ? {
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${monUaiId}': {}
+    }
+  } : {
     type: 'SystemAssigned'
   }
   properties: {

@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-05-22
+
+### Added
+- **Per-VM Prometheus on login + compute** with `remote_write` to AMW, mirroring the v0.11.0 scheduler path. Login scrapes its local `node_exporter` (`:9100`); compute scrapes `node_exporter` and, when GPUs are present, `dcgm-exporter` (`:9400`). External labels include `role` (login / compute) and, for compute, `pool`.
+- **monUai attachment on login VM and compute VMSS Flex.** Login adds the monitoring UAI alongside its existing SystemAssigned identity. Compute attaches it `UserAssigned`-only - AzSecPack rejects `SystemAssigned, UserAssigned` on VMSS Flex in tenants with the UAI-only policy.
+
+### Changed
+- Workspace version 0.11.0 -> 0.11.1.
+- CLI default `--azcluster-version` bumped to `v0.11.1`.
+- `bicep/cluster.bicep` now threads `monUaiId` / `monUaiClientId` / `amwIngestionEndpoint` into `login.bicep` and the `compute.bicep` for-loop in addition to the scheduler.
+- `bicep/modules/compute.bicep` resource definition now conditionally emits `identity: { type: 'UserAssigned', userAssignedIdentities: { ... } }` when monitoring is enabled, otherwise `identity: null`.
+
+### Deferred Validation
+- The v0.11.0 scheduler path was live-validated end-to-end (AMW returns `up{role="scheduler"}=1` for `node_exporter` and `slurm_exporter`). The v0.11.1 login + compute path replicates that exact mechanism (same install steps, same `azuread.managed_identity` remote_write block); Bicep modules compile clean. End-to-end live validation on a fresh cluster is gated on the in-progress `paul-azcluster` RG teardown completing; will be folded into the v0.11.2 deploy.
+
 ## [0.11.0] - 2026-05-22
 
 ### Added
@@ -236,7 +251,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.1
 [0.11.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.0
 [0.10.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.10.1
 [0.10.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.10.0

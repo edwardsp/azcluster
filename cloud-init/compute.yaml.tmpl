@@ -261,6 +261,64 @@ write_files:
           nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.4.1-ubuntu22.04 || true
       fi
 
+      MON_UAI_CLIENT_ID="{{MON_UAI_CLIENT_ID}}"
+      AMW_INGEST_URL="{{AMW_INGEST_URL}}"
+      if [ -n "${MON_UAI_CLIENT_ID}" ] && [ -n "${AMW_INGEST_URL}" ]; then
+        PROM_VER=3.3.0
+        cd /tmp
+        curl -fsSL --retry 8 --retry-delay 5 -O "https://github.com/prometheus/prometheus/releases/download/v${PROM_VER}/prometheus-${PROM_VER}.linux-amd64.tar.gz"
+        tar -xzf "prometheus-${PROM_VER}.linux-amd64.tar.gz"
+        install -d /opt/prometheus
+        install -m 0755 "prometheus-${PROM_VER}.linux-amd64/prometheus" /opt/prometheus/prometheus
+        install -d /mnt/prometheus/data
+        id -u prometheus >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin prometheus
+        chown -R prometheus:prometheus /opt/prometheus /mnt/prometheus
+        INSTANCE_NAME=$(hostname)
+        SUBSCRIPTION_ID="{{SUBSCRIPTION_ID}}"
+        RG_NAME=$(curl -fsSL -H Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
+        SCRAPE_GPU=""
+        if [ "${GPU_COUNT:-0}" -gt 0 ]; then
+          SCRAPE_GPU=$'\n        - job_name: dcgm_exporter\n          static_configs:\n            - targets: [\'127.0.0.1:9400\']'
+        fi
+        cat > /opt/prometheus/prometheus.yml <<EOF
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+        external_labels:
+          subscription: ${SUBSCRIPTION_ID}
+          cluster: ${RG_NAME}/{{CLUSTER_NAME}}
+          instance: ${INSTANCE_NAME}
+          role: compute
+          pool: {{POOL_NAME}}
+      remote_write:
+        - url: "${AMW_INGEST_URL}"
+          azuread:
+            cloud: AzurePublic
+            managed_identity:
+              client_id: ${MON_UAI_CLIENT_ID}
+      scrape_configs:
+        - job_name: node_exporter
+          static_configs:
+            - targets: ['127.0.0.1:9100']${SCRAPE_GPU}
+      EOF
+        chmod 0644 /opt/prometheus/prometheus.yml
+        cat > /etc/systemd/system/prometheus.service <<'EOF'
+      [Unit]
+      Description=Prometheus
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      User=prometheus
+      ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/mnt/prometheus/data --web.listen-address=127.0.0.1:9090
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+        systemctl daemon-reload
+        systemctl enable --now prometheus
+      fi
+
       systemctl enable --now slurmd
 
       touch /var/log/azcluster/ready
