@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-05-22
+
+### Fixed
+- **Scheduler bootstrap aborted before `slurmdbd` started.** `curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash` invokes `apt-get install` internally without our `DPkg::Lock::Timeout=600` and raced `apt-daily`/`unattended-upgrades`, dying with `Could not get lock /var/lib/dpkg/lock-frontend`. Under `set -euo pipefail`, the script aborted there, so the accounting block (which runs later) never wrote `/etc/slurm/slurmdbd.conf`, never started `slurmdbd`, and `slurm.conf` never gained its `AccountingStorage*` stanza. The extra apt work added in v0.13.0 (`slurm-smd-slurmdbd` + `mariadb-client`) widened the race window and exposed this latent bug. Replaced the curl-pipe with an explicit `apt-get install azure-cli` from the Microsoft `packages.microsoft.com/repos/azure-cli/` source, using our `DPkg::Lock::Timeout=600` flag.
+
 ## [0.13.0] - 2026-05-22
 
 ### Added

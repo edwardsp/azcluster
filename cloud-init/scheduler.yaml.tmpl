@@ -234,7 +234,13 @@ write_files:
       Environment=AZCLUSTER_RESOURCE_GROUP=${RG}
       EOF
 
-      curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash
+      # Azure CLI from MS repo (NOT via aka.ms/InstallAzureCLIDeb pipe — that
+      # script invokes apt without lock-timeout and races apt-daily on busy boots,
+      # killing the whole bootstrap under `set -euo pipefail`).
+      AZ_CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_CODENAME} main" > /etc/apt/sources.list.d/azure-cli.list
+      apt-get -o DPkg::Lock::Timeout=600 update
+      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends azure-cli
       az login --identity --client-id {{UAI_CLIENT_ID}} --only-show-errors >/dev/null
 
       NODE_EXP_VER=1.8.2
