@@ -29,6 +29,7 @@ enum CliCommand {
     Validate(ValidateArgs),
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
+    TimingsCapture(TimingsCaptureArgs),
 }
 
 #[derive(Args)]
@@ -45,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.12.0")]
+    #[arg(long, default_value = "v0.12.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -260,6 +261,15 @@ struct TimingsArgs {
     trend: bool,
 }
 
+#[derive(Args)]
+struct TimingsCaptureArgs {
+    name: String,
+    deployment: String,
+    resource_group: String,
+    #[arg(long, default_value = "anf")]
+    shared_storage: String,
+}
+
 #[derive(Serialize)]
 struct ScaleRequest {
     count: u32,
@@ -283,6 +293,15 @@ fn main() -> Result<()> {
         CliCommand::Validate(args) => validate(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
+        CliCommand::TimingsCapture(args) => {
+            timings::capture(
+                &args.name,
+                &args.deployment,
+                &args.resource_group,
+                &args.shared_storage,
+            )?;
+            Ok(())
+        }
     }
 }
 
@@ -412,6 +431,9 @@ fn deploy(args: DeployArgs) -> Result<()> {
     };
     let pools_json = serde_json::to_string(&pools).context("encode pools")?;
 
+    let monitoring_enabled = args.monitoring && !args.no_monitoring;
+    let accounting_enabled = args.accounting && !args.no_accounting;
+
     let mut params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
         ("location", args.location.clone()),
@@ -431,9 +453,9 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("amlfsSkuName", args.amlfs_sku.clone()),
         ("amlfsZone", args.amlfs_zone.clone()),
         ("pools", pools_json),
-        ("enableMonitoring", args.monitoring.to_string()),
+        ("enableMonitoring", monitoring_enabled.to_string()),
         ("sharedStorageMode", args.shared_storage.clone()),
-        ("enableAccounting", args.accounting.to_string()),
+        ("enableAccounting", accounting_enabled.to_string()),
         (
             "grafanaLocation",
             args.grafana_location
@@ -442,7 +464,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ),
     ];
 
-    if args.monitoring {
+    if monitoring_enabled {
         let (oid, ptype) = current_principal()?;
         eprintln!("==> deployer principal: {oid} ({ptype}) -> will receive Grafana Admin on AMG");
         params.push(("deployerPrincipalId", oid));
@@ -545,7 +567,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
         eprintln!("==> warning: timing capture failed: {e:#}");
     }
 
-    if args.monitoring {
+    if monitoring_enabled {
         if let Some(grafana_name) = pick("grafanaName") {
             import_dashboards(&state.resource_group, &grafana_name)?;
         } else {

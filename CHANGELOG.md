@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-05-22
+
+### Fixed
+- **`--shared-storage nfs-scheduler` scheduler bootstrap.** The previous template ran a dedicated `apt-get update && apt-get install nfs-kernel-server` *before* the slurm install. The second `apt-get update` (for the slurm repo) raced against `apt-daily`/`unattended-upgrades` taking the `/var/lib/apt/lists/lock`; `DPkg::Lock::Timeout` does not cover the lists lock, so the script exited (`set -euo pipefail`), `slurmctld` never installed, and login/compute hung forever waiting for `${SCHED_DIR}/munge.key`. Fold `nfs-kernel-server` into the single slurm `apt-get install` call and run the `exports`/`systemctl enable --now nfs-server` step afterward.
+
+### Changed
+- `azcluster timings` capture now reads each nested module's resource group directly from the sub-deployment operation's `properties.targetResource.resourceGroup` instead of issuing a separate `az deployment group list` lookup per module. Eliminates ~N extra `az` calls per deploy and a class of failure when a module name doesn't round-trip through the `--query` filter. Output is also sorted and deduped before being written to the snapshot.
+
 ## [0.12.0] - 2026-05-22
 
 ### Added

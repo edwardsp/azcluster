@@ -59,16 +59,7 @@ write_files:
 
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmctld /var/log/slurm /etc/slurm /opt/pyxis
 
-      if [ "${RUN_NFS_SERVER:-false}" = "true" ]; then
-        apt-get -o DPkg::Lock::Timeout=600 update
-        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends nfs-kernel-server
-        chmod 1777 /shared
-        if ! grep -q "^/shared " /etc/exports; then
-          echo "/shared *(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
-        fi
-        systemctl enable --now nfs-server
-        exportfs -rav
-      else
+      if [ "${RUN_NFS_SERVER:-false}" = "false" ]; then
         if ! grep -q " /shared " /etc/fstab; then
           echo "${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
         fi
@@ -82,12 +73,26 @@ write_files:
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
+      EXTRA_PKGS=""
+      if [ "${RUN_NFS_SERVER:-false}" = "true" ]; then
+        EXTRA_PKGS="nfs-kernel-server"
+      fi
       apt-get -o DPkg::Lock::Timeout=600 update
       apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-slurmctld \
-        slurm-smd-libnss-slurm
+        slurm-smd-libnss-slurm \
+        ${EXTRA_PKGS}
+
+      if [ "${RUN_NFS_SERVER:-false}" = "true" ]; then
+        chmod 1777 /shared
+        if ! grep -q "^/shared " /etc/exports; then
+          echo "/shared *(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+        fi
+        systemctl enable --now nfs-server
+        exportfs -rav
+      fi
 
       getent group slurm >/dev/null || groupadd -g 11100 slurm
       id slurm >/dev/null 2>&1 || useradd -u 11100 -g 11100 -d /var/lib/slurm -s /usr/sbin/nologin -c "Slurm" slurm

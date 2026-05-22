@@ -85,7 +85,7 @@ fn collect_sub_operations(deployment: &str) -> Result<Vec<OperationTiming>> {
     ])?;
     let arr = ops.as_array().cloned().unwrap_or_default();
     let mut out = Vec::new();
-    let mut nested_modules = Vec::new();
+    let mut nested_modules: Vec<(String, String)> = Vec::new();
     for op in arr {
         let props = match op.get("properties") {
             Some(p) => p,
@@ -107,13 +107,18 @@ fn collect_sub_operations(deployment: &str) -> Result<Vec<OperationTiming>> {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let rg = target
+            .and_then(|t| t.get("resourceGroup"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let state = props
             .get("provisioningState")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if rtype == "Microsoft.Resources/deployments" {
-            nested_modules.push(rname.clone());
+        if rtype == "Microsoft.Resources/deployments" && !rg.is_empty() {
+            nested_modules.push((rg.clone(), rname.clone()));
         }
         out.push(OperationTiming {
             resource_type: rtype,
@@ -123,29 +128,12 @@ fn collect_sub_operations(deployment: &str) -> Result<Vec<OperationTiming>> {
             deployment: deployment.to_string(),
         });
     }
-    for module in nested_modules {
-        if let Ok(rg) = resource_group_for_deployment(&module) {
-            if let Ok(child) = collect_group_operations(&rg, &module) {
-                out.extend(child);
-            }
+    for (rg, module) in nested_modules {
+        if let Ok(child) = collect_group_operations(&rg, &module) {
+            out.extend(child);
         }
     }
     Ok(out)
-}
-
-fn resource_group_for_deployment(module: &str) -> Result<String> {
-    let v = az_json(&[
-        "deployment",
-        "group",
-        "list",
-        "--query",
-        &format!("[?name=='{module}'] | [0].resourceGroup"),
-        "-o",
-        "json",
-    ])?;
-    v.as_str()
-        .map(String::from)
-        .ok_or_else(|| anyhow!("no resource group for module {module}"))
 }
 
 fn collect_group_operations(rg: &str, module: &str) -> Result<Vec<OperationTiming>> {
@@ -217,6 +205,20 @@ pub fn capture(
 ) -> Result<PathBuf> {
     let mut operations = collect_sub_operations(deployment).unwrap_or_default();
     operations.retain(|o| !o.resource_type.is_empty());
+    operations.sort_by(|a, b| {
+        (&a.resource_type, &a.resource_name, &a.deployment)
+            .cmp(&(&b.resource_type, &b.resource_name, &b.deployment))
+            .then(
+                b.duration_seconds
+                    .partial_cmp(&a.duration_seconds)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    operations.dedup_by(|a, b| {
+        a.resource_type == b.resource_type
+            && a.resource_name == b.resource_name
+            && a.deployment == b.deployment
+    });
     let total = operations
         .iter()
         .filter(|o| o.resource_type != "Microsoft.Resources/deployments")
