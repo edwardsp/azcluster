@@ -221,6 +221,27 @@ write_files:
       systemctl enable munge
       systemctl restart munge
       systemctl enable --now node_exporter
+
+      SLURM_EXP_VER=1.8.0
+      cd /tmp
+      curl -fsSL --retry 8 --retry-delay 5 -o psle.deb "https://github.com/rivosinc/prometheus-slurm-exporter/releases/download/v${SLURM_EXP_VER}/prometheus-slurm-exporter_${SLURM_EXP_VER}_linux_amd64.deb"
+      dpkg -i psle.deb
+      cat > /etc/systemd/system/prometheus-slurm-exporter.service <<'EOF'
+      [Unit]
+      Description=Prometheus Slurm Exporter
+      After=network-online.target slurmctld.service
+      Wants=network-online.target
+      [Service]
+      User=slurm
+      ExecStart=/usr/bin/prometheus-slurm-exporter -web.listen-address=127.0.0.1:8081
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now prometheus-slurm-exporter
+
       systemctl enable --now slurmctld
       systemctl enable --now azcluster-server.service
 

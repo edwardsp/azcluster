@@ -5,6 +5,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-22
+
+### Added
+- **rivosinc/prometheus-slurm-exporter v1.8.0** installed via `.deb` on the scheduler. Runs as `slurm` user under `prometheus-slurm-exporter.service` systemd unit, binds `127.0.0.1:8081`. Exposes `slurm_cpus_total`, `slurm_node_count_per_state`, `slurm_job_scrape_duration`, etc. Will be scraped locally once the AMW scrape path lands in v0.11.0.
+
+### Changed
+- Workspace version 0.10.0 -> 0.10.1.
+- CLI default `--azcluster-version` bumped to `v0.10.1`.
+
+### Validated
+- Live deploy in `southafricanorth`: `prometheus-slurm-exporter.service` active on scheduler, `/metrics` returns valid Prometheus output (`slurm_cpus_total`, `slurm_node_count_per_state{state="n/a"} 1`, `slurm_job_scrape_duration 4`, ...). `node_exporter` + `slurmctld` also active alongside.
+
 ## [0.10.0] - 2026-05-22
 
 ### Added
