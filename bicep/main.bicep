@@ -101,11 +101,23 @@ param deployerPrincipalId string = ''
 ])
 param deployerPrincipalType string = 'User'
 
+@description('Shared filesystem backing /shared. `anf` provisions Azure NetApp Files; `nfs-scheduler` exports /shared from the scheduler VM (test-only, no HA).')
+@allowed([
+  'anf'
+  'nfs-scheduler'
+])
+param sharedStorageMode string = 'anf'
+
+@description('Provision Slurm accounting (managed MySQL + slurmdbd). [reserved, v0.13.x - currently no-op]')
+param enableAccounting bool = true
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
   'azcluster-name': clusterName
   'azcluster-version': azclusterVersion
+  'azcluster-shared-storage': sharedStorageMode
+  'azcluster-accounting': enableAccounting ? 'enabled' : 'disabled'
 }
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = if (empty(existingResourceGroup)) {
@@ -143,6 +155,7 @@ module cluster 'cluster.bicep' = {
     grafanaLocation: grafanaLocation
     deployerPrincipalId: deployerPrincipalId
     deployerPrincipalType: deployerPrincipalType
+    sharedStorageMode: sharedStorageMode
     tags: commonTags
   }
 }

@@ -28,8 +28,8 @@ write_files:
       AZCLUSTER_ROLE=compute
       AZCLUSTER_POOL={{POOL_NAME}}
       SCHEDULER_IP={{SCHEDULER_IP}}
-      ANF_MOUNT_IP={{ANF_MOUNT_IP}}
-      ANF_EXPORT_PATH={{ANF_EXPORT_PATH}}
+      SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}
+      SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
       ENROOT_VERSION=4.0.1
   - path: /etc/apt/preferences.d/slurm-repository-pin-990
@@ -104,9 +104,15 @@ write_files:
       echo "127.0.1.1 ${NEW_HOSTNAME}" >> /etc/hosts
 
       if ! grep -q " /shared " /etc/fstab; then
-        echo "${ANF_MOUNT_IP}:/${ANF_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
+        echo "${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
       fi
-      mountpoint -q /shared || mount /shared
+      for i in $(seq 1 60); do
+        mountpoint -q /shared && break
+        mount /shared && break
+        echo "waiting for NFS at ${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH}..."
+        sleep 5
+      done
+      mountpoint -q /shared
 
       if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
         mkdir -p /amlfs

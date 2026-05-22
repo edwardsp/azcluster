@@ -8,8 +8,9 @@ param sshPublicKey string
 param adminUsername string
 param azclusterVersion string
 param azclusterRepo string
-param anfMountIp string
-param anfExportPath string
+param sharedMountIp string
+param sharedExportPath string
+param runNfsServer bool = false
 param partitionsConf string
 param userAssignedIdentityId string
 param userAssignedIdentityClientId string
@@ -19,13 +20,14 @@ param amwIngestionEndpoint string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
-    '{{ANF_MOUNT_IP}}', anfMountIp),
-    '{{ANF_EXPORT_PATH}}', anfExportPath),
+    '{{SHARED_MOUNT_IP}}', sharedMountIp),
+    '{{SHARED_EXPORT_PATH}}', sharedExportPath),
+    '{{RUN_NFS_SERVER}}', runNfsServer ? 'true' : 'false'),
     '{{PARTITIONS}}', partitionsConf),
     '{{UAI_CLIENT_ID}}', userAssignedIdentityClientId),
     '{{MON_UAI_CLIENT_ID}}', monUaiClientId),

@@ -11,8 +11,8 @@ param desiredCount int
 param azclusterVersion string
 param azclusterRepo string
 param schedulerPrivateIp string
-param anfMountIp string
-param anfExportPath string
+param sharedMountIp string
+param sharedExportPath string
 param amlfsMountCommand string
 param monUaiId string = ''
 param monUaiClientId string = ''
@@ -27,8 +27,8 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{CLUSTER_NAME}}', clusterName),
     '{{POOL_NAME}}', poolName),
     '{{SCHEDULER_IP}}', schedulerPrivateIp),
-    '{{ANF_MOUNT_IP}}', anfMountIp),
-    '{{ANF_EXPORT_PATH}}', anfExportPath),
+    '{{SHARED_MOUNT_IP}}', sharedMountIp),
+    '{{SHARED_EXPORT_PATH}}', sharedExportPath),
     '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand),
     '{{MON_UAI_CLIENT_ID}}', monUaiClientId),
     '{{AMW_INGEST_URL}}', amwIngestionEndpoint),

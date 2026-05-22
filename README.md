@@ -12,7 +12,7 @@ One `az deployment sub create` triggers everything. No daemons on your laptop.
 
 **Phase 2** (in progress, v0.2.0): multi-pool partitions (CPU + GPU side-by-side), IB/NCCL tunings for NDv5 H100/H200, AMLFS (optional), GPU smoke + NCCL all-reduce validation.
 
-**Phase 3** (shipped, v0.11.4): managed observability — opt-in `--monitoring` provisions Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, plus a shared monitoring UAI granted Metrics Publisher on the AMW's default DCR. The deployer principal also gets Grafana Admin on the AMG instance so the CLI can import dashboards post-deploy. `node_exporter` on every node, `prometheus-slurm-exporter` on scheduler, `dcgm-exporter` auto-starts on GPU compute. Per-VM Prometheus on scheduler, login, and every compute node remote-writes those exporters into AMW (`azuread.managed_identity`). The CLI imports node health, Slurm scheduler, and GPU + InfiniBand dashboards into AMG post-deploy with retry-on-RBAC-propagation.
+**Phase 3** (shipped, v0.12.0): managed observability — opt-in via `--monitoring` (default on; pass `--no-monitoring` for rapid test deploys without AMW + AMG). Provisions Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, plus a shared monitoring UAI granted Metrics Publisher on the AMW's default DCR. The deployer principal also gets Grafana Admin on the AMG instance so the CLI can import dashboards post-deploy. `node_exporter` on every node, `prometheus-slurm-exporter` on scheduler, `dcgm-exporter` auto-starts on GPU compute. Per-VM Prometheus on scheduler, login, and every compute node remote-writes those exporters into AMW (`azuread.managed_identity`). The CLI imports node health, Slurm scheduler, and GPU + InfiniBand dashboards into AMG post-deploy with retry-on-RBAC-propagation. v0.12.0 also adds `--shared-storage {anf,nfs-scheduler}` (test-only NFS-on-scheduler saves ~12 min) and per-deploy timing capture surfaced via `azcluster timings`.
 
 ## Prerequisites
 
@@ -63,11 +63,26 @@ Tear it down:
 azcluster delete demo
 ```
 
-Provision observability (opt-in, additional cost):
+Provision observability (default on; disable for rapid test deploys):
 
 ```bash
-azcluster deploy --name demo --location southafricanorth --grafana-location uksouth --monitoring ...
+azcluster deploy --name demo --location southafricanorth --grafana-location uksouth ...
+azcluster deploy --name demo --location southafricanorth --no-monitoring --no-accounting ...
 azcluster monitor demo                       # prints the Grafana URL
+```
+
+Rapid test deploy with NFS on scheduler (skips ANF, saves ~12 min, single point of failure — test only):
+
+```bash
+azcluster deploy --name demo --shared-storage nfs-scheduler --no-monitoring ...
+```
+
+Show per-resource provisioning times:
+
+```bash
+azcluster timings demo               # latest run as a sorted table
+azcluster timings demo --last 5      # last 5 runs
+azcluster timings demo --trend       # dump trend.tsv across all runs
 ```
 
 `--grafana-location` defaults to `--location`; override when the cluster region does not host Azure Managed Grafana (e.g. `southafricanorth` -> `uksouth`).

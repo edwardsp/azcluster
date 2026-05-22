@@ -22,8 +22,8 @@ write_files:
       AZCLUSTER_REPO={{AZCLUSTER_REPO}}
       AZCLUSTER_VERSION={{AZCLUSTER_VERSION}}
       AZCLUSTER_ROLE=login
-      ANF_MOUNT_IP={{ANF_MOUNT_IP}}
-      ANF_EXPORT_PATH={{ANF_EXPORT_PATH}}
+      SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}
+      SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
   - path: /etc/profile.d/azcluster.sh
     permissions: '0644'
@@ -47,9 +47,15 @@ write_files:
       mkdir -p /shared /var/log/azcluster /etc/slurm
 
       if ! grep -q " /shared " /etc/fstab; then
-        echo "${ANF_MOUNT_IP}:/${ANF_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
+        echo "${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
       fi
-      mountpoint -q /shared || mount /shared
+      for i in $(seq 1 60); do
+        mountpoint -q /shared && break
+        mount /shared && break
+        echo "waiting for NFS at ${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH}..."
+        sleep 5
+      done
+      mountpoint -q /shared
 
       if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
         mkdir -p /amlfs

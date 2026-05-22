@@ -1,4 +1,5 @@
 mod cluster_state;
+mod timings;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -27,6 +28,7 @@ enum CliCommand {
     Logs(LogsArgs),
     Validate(ValidateArgs),
     Monitor(MonitorArgs),
+    Timings(TimingsArgs),
 }
 
 #[derive(Args)]
@@ -43,7 +45,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.11.4")]
+    #[arg(long, default_value = "v0.12.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -65,10 +67,22 @@ struct DeployArgs {
     /// Compute pool spec, repeatable. Format: name=cpu,sku=Standard_D8s_v5,count=0[,default]
     #[arg(long = "pool")]
     pools: Vec<String>,
-    /// Provision Azure Managed Prometheus + Managed Grafana for the cluster.
-    #[arg(long, default_value_t = false)]
+    /// Provision Azure Managed Prometheus + Managed Grafana for the cluster (default: on).
+    #[arg(long, default_value_t = true, overrides_with = "no_monitoring", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     monitoring: bool,
-    /// Azure region for Managed Grafana when --monitoring is set. Defaults to --location. Override when --location does not host Managed Grafana.
+    /// Disable Managed Prometheus + Grafana for rapid test deploys (skips ~3 min provision time).
+    #[arg(long, default_value_t = false, overrides_with = "monitoring")]
+    no_monitoring: bool,
+    /// Provision Slurm accounting (managed MySQL + slurmdbd) (default: on). [reserved, v0.13.x]
+    #[arg(long, default_value_t = true, overrides_with = "no_accounting", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    accounting: bool,
+    /// Disable Slurm accounting for rapid test deploys.
+    #[arg(long, default_value_t = false, overrides_with = "accounting")]
+    no_accounting: bool,
+    /// Shared filesystem backing /shared. `anf` (default) provisions Azure NetApp Files; `nfs-scheduler` exports /shared from the scheduler VM (test-only, no HA, ~12 min faster).
+    #[arg(long, default_value = "anf", value_parser = ["anf", "nfs-scheduler"])]
+    shared_storage: String,
+    /// Azure region for Managed Grafana when monitoring is on. Defaults to --location. Override when --location does not host Managed Grafana.
     #[arg(long)]
     grafana_location: Option<String>,
     #[arg(long)]
@@ -237,6 +251,15 @@ struct MonitorArgs {
     name: String,
 }
 
+#[derive(Args)]
+struct TimingsArgs {
+    name: String,
+    #[arg(long, default_value_t = 1)]
+    last: usize,
+    #[arg(long, default_value_t = false)]
+    trend: bool,
+}
+
 #[derive(Serialize)]
 struct ScaleRequest {
     count: u32,
@@ -259,6 +282,7 @@ fn main() -> Result<()> {
         CliCommand::Logs(args) => logs(args),
         CliCommand::Validate(args) => validate(args),
         CliCommand::Monitor(args) => monitor(args),
+        CliCommand::Timings(args) => timings(args),
     }
 }
 
@@ -408,6 +432,8 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("amlfsZone", args.amlfs_zone.clone()),
         ("pools", pools_json),
         ("enableMonitoring", args.monitoring.to_string()),
+        ("sharedStorageMode", args.shared_storage.clone()),
+        ("enableAccounting", args.accounting.to_string()),
         (
             "grafanaLocation",
             args.grafana_location
@@ -509,6 +535,15 @@ fn deploy(args: DeployArgs) -> Result<()> {
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());
+
+    if let Err(e) = timings::capture(
+        &args.name,
+        &deployment_name,
+        &state.resource_group,
+        &args.shared_storage,
+    ) {
+        eprintln!("==> warning: timing capture failed: {e:#}");
+    }
 
     if args.monitoring {
         if let Some(grafana_name) = pick("grafanaName") {
@@ -987,4 +1022,29 @@ fn monitor(args: MonitorArgs) -> Result<()> {
             state.name
         ),
     }
+}
+
+fn timings(args: TimingsArgs) -> Result<()> {
+    let runs = timings::list_for_cluster(&args.name, args.last)?;
+    if runs.is_empty() {
+        bail!(
+            "no timing data for cluster '{}'. Deploy with this version first.",
+            args.name
+        );
+    }
+    if args.trend {
+        let path = timings::deployments_dir(&args.name)?.join("trend.tsv");
+        if path.exists() {
+            let body = std::fs::read_to_string(&path)?;
+            print!("{body}");
+        }
+        return Ok(());
+    }
+    for (i, t) in runs.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        timings::print_table(t);
+    }
+    Ok(())
 }

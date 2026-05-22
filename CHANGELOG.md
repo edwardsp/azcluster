@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-22
+
+### Added
+- **`--shared-storage` flag** (default `anf`). New `nfs-scheduler` mode skips Azure NetApp Files entirely and exports `/shared` from the scheduler VM via `nfs-kernel-server`, shaving ~12 minutes off provisioning time. Login + compute nodes mount the scheduler's export with a retry loop so they survive races with the scheduler's NFS service coming up. Test-only: no HA, scheduler is a SPOF for shared storage.
+- **`--no-monitoring` / `--no-accounting` toggles** for rapid iteration on features that don't depend on observability or accounting. Defaults remain ON; pass `--no-monitoring` (or `--no-accounting`) to skip provisioning during test deploys. `--accounting` is currently reserved for v0.13.x.
+- **Per-deploy timing capture.** After a successful `azcluster deploy`, the CLI recurses `az deployment operation sub list` and `az deployment operation group list` for every nested module, computes per-resource durations from ISO-8601 `properties.duration`, and writes a JSON snapshot to `~/.config/azcluster/deployments/<cluster>/<utc-stamp>.json`. A `trend.tsv` is appended in the same directory for cross-run comparison.
+- **`azcluster timings <cluster> [--last N] [--trend]` subcommand.** Prints a sorted table (largest durations first) for the last N deployments, or dumps the trend TSV.
+- New `timings` Rust module (`crates/azcluster-cli/src/timings.rs`) with an ISO-8601 duration parser and a self-contained epoch-to-UTC formatter (no `chrono` dependency).
+
+### Changed
+- Cloud-init template placeholders renamed `{{ANF_MOUNT_IP}}` → `{{SHARED_MOUNT_IP}}` and `{{ANF_EXPORT_PATH}}` → `{{SHARED_EXPORT_PATH}}` to reflect that the source can now be ANF or the scheduler. Bicep scheduler/login/compute module params renamed `anfMountIp`/`anfExportPath` → `sharedMountIp`/`sharedExportPath`.
+- Bicep `main.bicep` and `cluster.bicep` accept `sharedStorageMode` (`anf` | `nfs-scheduler`) and `enableAccounting`. The `anf` module is now conditional (`if (sharedStorageMode == 'anf')`).
+- Workspace version 0.11.4 -> 0.12.0.
+- CLI default `--azcluster-version` bumped to `v0.12.0`.
+
+### Fixed
+- Login and compute `/shared` mount now retries for 5 minutes instead of single-shot, which is needed for `nfs-scheduler` mode (where the scheduler is still installing `nfs-kernel-server` when the other VMs hit cloud-init) and harmless for `anf` mode.
+
 ## [0.11.4] - 2026-05-22
 
 ### Fixed

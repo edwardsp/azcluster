@@ -8,8 +8,8 @@ param sshPublicKey string
 param adminUsername string
 param publicIp bool
 param schedulerPrivateIp string
-param anfMountIp string
-param anfExportPath string
+param sharedMountIp string
+param sharedExportPath string
 param azclusterVersion string
 param azclusterRepo string
 param amlfsMountCommand string
@@ -23,8 +23,8 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{ADMIN_USER}}', adminUsername),
     '{{CLUSTER_NAME}}', clusterName),
     '{{SCHEDULER_IP}}', schedulerPrivateIp),
-    '{{ANF_MOUNT_IP}}', anfMountIp),
-    '{{ANF_EXPORT_PATH}}', anfExportPath),
+    '{{SHARED_MOUNT_IP}}', sharedMountIp),
+    '{{SHARED_EXPORT_PATH}}', sharedExportPath),
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand),

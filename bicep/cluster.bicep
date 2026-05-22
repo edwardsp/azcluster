@@ -23,6 +23,7 @@ param enableMonitoring bool
 param grafanaLocation string
 param deployerPrincipalId string = ''
 param deployerPrincipalType string = 'User'
+param sharedStorageMode string = 'anf'
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -54,7 +55,7 @@ resource schedulerContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-module anf 'modules/anf.bicep' = {
+module anf 'modules/anf.bicep' = if (sharedStorageMode == 'anf') {
   name: 'anf'
   params: {
     clusterName: clusterName
@@ -65,6 +66,8 @@ module anf 'modules/anf.bicep' = {
     tags: tags
   }
 }
+
+var runNfsServerOnScheduler = sharedStorageMode == 'nfs-scheduler'
 
 module amlfs 'modules/amlfs.bicep' = if (amlfsSizeTiB > 0) {
   name: 'amlfs'
@@ -108,8 +111,9 @@ module scheduler 'modules/scheduler.bicep' = {
     adminUsername: adminUsername
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
-    anfMountIp: anf.outputs.mountIp
-    anfExportPath: anf.outputs.mountPath
+    sharedMountIp: runNfsServerOnScheduler ? '' : anf!.outputs.mountIp
+    sharedExportPath: runNfsServerOnScheduler ? '' : anf!.outputs.mountPath
+    runNfsServer: runNfsServerOnScheduler
     partitionsConf: partitionsConf
     userAssignedIdentityId: uai.id
     userAssignedIdentityClientId: uai.properties.clientId
@@ -119,6 +123,9 @@ module scheduler 'modules/scheduler.bicep' = {
     tags: tags
   }
 }
+
+var sharedMountIpEffective = runNfsServerOnScheduler ? scheduler.outputs.privateIp : anf!.outputs.mountIp
+var sharedExportPathEffective = runNfsServerOnScheduler ? 'shared' : anf!.outputs.mountPath
 
 module login 'modules/login.bicep' = {
   name: 'login'
@@ -132,8 +139,8 @@ module login 'modules/login.bicep' = {
     adminUsername: adminUsername
     publicIp: loginPublicIp
     schedulerPrivateIp: scheduler.outputs.privateIp
-    anfMountIp: anf.outputs.mountIp
-    anfExportPath: anf.outputs.mountPath
+    sharedMountIp: sharedMountIpEffective
+    sharedExportPath: sharedExportPathEffective
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
     amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
@@ -159,8 +166,8 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     azclusterVersion: azclusterVersion
     azclusterRepo: azclusterRepo
     schedulerPrivateIp: scheduler.outputs.privateIp
-    anfMountIp: anf.outputs.mountIp
-    anfExportPath: anf.outputs.mountPath
+    sharedMountIp: sharedMountIpEffective
+    sharedExportPath: sharedExportPathEffective
     amlfsMountCommand: amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
     monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
@@ -171,7 +178,7 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
 
 output loginPublicIp string = login.outputs.publicIp
 output schedulerPrivateIp string = scheduler.outputs.privateIp
-output anfMountIp string = anf.outputs.mountIp
+output anfMountIp string = sharedMountIpEffective
 output amlfsMgsAddress string = amlfsSizeTiB > 0 ? amlfs.outputs.mgsAddress : ''
 output amlfsMountCommand string = amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
 output computeVmssNames array = [for (pool, i) in pools: compute[i].outputs.vmssName]
