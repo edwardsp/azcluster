@@ -1,0 +1,35 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}, "id": 1, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "DCGM_FI_DEV_GPU_UTIL{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "{{instance}} gpu{{gpu}}", "refId": "A"}], "title": "GPU utilization", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "mbytes", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}, "id": 2, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "DCGM_FI_DEV_FB_USED{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "{{instance}} gpu{{gpu}}", "refId": "A"}], "title": "GPU framebuffer memory used", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "hertz", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}, "id": 3, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "DCGM_FI_DEV_SM_CLOCK{instance=~\"$instance\",gpu=~\"$gpu\"} * 1000000", "legendFormat": "{{instance}} gpu{{gpu}}", "refId": "A"}], "title": "GPU SM clock", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "watt", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}, "id": 4, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "DCGM_FI_DEV_POWER_USAGE{instance=~\"$instance\",gpu=~\"$gpu\"}", "legendFormat": "{{instance}} gpu{{gpu}}", "refId": "A"}], "title": "GPU power draw", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}, "id": 5, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "increase(DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS{instance=~\"$instance\",gpu=~\"$gpu\"}[$__rate_interval])", "legendFormat": "{{instance}} gpu{{gpu}} uncorrectable rows", "refId": "A"}, {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "increase(DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS{instance=~\"$instance\",gpu=~\"$gpu\"}[$__rate_interval])", "legendFormat": "{{instance}} gpu{{gpu}} correctable rows", "refId": "B"}], "title": "GPU remapped-row errors", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "Bps", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}, "id": 6, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "rate(DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL{instance=~\"$instance\",gpu=~\"$gpu\"}[$__rate_interval])", "legendFormat": "{{instance}} gpu{{gpu}}", "refId": "A"}], "title": "NVLink bandwidth counter rate", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "Bps", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}, "id": 7, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "rate(node_infiniband_port_data_received_bytes_total{instance=~\"$instance\"}[$__rate_interval])", "legendFormat": "{{instance}} {{device}} port {{port}} recv", "refId": "A"}], "title": "InfiniBand port receive throughput", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "fieldConfig": {"defaults": {"unit": "Bps", "min": 0}, "overrides": []}, "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}, "id": 8, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi", "sort": "desc"}}, "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "rate(node_infiniband_port_data_transmitted_bytes_total{instance=~\"$instance\"}[$__rate_interval])", "legendFormat": "{{instance}} {{device}} port {{port}} xmit", "refId": "A"}], "title": "InfiniBand port transmit throughput", "type": "timeseries"}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["azcluster", "managed-prometheus", "gpu", "infiniband"],
+  "templating": {
+    "list": [
+      {"current": {"selected": false, "text": "Prometheus", "value": "prometheus"}, "hide": 0, "includeAll": false, "label": "Prometheus datasource", "multi": false, "name": "DS_PROMETHEUS", "options": [], "query": "prometheus", "refresh": 1, "regex": "", "type": "datasource"},
+      {"current": {"selected": false, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "definition": "label_values(DCGM_FI_DEV_GPU_UTIL, instance)", "hide": 0, "includeAll": true, "label": "Instance", "multi": true, "name": "instance", "options": [], "query": {"query": "label_values(DCGM_FI_DEV_GPU_UTIL, instance)", "refId": "InstanceVariable"}, "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"current": {"selected": false, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "definition": "label_values(DCGM_FI_DEV_GPU_UTIL{instance=~\"$instance\"}, gpu)", "hide": 0, "includeAll": true, "label": "GPU", "multi": true, "name": "gpu", "options": [], "query": {"query": "label_values(DCGM_FI_DEV_GPU_UTIL{instance=~\"$instance\"}, gpu)", "refId": "GpuVariable"}, "refresh": 1, "regex": "", "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "azcluster / GPU + InfiniBand",
+  "uid": "azcluster-gpu-ib",
+  "version": 1,
+  "weekStart": ""
+}

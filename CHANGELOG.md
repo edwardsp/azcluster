@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-05-22
+
+### Added
+- **Phase 3 observability dashboards complete.** Added three Azure Managed Grafana dashboards for the AMW Managed Prometheus datasource: node health, Slurm scheduler, and GPU + InfiniBand.
+- `grafana/dashboards/node.json` covers per-role and per-instance CPU, load, memory, network throughput, filesystem usage for `/`, `/shared`, and `/amlfs`, and file descriptor pressure.
+- `grafana/dashboards/slurm.json` covers Slurm CPU and node totals, idle/allocated/down/drain/mixed states, pending vs running jobs, exporter scrape duration, and partition breakdowns.
+- `grafana/dashboards/gpu_ib.json` covers DCGM GPU utilization, framebuffer memory, SM clocks, power, remapped-row errors, NVLink bandwidth, and node_exporter InfiniBand port receive/transmit throughput.
+- `bicep/modules/grafana-dashboards.bicep` provisions the three dashboards as AMG child resources using the generated AMW Prometheus datasource variable instead of hardcoding datasource UIDs.
+
+### Changed
+- Workspace version 0.11.1 -> 0.11.2.
+- CLI default `--azcluster-version` bumped to `v0.11.2`.
+- `bicep/modules/monitoring.bicep` now invokes `grafana-dashboards.bicep` after AMG provisioning so dashboards land alongside the AMG instance when `--monitoring` is set, and exports a `grafanaDashboardIds` array output.
+
 ## [0.11.1] - 2026-05-22
 
 ### Added
@@ -23,7 +37,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [0.11.0] - 2026-05-22
 
 ### Added
-- **Per-VM Prometheus on the scheduler** with `remote_write` to Azure Monitor Workspace, using Prometheus's native `azuread.managed_identity` authentication (no AMA, no DCR custom scrape). Mirrors the Azure CycleCloud monitoring pattern. Prometheus 3.3.0 binary installed to `/opt/prometheus`, data under `/mnt/prometheus/data`, listens on `127.0.0.1:9090`, scrapes the local `node_exporter` (`:9100`) and `prometheus-slurm-exporter` (`:8081`).
+- **Per-VM Prometheus on the scheduler** with `remote_write` to Azure Monitor Workspace, using Prometheus's native `azuread.managed_identity` authentication (no AMA, no DCR custom scrape). Prometheus 3.3.0 binary installed to `/opt/prometheus`, data under `/mnt/prometheus/data`, listens on `127.0.0.1:9090`, scrapes the local `node_exporter` (`:9100`) and `prometheus-slurm-exporter` (`:8081`).
 - **Shared monitoring UAI** (`uai-${clusterName}-mon`) created in `monitoring.bicep` and attached to the scheduler VM alongside the existing scheduler UAI. Granted `Monitoring Metrics Publisher` (`3913510d-...`) on the AMW's auto-created default Data Collection Rule (the actual ingestion gate - role on the AMW itself is insufficient).
 - **`bicep/modules/ingestion-endpoint.bicep`** sub-module, deployed at the Azure-managed sister RG scope (`MA_<amwName>_<location>_managed`), resolves the DCE metrics ingestion endpoint + DCR immutable id and creates the cross-RG role assignment.
 
@@ -251,7 +265,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.2
 [0.11.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.1
 [0.11.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.0
 [0.10.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.10.1

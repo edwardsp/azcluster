@@ -60,6 +60,7 @@ If a PR touches code but skips any of these three, it is incomplete.
   ```
   Audience is implicit (`https://monitor.azure.com/`). The UAI MUST be attached to the VM AND hold Metrics Publisher on the DCR (see above).
 - **VMSS Flex + SystemAssigned identity** is rejected in subscriptions with AzSecPack/UAI-only policy (`InvalidParameter` on `identity`). VMs are fine; VMSS must use UserAssigned (or no MI).
+- **Grafana dashboard JSON** lives under `grafana/dashboards/` and is provisioned by `bicep/modules/grafana-dashboards.bicep`. Keep panel ids stable across edits, use a datasource template variable named `DS_PROMETHEUS`, and never hardcode Azure Managed Grafana datasource UIDs.
 - Phase 1+ test region: `southafricanorth`, RG `paul-azcluster`, max 2 GPU nodes.
 
 ## Subnetting (VNet `10.42.0.0/16`)
