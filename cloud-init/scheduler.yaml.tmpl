@@ -227,10 +227,8 @@ write_files:
       # microsoft-dsvm:ubuntu-hpc:2404 image. Expect ~340 GB/s avg /
       # ~460 GB/s peak busbw at 16 GiB across 8x NDR400 IB.
       #
-      # PYXIS NOTE: running this inside a container via
-      # --container-image=... currently fails cross-node because the
-      # nccl-test container ships PMIx 5.x while Slurm 25.11's mpi_pmix
-      # plugin is built for PMIx 4.x. Single-node container runs work.
+      # For the same test inside an NGC container (Pyxis), see
+      # dgxc-nemo-multinode-smoke.sbatch (added in v0.13.6).
 
       HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 2>/dev/null | head -1)
       if [ -z "${HPCX_DIR}" ]; then
@@ -275,11 +273,9 @@ write_files:
       #   * NCCL all-reduce across 8 H100 using NVLink + InfiniBand HCA
       #     from inside the NGC NeMo container (IBext_v11 / SHARP)
       #
-      # WHY SINGLE NODE: cross-node Pyxis+PMIx jobs currently fail because
-      # Slurm 25.11 ships mpi_pmix_v4.so (PMIx 4.x) while modern NVIDIA
-      # containers ship PMIx 5.x. Bare-metal multi-node NCCL via HPC-X
-      # works (see nccl-allreduce.sbatch). Cross-node containerised
-      # tracked for v0.14+.
+      # WHY SINGLE NODE: this is the infra smoke. For the multi-node
+      # containerised NCCL all-reduce (v0.13.6+) see
+      # dgxc-nemo-multinode-smoke.sbatch.
       #
       # WHY NOT "RUN LLAMA 8B": NeMo / Megatron-Bridge recipe APIs
       # rename between container releases (llama31_8b_pretrain_config,
@@ -347,6 +343,60 @@ write_files:
         --no-container-mount-home \
         --export=ALL,NCCL_DEBUG=INFO \
         bash -c 'set -euo pipefail; cd /; torchrun --nproc_per_node=8 /shared/dgxc/nccl_allreduce_smoke.py'
+      EOF
+      cat > "${EXAMPLES_DIR}/dgxc-nemo-multinode-smoke.sbatch" <<'EOF'
+      #!/usr/bin/env bash
+      #SBATCH --job-name=dgxc-nemo-multi
+      #SBATCH --output=dgxc-nemo-multi-%j.out
+      #SBATCH --partition=gpu
+      #SBATCH --nodes=2
+      #SBATCH --ntasks-per-node=8
+      #SBATCH --gpus-per-node=8
+      #SBATCH --exclusive
+      #SBATCH --time=00:30:00
+
+      # Multi-node containerised NCCL all-reduce on Azure NDv5 H100.
+      # 2 nodes x 8 H100 = 16 ranks across 8x NDR400 InfiniBand per node.
+      #
+      # This is the cross-node Pyxis test that v0.13.6 unblocked. Pre-
+      # v0.13.6 this failed with isolated single-node MPI worlds because
+      # slurmd had no PMIX_MCA_* env and Enroot wasn't propagating
+      # PMIX_* into the container or bind-mounting PMIX_SERVER_TMPDIR.
+      # v0.13.6 wires both: slurmd EnvironmentFile carries PMIX_MCA_*
+      # and /etc/enroot/hooks.d/50-slurm-pmi.sh handles propagation.
+      #
+      # WHAT IT TESTS:
+      #   * srun --mpi=pmix launches 16 ranks across 2 containers
+      #   * 50-slurm-pmi.sh hook copies PMIX_* + SLURM_* into container
+      #   * PMIX_SERVER_TMPDIR bind-mounted -> ranks see ONE PMIx world
+      #   * NCCL discovers 8x mlx5_ib NICs per node, IBext / SHARP
+      #   * All-reduce busbw across IB (expect > 100 GB/s avg @ 1 GiB)
+      #
+      # RUN:
+      #   sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch
+      # Success criteria:
+      #   * "rank 0 / world 16" and "rank 8 / world 16" both print
+      #   * "all_reduce avg busbw" prints with a value > 100 GB/s
+      #   * NCCL_DEBUG INFO shows "NET/IB" + "mlx5_ib" + "via SHARP"
+      #     (NOT "via SOCKET" - that means PMIx fell back to TCP)
+
+      NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}
+
+      # Reuse the same all-reduce script as the single-node smoke.
+      if [ ! -f /shared/dgxc/nccl_allreduce_smoke.py ]; then
+        echo "Missing /shared/dgxc/nccl_allreduce_smoke.py; run dgxc-nemo-container-smoke.sbatch first to drop it." >&2
+        exit 1
+      fi
+
+      # srun --mpi=pmix is the key: it makes Slurm spawn one container
+      # rank per task with PMIX_* env populated; the enroot hook copies
+      # those into the container and bind-mounts the PMIx server socket.
+      srun --mpi=pmix \
+        --container-image="${NEMO_IMAGE}" \
+        --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \
+        --no-container-mount-home \
+        --export=ALL,NCCL_DEBUG=INFO \
+        bash -c 'set -euo pipefail; cd /; python /shared/dgxc/nccl_allreduce_smoke.py'
       EOF
       chmod 0755 "${EXAMPLES_DIR}"
       chmod 0644 "${EXAMPLES_DIR}"/*.sbatch

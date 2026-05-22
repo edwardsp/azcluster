@@ -5,6 +5,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Verified
+- **NGC container PMIx version audit (v0.13.6 decision).** Comprehensive research across NVIDIA NGC training containers (PyTorch 24.10–25.05, NeMo 25.07, TensorFlow 24.05) and HPC-X versions 2.18–2.26 confirms: all major NGC training containers from 2024–2025 ship HPC-X 2.20–2.25, all bundling PMIx 4.2.x. The `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest` image uses HPC-X 2.26, which also bundles PMIx 4.2.9 (not PMIx 5.x as previously claimed). No PMIx 5 found in production NGC containers as of May 2026. Conclusion: azcluster v0.13.6 ships only `mpi_pmix_v4.so` (no PMIx 5 rebuild required). The CCWS-style runtime fix (slurmd EnvironmentFile + enroot hooks) is sufficient for cross-node containerised MPI. Evidence: NVIDIA HPC-X release notes, Azure HPC image specifications, NGC container release notes. See AGENTS.md "Cross-node containerised MPI via Pyxis" section for implementation details.
+
+
 ## [0.13.5] - 2026-05-22
 
 ### Added

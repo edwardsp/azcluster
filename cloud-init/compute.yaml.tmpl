@@ -309,11 +309,103 @@ write_files:
         chmod 0644 /etc/enroot/mounts.d/50-azcluster.fstab
       fi
 
+      # Cross-node containerised MPI via Pyxis needs two pieces working
+      # together (CCWS / Azure HPC pattern; see AGENTS.md PMIx gotcha):
+      #   1) slurmd must export PMIX_MCA_* env so the PMIx server tmpdir
+      #      / security / GDS modules don't drift between ranks.
+      #   2) Enroot must propagate PMIX_* + SLURM_* env into the container
+      #      and bind-mount $PMIX_SERVER_TMPDIR; the 50-slurm-pmi.sh hook
+      #      does both. Without it Pyxis containers can't talk to the
+      #      host PMIx server and each rank initialises as a singleton
+      #      MPI world.
+      # The hook content is upstream NVIDIA Enroot (Apache 2.0); pinned
+      # in-tree so this works whether or not the enroot .deb ships
+      # /usr/share/enroot/hooks.d/extra/.
+      mkdir -p /etc/enroot/hooks.d
+      cat > /etc/enroot/hooks.d/50-slurm-pmi.sh <<'EOF'
+      #! /usr/bin/env bash
+      # Upstream NVIDIA/enroot conf/hooks/extra/50-slurm-pmi.sh (Apache 2.0)
+      set -euo pipefail
+      shopt -s lastpipe
+
+      if [ -z "${SLURM_JOB_ID-}" ] || [ -z "${SLURM_STEP_ID-}" ]; then
+          exit 0
+      fi
+
+      for var in $(compgen -e "SLURM_"); do
+          printf "%s=%s\n" "${var}" "${!var}" >> "${ENROOT_ENVIRON}"
+      done
+
+      if [[ -z "${SLURM_MPI_TYPE-}" || "${SLURM_MPI_TYPE}" == pmix* ]] && compgen -e "PMIX_" > /dev/null; then
+          for var in $(compgen -e "PMIX_"); do
+              printf "%s=%s\n" "${var}" "${!var}" >> "${ENROOT_ENVIRON}"
+          done
+          if [ -n "${PMIX_PTL_MODULE-}" ] && [ -z "${PMIX_MCA_ptl-}" ]; then
+              printf "PMIX_MCA_ptl=%s\n" ${PMIX_PTL_MODULE} >> "${ENROOT_ENVIRON}"
+          fi
+          if [ -n "${PMIX_SECURITY_MODE-}" ] && [ -z "${PMIX_MCA_psec-}" ]; then
+              printf "PMIX_MCA_psec=%s\n" ${PMIX_SECURITY_MODE} >> "${ENROOT_ENVIRON}"
+          fi
+          if [ -n "${PMIX_GDS_MODULE-}" ] && [ -z "${PMIX_MCA_gds-}" ]; then
+              printf "PMIX_MCA_gds=%s\n" ${PMIX_GDS_MODULE} >> "${ENROOT_ENVIRON}"
+          fi
+          if [ -n "${PMIX_SERVER_TMPDIR-}" ]; then
+              printf "%s x-create=dir,bind,rw,nosuid,noexec,nodev,private,nofail\n" "${PMIX_SERVER_TMPDIR}" >> "${ENROOT_MOUNTS}"
+          fi
+      fi
+
+      if compgen -e "PMI_" > /dev/null; then
+          for var in $(compgen -e "PMI_"); do
+              printf "%s=%s\n" "${var}" "${!var}" >> "${ENROOT_ENVIRON}"
+          done
+      fi
+      EOF
+      chmod 0755 /etc/enroot/hooks.d/50-slurm-pmi.sh
+
+      cat > /etc/enroot/hooks.d/50-slurm-pytorch.sh <<'EOF'
+      #! /usr/bin/env bash
+      # Upstream NVIDIA/enroot conf/hooks/extra/50-slurm-pytorch.sh (Apache 2.0)
+      set -eu
+
+      if ! grep -q "^PYTORCH_VERSION=" "${ENROOT_ENVIRON}"; then
+          exit 0
+      fi
+
+      if [ -n "${SLURM_STEP_NODELIST-}" ] && ! grep -q "^MASTER_ADDR=" "${ENROOT_ENVIRON}" && command -v scontrol > /dev/null; then
+          printf "MASTER_ADDR=%s\n" "$(scontrol show hostname "${SLURM_STEP_NODELIST}" | head -n1)" >> "${ENROOT_ENVIRON}"
+      fi
+      if [ -n "${SLURM_JOB_ID-}" ] && ! grep -q "^MASTER_PORT=" "${ENROOT_ENVIRON}"; then
+          printf "MASTER_PORT=%s\n" "$((${SLURM_JOB_ID} % 4536 + 61000))" >> "${ENROOT_ENVIRON}"
+      fi
+      if [ -n "${SLURM_NTASKS-}" ] && ! grep -q "^WORLD_SIZE=" "${ENROOT_ENVIRON}"; then
+          printf "WORLD_SIZE=%s\n" "${SLURM_NTASKS}" >> "${ENROOT_ENVIRON}"
+      fi
+      if [ -n "${SLURM_PROCID-}" ] && ! grep -q "^RANK=" "${ENROOT_ENVIRON}"; then
+          printf "RANK=%s\n" "${SLURM_PROCID}" >> "${ENROOT_ENVIRON}"
+      fi
+      if [ -n "${SLURM_LOCALID-}" ] && ! grep -q "^LOCAL_RANK=" "${ENROOT_ENVIRON}"; then
+          printf "LOCAL_RANK=%s\n" "${SLURM_LOCALID}" >> "${ENROOT_ENVIRON}"
+      fi
+      if [ "${SLURM_STEP_NUM_TASKS:-1}" -gt "${SLURM_STEP_NUM_NODES:-1}" ] && ! grep -q "^OMP_NUM_THREADS=" "${ENROOT_ENVIRON}"; then
+          printf "OMP_NUM_THREADS=1\n" >> "${ENROOT_ENVIRON}"
+      fi
+      EOF
+      chmod 0755 /etc/enroot/hooks.d/50-slurm-pytorch.sh
+
       # Note: drop CPUs= from --conf so slurmd autodetects sockets/cores/
       # threads consistent with Parameters=l3cache_as_socket. Specifying
       # CPUs= explicitly here loses the L3-as-socket topology.
+      # PMIX_MCA_* env: pinned PMIx server/client modules so all ranks
+      # negotiate the same transport / security / GDS regardless of host
+      # autodetect. HWLOC_COMPONENTS=-opencl avoids a noisy hwloc OpenCL
+      # warning on GPU nodes.
       cat > /etc/default/slurmd <<EOF
       SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf "RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}${EXTRA_CONF}"
+      PMIX_MCA_ptl=^usock
+      PMIX_MCA_psec=none
+      PMIX_SYSTEM_TMPDIR=/var/empty
+      PMIX_MCA_gds=hash
+      HWLOC_COMPONENTS=-opencl
       EOF
 
       cat > /usr/local/sbin/azcluster-healthcheck <<'EOF'
