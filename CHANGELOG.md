@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.13.5] - 2026-05-22
+
+### Added
+- **Automatic NVMe RAID-0 ephemeral scratch on SKUs with `Microsoft NVMe Direct Disk(s)`.** ND96isr_H100_v5 ships 8× ~3.5 TB raw NVMe (28 TB total) which the marketplace image leaves unpartitioned. Compute bootstrap now detects them via `lsblk -d -n -p -o NAME,MODEL` (regex `Microsoft NVMe Direct Disk( v2)?`, case-insensitive), wipes filesystem signatures, builds `/dev/md/azcluster_nvme` as RAID-0 (chunk=128, metadata=1.2, ext4 with label `azcluster_nvme`), mounts at `/mnt/nvme` with `nofail,x-systemd.device-timeout=10`, and persists via `/etc/mdadm/mdadm.conf` + `/etc/fstab`. Survives reboots. Lost on deallocation (ephemeral by design). Falls through silently on SKUs without NVMe Direct Disks.
+- **Enroot extraction relocated to `/mnt/nvme` when present.** Container imports (e.g. the ~20 GB NeMo container) now extract onto NVMe RAID-0 in seconds rather than minutes on the SCSI resource disk or root. Scratch precedence: `/mnt/nvme` > `/mnt` > `/var/lib`. Both `/var/lib/enroot` and `/var/lib/enroot-data` are symlinked to the chosen base.
+- **DGXC (NVIDIA dgxc-benchmarking) compatibility baked into compute nodes.**
+  - `/etc/enroot/enroot.conf` now sets `ENROOT_REMAP_ROOT yes` (in addition to existing `ENROOT_ROOTFS_WRITABLE yes`), matching DGXC and most NVIDIA NGC container expectations.
+  - `/etc/enroot/environ.d/50-nccl.env` written so NCCL/UCX env vars propagate INTO Pyxis containers (Enroot environ.d runs on container start; `/etc/profile.d/` does not because non-login shells skip it).
+  - `/etc/enroot/mounts.d/50-azcluster.fstab` bind-mounts `/opt/microsoft` (containing `ndv5-topo.xml`) into every container read-only, so `NCCL_TOPO_FILE` resolves inside the container.
+- **`/shared/examples/dgxc-nemo-container-smoke.sbatch`** — self-contained 1-node × 8-GPU NCCL all-reduce smoke test using `nvcr.io/nvidia/nemo:25.07.02` (20 GB image). No NGC credentials required. Validates the full Pyxis → NVMe → NCCL-in-container path (Enroot environ.d propagation, mounts.d topology bind, IBext_v11 over `mlx5_ib0..7`). Uses plain `torch.distributed.all_reduce` to avoid NeMo recipe API churn between container versions. The full Llama 3.1 8B (and larger) training path is documented in `walkthrough-dgxc.md` via NVIDIA's `llmb-run` driver.
+- **`walkthrough-dgxc.md`** — end-to-end DGXC guide: infra smoke test sbatch, full `llmb-install` flow with NGC credentials, multi-node PMIx 4↔5 limitations and workarounds.
+
+### Fixed
+- **`AccountingStorageTRES=gres/gpu` was emitted unconditionally in `scheduler.yaml.tmpl`**, causing slurmctld to abort with `fatal: slurmdbd is required to run with TRES gres/gpu` when deploying a GPU pool with `--no-accounting`. Moved the line inside the `ENABLE_ACCOUNTING=true` block. Caught by the v0.13.5 live test on `paul-azcluster-h100b`.
+- **`/shared/examples` was unreadable by `azureuser`** because the scheduler bootstrap ran `chown -R "${AZCLUSTER_NAME:-azureuser}":users` which uses the *cluster name* as the username and the non-existent `users` group, both silently failing under `|| true`. Result: NFSv4.1 anonymous mapping left the directory `nobody:nogroup 0700`. Replaced with explicit `chmod 0755 dir; chmod 0644 files; chown -R azureuser:azureuser dir`. Caught by the v0.13.5 live test.
+
+### Changed
+- Workspace version `0.13.4` -> `0.13.5`.
+- CLI default `--azcluster-version` bumped to `v0.13.5`.
+
+### Verified
+- 1-node `Standard_ND96isr_H100_v5` (`paul-azcluster-h100b`, `southafricanorth`) — ARM deploy 699s (~11.6 min) including NVMe RAID-0 of 8x ~3.5 TB disks into 28 TB `/mnt/nvme`. Pyxis import of `nvcr.io/nvidia/nemo:25.07.02` (20 GB) onto NVMe completed in seconds. `dgxc-nemo-container-smoke.sbatch` (8x H100 NVLink all-reduce, 1 GiB fp16, 20 iters) completed in **0.081s elapsed, algbw 266.53 GB/s, avg busbw 466.42 GB/s** with NCCL RDMA Plugin v10 / IBext_v10 loaded and `NCCL_IB_HCA=mlx5_ib` correctly injected from `/etc/enroot/environ.d/50-nccl.env` (proves Enroot environ.d propagation into Pyxis containers). slurmctld `active` under `--no-accounting` (proves TRES gating fix). `/shared/examples` owned `azureuser:azureuser 0755` with files `0644` (proves perms fix).
+
 ## [0.13.4] - 2026-05-22
 
 ### Fixed

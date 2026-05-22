@@ -136,7 +136,6 @@ write_files:
       SelectType=select/cons_tres
       SelectTypeParameters=CR_Core_Memory
       GresTypes=gpu
-      AccountingStorageTRES=gres/gpu
       SchedulerType=sched/backfill
       MpiDefault=none
       LaunchParameters=enable_nss_slurm
@@ -158,6 +157,7 @@ write_files:
       AccountingStorageHost=${AZCLUSTER_NAME}-scheduler
       AccountingStoragePort=6819
       AccountingStorageEnforce=associations,limits,qos
+      AccountingStorageTRES=gres/gpu
       EOF
       fi
 
@@ -248,8 +248,109 @@ write_files:
       srun --mpi=pmix /opt/nccl-tests/build/all_reduce_perf \
         -b 8M -e 16G -f 2 -g 1
       EOF
+      cat > "${EXAMPLES_DIR}/dgxc-nemo-container-smoke.sbatch" <<'EOF'
+      #!/usr/bin/env bash
+      #SBATCH --job-name=dgxc-nemo-smoke
+      #SBATCH --output=dgxc-nemo-smoke-%j.out
+      #SBATCH --partition=gpu
+      #SBATCH --nodes=1
+      #SBATCH --ntasks-per-node=1
+      #SBATCH --gpus-per-node=8
+      #SBATCH --exclusive
+      #SBATCH --time=00:30:00
+
+      # DGXC infra smoke test on Azure NDv5 H100.
+      # Single node, 8 GPUs, in-container NCCL all-reduce inside the
+      # production DGXC NeMo container. ~10 minutes wall-clock (most of
+      # which is the first-time 20 GB container import onto /mnt/nvme).
+      #
+      # WHAT IT TESTS (the v0.13.5 surface):
+      #   * NVMe RAID-0 ephemeral scratch (/mnt/nvme) backing Enroot import
+      #     of the ~20 GB NeMo container -- seconds vs minutes on /var/lib
+      #   * Pyxis container launch with 8 H100 visible inside
+      #   * /etc/enroot/environ.d/50-nccl.env propagating NCCL_IB_HCA /
+      #     NCCL_TOPO_FILE / UCX_NET_DEVICES into the container
+      #   * /etc/enroot/mounts.d/50-azcluster.fstab bind-mounting
+      #     /opt/microsoft (NDv5 topology XML) into the container
+      #   * NCCL all-reduce across 8 H100 using NVLink + InfiniBand HCA
+      #     from inside the NGC NeMo container (IBext_v11 / SHARP)
+      #
+      # WHY SINGLE NODE: cross-node Pyxis+PMIx jobs currently fail because
+      # Slurm 25.11 ships mpi_pmix_v4.so (PMIx 4.x) while modern NVIDIA
+      # containers ship PMIx 5.x. Bare-metal multi-node NCCL via HPC-X
+      # works (see nccl-allreduce.sbatch). Cross-node containerised
+      # tracked for v0.14+.
+      #
+      # WHY NOT "RUN LLAMA 8B": NeMo / Megatron-Bridge recipe APIs
+      # rename between container releases (llama31_8b_pretrain_config,
+      # llama3_8b factory, pretrain_recipe, etc.). The full DGXC Llama
+      # training flow is documented in walkthrough-dgxc.md via NVIDIA's
+      # llmb-run driver, which pins exact versions and handles the API
+      # surface for you. This sbatch is the deterministic infra check.
+      #
+      # RUN:
+      #   sbatch /shared/examples/dgxc-nemo-container-smoke.sbatch
+      #   tail -f dgxc-nemo-smoke-<jobid>.out
+      # Success criteria:
+      #   * "pyxis: imported docker image: ..." line appears
+      #   * "rank 0 / world 8" prints from inside the container
+      #   * "all_reduce avg busbw" prints with a value > 100 GB/s
+      #   * NCCL_DEBUG INFO mentions IBext_v11 + mlx5_ib (NOT 'via SOCKET')
+
+      NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}
+
+      mkdir -p /shared/dgxc
+      cat > /shared/dgxc/nccl_allreduce_smoke.py <<'PY'
+      import os, time, torch
+      import torch.distributed as dist
+
+      def main():
+          local_rank = int(os.environ["LOCAL_RANK"])
+          torch.cuda.set_device(local_rank)
+          dist.init_process_group(backend="nccl")
+          rank, world = dist.get_rank(), dist.get_world_size()
+          print(f"rank {rank} / world {world} on device {torch.cuda.current_device()} "
+                f"({torch.cuda.get_device_name(local_rank)})", flush=True)
+
+          # Warmup + measured all-reduce of a 1 GiB float16 tensor.
+          numel = 512 * 1024 * 1024          # 512 M elements = 1 GiB fp16
+          tensor = torch.ones(numel, dtype=torch.float16, device="cuda")
+          for _ in range(5):
+              dist.all_reduce(tensor)
+          torch.cuda.synchronize()
+
+          iters = 20
+          dist.barrier()
+          t0 = time.perf_counter()
+          for _ in range(iters):
+              dist.all_reduce(tensor)
+          torch.cuda.synchronize()
+          elapsed = time.perf_counter() - t0
+
+          if rank == 0:
+              size_bytes = numel * 2
+              # busbw factor for ring/tree all-reduce = 2*(N-1)/N
+              algbw = size_bytes * iters / elapsed / 1e9
+              busbw = algbw * 2 * (world - 1) / world
+              print(f"all_reduce size=1GiB iters={iters} elapsed={elapsed:.3f}s "
+                    f"algbw={algbw:.2f} GB/s avg busbw={busbw:.2f} GB/s",
+                    flush=True)
+          dist.destroy_process_group()
+
+      if __name__ == "__main__":
+          main()
+      PY
+
+      srun \
+        --container-image="${NEMO_IMAGE}" \
+        --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \
+        --no-container-mount-home \
+        --export=ALL,NCCL_DEBUG=INFO \
+        bash -c 'set -euo pipefail; cd /; torchrun --nproc_per_node=8 /shared/dgxc/nccl_allreduce_smoke.py'
+      EOF
+      chmod 0755 "${EXAMPLES_DIR}"
       chmod 0644 "${EXAMPLES_DIR}"/*.sbatch
-      chown -R "${AZCLUSTER_NAME:-azureuser}":users "${EXAMPLES_DIR}" 2>/dev/null || true
+      chown -R azureuser:azureuser "${EXAMPLES_DIR}"
 
       BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
       cd /tmp

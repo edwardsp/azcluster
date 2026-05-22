@@ -12,3 +12,4 @@ Cargo.lock.bak
 # Bicep transpile output
 *.json.bicep
 bicep/**/*.json
+ngc_key.txt

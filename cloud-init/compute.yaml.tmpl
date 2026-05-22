@@ -69,18 +69,66 @@ write_files:
 
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /run/enroot
 
-      # Azure VMs ship a large NVMe/SSD ephemeral disk at /mnt (956G on
-      # ND96isr_H100_v5; 64G ext4 root fills fast importing multi-GB
-      # container images). Move enroot runtime + cache off the root disk.
-      if [ -d /mnt ] && mountpoint -q /mnt; then
-        mkdir -p /mnt/enroot/runtime /mnt/enroot-data/cache
-        chmod 1777 /mnt/enroot /mnt/enroot/runtime /mnt/enroot-data /mnt/enroot-data/cache
-        # Replace any stale dirs from previous bootstrap attempts.
-        [ -L /var/lib/enroot ] || { rm -rf /var/lib/enroot; ln -s /mnt/enroot /var/lib/enroot; }
-        [ -L /var/lib/enroot-data ] || { rm -rf /var/lib/enroot-data; ln -s /mnt/enroot-data /var/lib/enroot-data; }
+      # --- Local NVMe RAID-0 for fast ephemeral scratch ----------------------
+      # Azure HPC/AI SKUs (ND/NC/HB/Ls-series) expose local NVMe disks under
+      # the model strings "Microsoft NVMe Direct Disk" or "Microsoft NVMe
+      # Direct Disk v2". On ND96isr_H100_v5 that's 8 x ~3.5 TB unformatted
+      # NVMe -- orders of magnitude faster and larger than the /mnt resource
+      # disk (~956 GB SCSI-attached SSD) and essential for importing
+      # multi-GB CUDA/AI container images via Enroot.
+      #
+      # Data is ephemeral (lost on stop-dealloc). We persist the array via
+      # /etc/mdadm/mdadm.conf + /etc/fstab so normal reboots reattach
+      # cleanly; nofail keeps boot moving if the disks ever disappear.
+      NVME_DEVS=$(lsblk -d -n -p -o NAME,MODEL 2>/dev/null \
+        | awk 'BEGIN{IGNORECASE=1} /Microsoft NVMe Direct Disk/ {print $1}' \
+        | sort -u)
+      NVME_COUNT=$(printf "%s\n" "${NVME_DEVS}" | grep -c . || true)
+      if [ "${NVME_COUNT}" -ge 1 ] && ! mountpoint -q /mnt/nvme; then
+        echo "Found ${NVME_COUNT} local NVMe disk(s) for RAID-0 scratch: ${NVME_DEVS}"
+        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends mdadm
+        for d in ${NVME_DEVS}; do
+          swapoff "$d" 2>/dev/null || true
+          umount "$d" 2>/dev/null || true
+          wipefs -af "$d" 2>/dev/null || true
+        done
+        if [ "${NVME_COUNT}" -ge 2 ]; then
+          mdadm --create --verbose --force --run /dev/md/azcluster_nvme \
+            --level=0 --chunk=128 --metadata=1.2 \
+            --raid-devices="${NVME_COUNT}" \
+            --name=azcluster_nvme --homehost=any \
+            ${NVME_DEVS}
+          BLKDEV=/dev/md/azcluster_nvme
+        else
+          BLKDEV=$(echo "${NVME_DEVS}" | head -n1)
+        fi
+        mkfs.ext4 -F -L azcluster_nvme -E lazy_itable_init=1,lazy_journal_init=1 "${BLKDEV}"
+        mkdir -p /mnt/nvme
+        mount -o noatime,nodiratime,discard "${BLKDEV}" /mnt/nvme
+        chmod 1777 /mnt/nvme
+        if [ "${NVME_COUNT}" -ge 2 ]; then
+          mkdir -p /etc/mdadm
+          mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf >/dev/null
+          update-initramfs -u 2>/dev/null || true
+        fi
+        if ! grep -q "azcluster_nvme" /etc/fstab; then
+          echo "LABEL=azcluster_nvme /mnt/nvme ext4 defaults,nofail,noatime,nodiratime,discard,x-systemd.device-timeout=10 0 2" >> /etc/fstab
+        fi
+      fi
+
+      # --- Enroot scratch base: prefer NVMe RAID, fall back to /mnt ---------
+      if mountpoint -q /mnt/nvme; then
+        ENROOT_BASE=/mnt/nvme
+      elif mountpoint -q /mnt; then
+        ENROOT_BASE=/mnt
       else
-        mkdir -p /var/lib/enroot/runtime /var/lib/enroot-data/cache
-        chmod 1777 /var/lib/enroot /var/lib/enroot/runtime /var/lib/enroot-data /var/lib/enroot-data/cache
+        ENROOT_BASE=/var/lib
+      fi
+      mkdir -p "${ENROOT_BASE}/enroot/runtime" "${ENROOT_BASE}/enroot-data/cache"
+      chmod 1777 "${ENROOT_BASE}/enroot" "${ENROOT_BASE}/enroot/runtime" "${ENROOT_BASE}/enroot-data" "${ENROOT_BASE}/enroot-data/cache"
+      if [ "${ENROOT_BASE}" != "/var/lib" ]; then
+        [ -L /var/lib/enroot ] || { rm -rf /var/lib/enroot; ln -s "${ENROOT_BASE}/enroot" /var/lib/enroot; }
+        [ -L /var/lib/enroot-data ] || { rm -rf /var/lib/enroot-data; ln -s "${ENROOT_BASE}/enroot-data" /var/lib/enroot-data; }
       fi
       chmod 1777 /run/enroot
 
@@ -161,7 +209,7 @@ write_files:
       curl -fsSL --retry 8 --retry-delay 5 -o enroot-caps.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot+caps_${ENROOT_VERSION}-1_${ARCH}.deb"
       apt-get -o DPkg::Lock::Timeout=600 install -y ./enroot.deb ./enroot-caps.deb
 
-      mkdir -p /etc/enroot
+      mkdir -p /etc/enroot /etc/enroot/environ.d
       cat > /etc/enroot/enroot.conf <<'EOF'
       ENROOT_RUNTIME_PATH    /var/lib/enroot/runtime/user-$(id -u)
       ENROOT_CACHE_PATH      /var/lib/enroot-data/cache
@@ -171,6 +219,7 @@ write_files:
       ENROOT_MOUNT_HOME      yes
       ENROOT_RESTRICT_DEV    yes
       ENROOT_ROOTFS_WRITABLE yes
+      ENROOT_REMAP_ROOT      yes
       EOF
 
       BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
@@ -233,6 +282,31 @@ write_files:
         export UCX_TLS=tcp
       EOF
         chmod 0644 /etc/profile.d/nccl-azcluster.sh
+
+        # DGXC + most NCCL containers need these env vars set INSIDE the
+        # container. Enroot's environ.d gets sourced by Pyxis on container
+        # start, unlike /etc/profile.d which only fires for host login shells.
+        cat > /etc/enroot/environ.d/50-nccl.env <<'EOF'
+        NCCL_IB_DISABLE=0
+        NCCL_IB_HCA=mlx5_ib
+        NCCL_IB_PCI_RELAXED_ORDERING=1
+        NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml
+        NCCL_SOCKET_IFNAME=eth0
+        NCCL_MIN_NCHANNELS=32
+        UCX_TLS=tcp
+        UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1
+      EOF
+        chmod 0644 /etc/enroot/environ.d/50-nccl.env
+
+        # Bind-mount the NDv5 NCCL topology file into every Pyxis container.
+        # NCCL_TOPO_FILE references a host path; without this mount NCCL
+        # falls back to autodetect inside the container and loses the
+        # optimal channel layout.
+        mkdir -p /etc/enroot/mounts.d
+        cat > /etc/enroot/mounts.d/50-azcluster.fstab <<'EOF'
+        /opt/microsoft /opt/microsoft none x-create=dir,bind,ro,nosuid,nodev
+      EOF
+        chmod 0644 /etc/enroot/mounts.d/50-azcluster.fstab
       fi
 
       # Note: drop CPUs= from --conf so slurmd autodetects sockets/cores/

@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.13.4)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) + GPU pool live-validated. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand**. Next milestone: resolve PMIx 4↔5 ABI mismatch so Pyxis-containerised NCCL works across nodes; v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
+> **Status (v0.13.5)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) + GPU pool live-validated. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand**. v0.13.5 adds automatic NVMe RAID-0 ephemeral scratch on `/mnt/nvme` (28 TB on ND96isr_H100_v5), DGXC (NVIDIA dgxc-benchmarking) compatibility baked into compute nodes (Enroot environ.d + mounts.d + ENROOT_REMAP_ROOT), and a self-contained Llama 3.1 8B Pyxis smoke test at `/shared/examples/dgxc-llama8b-h100.sbatch`. Full DGXC workflow documented in [walkthrough-dgxc.md](walkthrough-dgxc.md). Next milestone: resolve PMIx 4↔5 ABI mismatch so Pyxis-containerised NCCL/DGXC works across nodes; v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.13.4
+VERSION=v0.13.5
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
