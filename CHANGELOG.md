@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-05-22
+
+### Fixed
+- **Compute cloud-init syntax error.** The NCCL heredoc terminator (`EOF`) in `cloud-init/compute.yaml.tmpl` lived inside the GPU `if` block at column 8 (2 extra spaces of indent). After YAML stripped the 6-space block-scalar indent, the terminator landed at column 2 instead of column 0, so bash never closed the heredoc. The downstream script then crashed with `syntax error: unexpected end of file`, and slurmd / prometheus / node_exporter never started on compute. Dedented the closer to column 6 so it lands at column 0 in the materialised script. Caught live: v0.11.1 deploy had `up{role="login"}` and `up{role="scheduler"}` ingesting cleanly, but `up{role="compute"}` was absent and `sinfo` showed zero nodes.
+- **Grafana Admin RBAC for dashboard import.** v0.11.3 added CLI post-deploy dashboard import via `az grafana dashboard create`, but the deployer principal had no Grafana role on the AMG instance, so the API returned `401 NoRoleAssignedException`. Added a conditional role assignment in `bicep/modules/monitoring.bicep` that grants Grafana Admin (`22926164-76b3-42b3-bc55-97df8dab3e41`) to the deployer principal on the AMG resource scope when `--monitoring` is enabled.
+
+### Added
+- CLI resolves the current deployer (`az ad signed-in-user show` for users, `az ad sp show --id <upn>` for service principals) and threads `deployerPrincipalId` + `deployerPrincipalType` into the Bicep deployment whenever `--monitoring` is set.
+- `import_dashboards` retries up to 10 times with 30s back-off when AMG returns 401 / `NoRoleAssignedException`, so the post-deploy import survives the typical 1-3 min role propagation window.
+
+### Changed
+- Workspace version 0.11.3 -> 0.11.4.
+- CLI default `--azcluster-version` bumped to `v0.11.4`.
+
 ## [0.11.3] - 2026-05-22
 
 ### Fixed
@@ -275,7 +289,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.3...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.4...HEAD
+[0.11.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.4
 [0.11.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.3
 [0.11.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.2
 [0.11.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.1

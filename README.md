@@ -12,7 +12,7 @@ One `az deployment sub create` triggers everything. No daemons on your laptop.
 
 **Phase 2** (in progress, v0.2.0): multi-pool partitions (CPU + GPU side-by-side), IB/NCCL tunings for NDv5 H100/H200, AMLFS (optional), GPU smoke + NCCL all-reduce validation.
 
-**Phase 3** (shipped, v0.11.3): managed observability — opt-in `--monitoring` provisions Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, plus a shared monitoring UAI granted Metrics Publisher on the AMW's default DCR. `node_exporter` on every node, `prometheus-slurm-exporter` on scheduler, `dcgm-exporter` auto-starts on GPU compute. Per-VM Prometheus on scheduler, login, and every compute node remote-writes those exporters into AMW (`azuread.managed_identity`). The CLI imports node health, Slurm scheduler, and GPU + InfiniBand dashboards into AMG post-deploy.
+**Phase 3** (shipped, v0.11.4): managed observability — opt-in `--monitoring` provisions Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, plus a shared monitoring UAI granted Metrics Publisher on the AMW's default DCR. The deployer principal also gets Grafana Admin on the AMG instance so the CLI can import dashboards post-deploy. `node_exporter` on every node, `prometheus-slurm-exporter` on scheduler, `dcgm-exporter` auto-starts on GPU compute. Per-VM Prometheus on scheduler, login, and every compute node remote-writes those exporters into AMW (`azuread.managed_identity`). The CLI imports node health, Slurm scheduler, and GPU + InfiniBand dashboards into AMG post-deploy with retry-on-RBAC-propagation.
 
 ## Prerequisites
 

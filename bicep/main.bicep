@@ -90,6 +90,17 @@ param enableMonitoring bool = false
 @description('Azure region for Managed Grafana. Defaults to the cluster location. Override when the cluster region does not host Managed Grafana (e.g. southafricanorth -> uksouth).')
 param grafanaLocation string = location
 
+@description('AAD object id of the deployer (user or service principal). Granted Grafana Admin on the AMG instance so the CLI can import dashboards post-deploy. Required when --monitoring is set.')
+param deployerPrincipalId string = ''
+
+@description('Principal type of deployerPrincipalId.')
+@allowed([
+  'User'
+  'ServicePrincipal'
+  'Group'
+])
+param deployerPrincipalType string = 'User'
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -130,6 +141,8 @@ module cluster 'cluster.bicep' = {
     pools: pools
     enableMonitoring: enableMonitoring
     grafanaLocation: grafanaLocation
+    deployerPrincipalId: deployerPrincipalId
+    deployerPrincipalType: deployerPrincipalType
     tags: commonTags
   }
 }
@@ -142,3 +155,4 @@ output amlfsMgsAddress string = cluster.outputs.amlfsMgsAddress
 output amlfsMountCommand string = cluster.outputs.amlfsMountCommand
 output computeVmssNames array = cluster.outputs.computeVmssNames
 output grafanaEndpoint string = cluster.outputs.grafanaEndpoint
+output grafanaName string = cluster.outputs.grafanaName

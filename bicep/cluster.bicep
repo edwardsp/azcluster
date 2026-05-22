@@ -21,6 +21,8 @@ param amlfsZone string
 param pools array
 param enableMonitoring bool
 param grafanaLocation string
+param deployerPrincipalId string = ''
+param deployerPrincipalType string = 'User'
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -85,6 +87,8 @@ module monitoring 'modules/monitoring.bicep' = if (enableMonitoring) {
     clusterName: clusterName
     location: location
     grafanaLocation: grafanaLocation
+    deployerPrincipalId: deployerPrincipalId
+    deployerPrincipalType: deployerPrincipalType
     tags: tags
   }
 }
@@ -172,4 +176,5 @@ output amlfsMgsAddress string = amlfsSizeTiB > 0 ? amlfs.outputs.mgsAddress : ''
 output amlfsMountCommand string = amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand : ''
 output computeVmssNames array = [for (pool, i) in pools: compute[i].outputs.vmssName]
 output grafanaEndpoint string = enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
+output grafanaName string = enableMonitoring ? monitoring!.outputs.grafanaName : ''
 

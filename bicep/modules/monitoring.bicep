@@ -1,12 +1,20 @@
 param clusterName string
 param location string
 param grafanaLocation string
+param deployerPrincipalId string = ''
+@allowed([
+  'User'
+  'ServicePrincipal'
+  'Group'
+])
+param deployerPrincipalType string = 'User'
 param tags object
 
 var amwName = 'amw-${clusterName}'
 var grafanaName = 'amg-${clusterName}'
 var monUaiName = 'uai-${clusterName}-mon'
 var monitoringDataReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b0d8363b-8ddd-447d-831f-62ca05bff136')
+var grafanaAdminRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '22926164-76b3-42b3-bc55-97df8dab3e41')
 
 resource amw 'Microsoft.Monitor/accounts@2023-04-03' = {
   name: amwName
@@ -53,6 +61,16 @@ resource raGrafana 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     roleDefinitionId: monitoringDataReaderRoleId
     principalId: grafana.identity.principalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+resource raDeployerGrafanaAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(deployerPrincipalId)) {
+  scope: grafana
+  name: guid(grafana.id, deployerPrincipalId, grafanaAdminRoleId)
+  properties: {
+    roleDefinitionId: grafanaAdminRoleId
+    principalId: deployerPrincipalId
+    principalType: deployerPrincipalType
   }
 }
 

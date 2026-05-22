@@ -43,7 +43,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.11.3")]
+    #[arg(long, default_value = "v0.11.4")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -388,7 +388,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
     };
     let pools_json = serde_json::to_string(&pools).context("encode pools")?;
 
-    let params: Vec<(&str, String)> = vec![
+    let mut params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
         ("location", args.location.clone()),
         ("sshPublicKey", ssh_key.trim().to_string()),
@@ -415,6 +415,13 @@ fn deploy(args: DeployArgs) -> Result<()> {
                 .unwrap_or_else(|| args.location.clone()),
         ),
     ];
+
+    if args.monitoring {
+        let (oid, ptype) = current_principal()?;
+        eprintln!("==> deployer principal: {oid} ({ptype}) -> will receive Grafana Admin on AMG");
+        params.push(("deployerPrincipalId", oid));
+        params.push(("deployerPrincipalType", ptype));
+    }
 
     let mut az_args: Vec<String> = vec![
         "deployment".into(),
@@ -514,6 +521,42 @@ fn deploy(args: DeployArgs) -> Result<()> {
     Ok(())
 }
 
+fn current_principal() -> Result<(String, String)> {
+    let user_type = az_json(&["account", "show", "--query", "user.type", "-o", "json"])?;
+    let user_type_s = user_type.as_str().unwrap_or("user");
+    if user_type_s == "user" {
+        let v = az_json(&[
+            "ad",
+            "signed-in-user",
+            "show",
+            "--query",
+            "id",
+            "-o",
+            "json",
+        ])
+        .context("az ad signed-in-user show (need 'User.Read' Graph permission)")?;
+        let oid = v
+            .as_str()
+            .ok_or_else(|| anyhow!("signed-in-user id not a string"))?
+            .to_string();
+        Ok((oid, "User".into()))
+    } else {
+        let upn = az_json(&["account", "show", "--query", "user.name", "-o", "json"])?
+            .as_str()
+            .ok_or_else(|| anyhow!("user.name missing"))?
+            .to_string();
+        let v = az_json(&[
+            "ad", "sp", "show", "--id", &upn, "--query", "id", "-o", "json",
+        ])
+        .context("az ad sp show for service principal")?;
+        let oid = v
+            .as_str()
+            .ok_or_else(|| anyhow!("sp id not a string"))?
+            .to_string();
+        Ok((oid, "ServicePrincipal".into()))
+    }
+}
+
 const DASHBOARDS: &[(&str, &str)] = &[
     (
         "azcluster-node-health",
@@ -549,27 +592,45 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
         std::fs::write(&path, serde_json::to_vec(&envelope)?)
             .with_context(|| format!("write {}", path.display()))?;
         let definition_arg = format!("@{}", path.display());
-        let status = Command::new("az")
-            .args([
-                "grafana",
-                "dashboard",
-                "create",
-                "--name",
-                grafana_name,
-                "--resource-group",
-                resource_group,
-                "--definition",
-                &definition_arg,
-                "--overwrite",
-                "true",
-            ])
-            .stdout(Stdio::null())
-            .status()
-            .with_context(|| format!("spawn az grafana dashboard create for {slug}"))?;
-        if !status.success() {
-            bail!("failed to import dashboard {slug}");
+        let mut imported = false;
+        for attempt in 1..=10u32 {
+            let output = Command::new("az")
+                .args([
+                    "grafana",
+                    "dashboard",
+                    "create",
+                    "--name",
+                    grafana_name,
+                    "--resource-group",
+                    resource_group,
+                    "--definition",
+                    &definition_arg,
+                    "--overwrite",
+                    "true",
+                ])
+                .output()
+                .with_context(|| format!("spawn az grafana dashboard create for {slug}"))?;
+            if output.status.success() {
+                eprintln!("    imported {slug} (attempt {attempt})");
+                imported = true;
+                break;
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let propagating = stderr.contains("NoRoleAssignedException")
+                || stderr.contains("401")
+                || stderr.contains("Unauthorized");
+            if !propagating || attempt == 10 {
+                eprintln!("    FAILED {slug}: {}", stderr.lines().last().unwrap_or(""));
+                bail!("dashboard import {slug} failed after {attempt} attempt(s)");
+            }
+            eprintln!(
+                "    waiting for Grafana Admin propagation (attempt {attempt}/10, sleeping 30s)..."
+            );
+            std::thread::sleep(std::time::Duration::from_secs(30));
         }
-        eprintln!("    imported {slug}");
+        if !imported {
+            bail!("dashboard {slug} not imported");
+        }
     }
     let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(())
