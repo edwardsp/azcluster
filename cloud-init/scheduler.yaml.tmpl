@@ -153,7 +153,7 @@ write_files:
       if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
         cat >> /etc/slurm/slurm.conf <<EOF
       AccountingStorageType=accounting_storage/slurmdbd
-      AccountingStorageHost=localhost
+      AccountingStorageHost=${AZCLUSTER_NAME}-scheduler
       AccountingStoragePort=6819
       AccountingStorageEnforce=associations,limits,qos
       EOF
@@ -320,6 +320,12 @@ write_files:
           sacctmgr -i add cluster "${AZCLUSTER_NAME}" >/dev/null 2>&1 || true
           sleep 5
         done
+        # AccountingStorageEnforce=associations refuses job submission unless
+        # every (user, account, cluster) tuple is registered. Seed a default
+        # account + the standard azureuser association so submits work out of
+        # the box. Future LDAP/Entra integration replaces the user step.
+        sacctmgr -i add account default Description="Default account" Organization=azcluster >/dev/null 2>&1 || true
+        sacctmgr -i add user azureuser DefaultAccount=default >/dev/null 2>&1 || true
       fi
 
       touch /var/log/azcluster/ready

@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-05-22
+
+### Fixed
+- **Accounting refused all job submissions.** `AccountingStorageEnforce=associations,limits,qos` requires every `(user, account, cluster)` tuple to be registered with slurmdbd before submission. The bootstrap registered the cluster but never created an account or associated `azureuser` with it, so every `srun`/`sbatch` failed with `Invalid account or account/partition combination specified`. Seed a `default` account and add `azureuser` with it as the default account immediately after `sacctmgr add cluster`. Future LDAP/Entra integration will replace the per-user step.
+- **`sacct`/`sinfo` accounting calls from the login VM hit `localhost:6819`.** `AccountingStorageHost=localhost` resolves on the scheduler but is wrong for every other node fetching `slurm.conf` via `slurmd --conf-server`. Set it to `${AZCLUSTER_NAME}-scheduler` so all clients reach the colocated `slurmdbd` on the scheduler VM.
+
+### Verified
+- End-to-end accounting smoke test on `acct3` (1× `Standard_D8as_v5`, `southafricanorth`): `azcluster validate` green; `sacct` on scheduler shows two completed jobs (`hostname` + Pyxis `srun --container-image=docker://alpine`) with `Account=default User=azureuser Cluster=acct3 State=COMPLETED`. The accounting backend (Azure DB for MySQL Flexible Server + `slurmdbd`) is now live-validated.
+
 ## [0.13.2] - 2026-05-22
 
 ### Fixed
