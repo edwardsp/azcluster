@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-05-22
+
+### Fixed
+- **Accounting bootstrap failed at TLS CA download.** `https://dl.cacerts.digicert.com/DigiCertGlobalRootCA.crt.pem` serves a cert whose SAN does not match the hostname, so `curl` aborts with `SSL: no alternative certificate subject name matches target host name` and `set -euo pipefail` kills the scheduler bootstrap before `slurmdbd.conf` is written. Ubuntu's `ca-certificates` package already includes the DigiCert Global Root CA used by Azure MySQL Flex, so point `StorageParameters=SSL_CA=/etc/ssl/certs/ca-certificates.crt` at the system bundle and drop the download entirely.
+
 ## [0.13.1] - 2026-05-22
 
 ### Fixed

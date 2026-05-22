@@ -269,11 +269,10 @@ write_files:
       systemctl enable --now node_exporter
 
       if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
-        # Fetch DigiCert Global Root CA for MySQL Flex TLS.
-        install -d -m 0755 /etc/slurm/ssl
-        curl -fsSL --retry 8 --retry-delay 5 -o /etc/slurm/ssl/DigiCertGlobalRootCA.crt.pem \
-          https://dl.cacerts.digicert.com/DigiCertGlobalRootCA.crt.pem
-        chmod 0644 /etc/slurm/ssl/DigiCertGlobalRootCA.crt.pem
+        # Azure MySQL Flex serves a DigiCert Global Root CA chain, which is
+        # already in Ubuntu's ca-certificates bundle. Point SSL_CA at the
+        # system bundle rather than re-downloading (dl.cacerts.digicert.com
+        # serves the wrong SNI cert and breaks curl).
 
         ACCT_PASSWORD=$(cat /etc/azcluster/accounting.password)
         cat > /etc/slurm/slurmdbd.conf <<EOF
@@ -290,7 +289,7 @@ write_files:
       StorageUser=${ACCT_MYSQL_USER}
       StoragePass=${ACCT_PASSWORD}
       StorageLoc=${ACCT_MYSQL_DB}
-      StorageParameters=SSL_CA=/etc/slurm/ssl/DigiCertGlobalRootCA.crt.pem
+      StorageParameters=SSL_CA=/etc/ssl/certs/ca-certificates.crt
       EOF
         chown slurm:slurm /etc/slurm/slurmdbd.conf
         chmod 0600 /etc/slurm/slurmdbd.conf
