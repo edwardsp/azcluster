@@ -230,6 +230,37 @@ write_files:
       systemctl daemon-reload
       systemctl enable munge
       systemctl restart munge
+
+      NODE_EXP_VER=1.8.2
+      cd /tmp
+      curl -fsSL --retry 8 --retry-delay 5 -O "https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXP_VER}/node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz"
+      tar -xzf "node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz"
+      install -m 0755 "node_exporter-${NODE_EXP_VER}.linux-amd64/node_exporter" /usr/local/bin/node_exporter
+      id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter
+      cat > /etc/systemd/system/node_exporter.service <<'EOF'
+      [Unit]
+      Description=Prometheus Node Exporter
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      User=node_exporter
+      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100
+      Restart=on-failure
+      RestartSec=5
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      systemctl daemon-reload
+      systemctl enable --now node_exporter
+
+      GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -cE '^GPU [0-9]+:' || true)
+      if [ "${GPU_COUNT:-0}" -gt 0 ] && command -v docker >/dev/null 2>&1; then
+        docker run -d --restart=unless-stopped --gpus all --cap-add SYS_ADMIN \
+          --publish 127.0.0.1:9400:9400 \
+          --name dcgm-exporter \
+          nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.4.1-ubuntu22.04 || true
+      fi
+
       systemctl enable --now slurmd
 
       touch /var/log/azcluster/ready

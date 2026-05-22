@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-22
+
+### Added
+- **Prometheus node_exporter v1.8.2** installed via cloud-init on scheduler, login, and every compute node. Binds `127.0.0.1:9100`, runs as dedicated `node_exporter` system user under a `node_exporter.service` systemd unit. No public exposure; metrics will be scraped locally once the AMW scrape path lands in v0.11.0.
+- **NVIDIA DCGM exporter (`nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.4.1-ubuntu22.04`)** auto-started on compute nodes that report GPUs via `nvidia-smi -L | grep -cE '^GPU [0-9]+:'`. Runs as a docker container with `--gpus all --cap-add SYS_ADMIN`, publishing `127.0.0.1:9400`. Install is no-op on CPU-only pools.
+
+### Changed
+- Workspace version 0.9.1 -> 0.10.0.
+- CLI default `--azcluster-version` bumped to `v0.10.0`.
+
+### Validated
+- Live deploy in `southafricanorth` (RG `paul-azcluster`) with `--monitoring --grafana-location uksouth --login-public-ip --pool name=cpu,sku=Standard_D8as_v5,count=0,default`. `node_exporter` active on both scheduler and login; `/metrics` returns valid Prometheus payload (`node_boot_time_seconds`, `node_cpu_seconds_total{...}` observed). DCGM exporter install path exercised in cloud-init template (compile-time only - no GPU node available in this region for runtime validation; deferred to next region with H100/H200 capacity).
+
+### Deferred
+- Prometheus scrape path to AMW (DCR `customVMScrapeConfig` via AMA, or local prometheus on scheduler with `remote_write`). Slated for v0.11.0.
+- `prometheus-slurm-exporter` on scheduler (separate validation cycle, v0.10.1).
+- Compute-VMSS `Monitoring Metrics Publisher` role assignment via per-pool UAI; restore `raCompute` in `monitoring.bicep`.
+
 ## [0.9.1] - 2026-05-21
 
 ### Fixed
