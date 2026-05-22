@@ -12,7 +12,7 @@ One `az deployment sub create` triggers everything. No daemons on your laptop.
 
 **Phase 2** (in progress, v0.2.0): multi-pool partitions (CPU + GPU side-by-side), IB/NCCL tunings for NDv5 H100/H200, AMLFS (optional), GPU smoke + NCCL all-reduce validation.
 
-**Phase 3** (in progress, v0.10.1): managed observability — opt-in `--monitoring` provisions Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana. `node_exporter` on every node, `prometheus-slurm-exporter` on scheduler, `dcgm-exporter` auto-starts on GPU compute. Scrape path to AMW lands in v0.11.0.
+**Phase 3** (in progress, v0.11.0): managed observability — opt-in `--monitoring` provisions Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, plus a shared monitoring UAI granted Metrics Publisher on the AMW's default DCR. `node_exporter` on every node, `prometheus-slurm-exporter` on scheduler, `dcgm-exporter` auto-starts on GPU compute, and a per-VM Prometheus on the scheduler remote-writes node + Slurm exporter metrics into AMW (`azuread.managed_identity`). Login + compute scrape paths land in v0.11.1.
 
 ## Prerequisites
 

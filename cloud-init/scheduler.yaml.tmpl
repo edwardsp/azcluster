@@ -242,6 +242,62 @@ write_files:
       systemctl daemon-reload
       systemctl enable --now prometheus-slurm-exporter
 
+      MON_UAI_CLIENT_ID="{{MON_UAI_CLIENT_ID}}"
+      AMW_INGEST_URL="{{AMW_INGEST_URL}}"
+      if [ -n "${MON_UAI_CLIENT_ID}" ] && [ -n "${AMW_INGEST_URL}" ]; then
+        PROM_VER=3.3.0
+        cd /tmp
+        curl -fsSL --retry 8 --retry-delay 5 -O "https://github.com/prometheus/prometheus/releases/download/v${PROM_VER}/prometheus-${PROM_VER}.linux-amd64.tar.gz"
+        tar -xzf "prometheus-${PROM_VER}.linux-amd64.tar.gz"
+        install -d /opt/prometheus
+        install -m 0755 "prometheus-${PROM_VER}.linux-amd64/prometheus" /opt/prometheus/prometheus
+        install -d /mnt/prometheus/data
+        id -u prometheus >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin prometheus
+        chown -R prometheus:prometheus /opt/prometheus /mnt/prometheus
+        INSTANCE_NAME=$(hostname)
+        SUBSCRIPTION_ID="{{SUBSCRIPTION_ID}}"
+        RG_NAME=$(curl -fsSL -H Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
+        cat > /opt/prometheus/prometheus.yml <<EOF
+      global:
+        scrape_interval: 15s
+        evaluation_interval: 15s
+        external_labels:
+          subscription: ${SUBSCRIPTION_ID}
+          cluster: ${RG_NAME}/{{CLUSTER_NAME}}
+          instance: ${INSTANCE_NAME}
+          role: scheduler
+      remote_write:
+        - url: "${AMW_INGEST_URL}"
+          azuread:
+            cloud: AzurePublic
+            managed_identity:
+              client_id: ${MON_UAI_CLIENT_ID}
+      scrape_configs:
+        - job_name: node_exporter
+          static_configs:
+            - targets: ['127.0.0.1:9100']
+        - job_name: slurm_exporter
+          static_configs:
+            - targets: ['127.0.0.1:8081']
+      EOF
+        chmod 0644 /opt/prometheus/prometheus.yml
+        cat > /etc/systemd/system/prometheus.service <<'EOF'
+      [Unit]
+      Description=Prometheus
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      User=prometheus
+      ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/mnt/prometheus/data --web.listen-address=127.0.0.1:9090
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+        systemctl daemon-reload
+        systemctl enable --now prometheus
+      fi
+
       systemctl enable --now slurmctld
       systemctl enable --now azcluster-server.service
 

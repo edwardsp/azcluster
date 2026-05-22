@@ -13,10 +13,13 @@ param anfExportPath string
 param partitionsConf string
 param userAssignedIdentityId string
 param userAssignedIdentityClientId string
+param monUaiId string = ''
+param monUaiClientId string = ''
+param amwIngestionEndpoint string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -24,7 +27,17 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{ANF_MOUNT_IP}}', anfMountIp),
     '{{ANF_EXPORT_PATH}}', anfExportPath),
     '{{PARTITIONS}}', partitionsConf),
-    '{{UAI_CLIENT_ID}}', userAssignedIdentityClientId)
+    '{{UAI_CLIENT_ID}}', userAssignedIdentityClientId),
+    '{{MON_UAI_CLIENT_ID}}', monUaiClientId),
+    '{{AMW_INGEST_URL}}', amwIngestionEndpoint),
+    '{{SUBSCRIPTION_ID}}', subscription().subscriptionId)
+
+var userIdentities = empty(monUaiId) ? {
+  '${userAssignedIdentityId}': {}
+} : {
+  '${userAssignedIdentityId}': {}
+  '${monUaiId}': {}
+}
 
 resource nic 'Microsoft.Network/networkInterfaces@2024-01-01' = {
   name: 'nic-${clusterName}-scheduler'
@@ -51,9 +64,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
   tags: tags
   identity: {
     type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${userAssignedIdentityId}': {}
-    }
+    userAssignedIdentities: userIdentities
   }
   properties: {
     hardwareProfile: {

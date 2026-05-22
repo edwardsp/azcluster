@@ -46,6 +46,19 @@ If a PR touches code but skips any of these three, it is incomplete.
 - The `microsoft-dsvm:ubuntu-hpc` image ships `nvidia-smi` even on CPU SKUs, so `command -v nvidia-smi` cannot be used as a GPU presence check. Use `nvidia-smi -L | grep -cE '^GPU [0-9]+:' || true` instead.
 - **Managed Grafana region coverage**: `Microsoft.Dashboard/grafana` is NOT available in `southafricanorth` (and several other regions). Use `--grafana-location uksouth` (or another supported region) when the cluster region lacks AMG.
 - **Monitoring Data Reader role GUID** is `b0d8363b-8ddd-447d-831f-62ca05bff136` (NOT the `...51537` value some docs list). Verify role GUIDs with `az role definition list --name "..."` before baking into Bicep.
+- **AMW ingestion RBAC scope**: `Monitoring Metrics Publisher` MUST be granted on the AMW's **default Data Collection Rule**, not on the AMW account itself. Role at the AMW scope passes role-listing checks but the ingestion endpoint still returns `403 The authentication token provided does not have access to ingest data for the data collection rule with immutable Id 'dcr-...'`. The default DCR lives in the Azure-managed sister RG `MA_<amwName>_<location>_managed`.
+- **AMW ingestion RBAC propagation**: 5-10 minutes on a freshly-created MI + DCR. After it propagates, `systemctl restart prometheus` is required - prometheus and IMDS cache the bearer token, and the cached token's authorization is decided server-side at request time but the connection state appears to survive the role landing. A direct `curl` test (`POST` empty body to the ingestion URL with an IMDS token) is the fastest way to confirm whether the failure is RBAC vs config.
+- **Prometheus 3.x cloud-init perms**: `cat > /opt/prometheus/prometheus.yml <<EOF ... EOF` in a cloud-init `runcmd` produces a file with mode `0600` (root's umask). The non-root `prometheus` service user cannot read it -> "permission denied" at startup. Always follow with explicit `chmod 0644`.
+- **Prometheus `azuread.managed_identity` remote_write**: works directly against the AMW DCE ingestion URL (`${dceEndpoint}/dataCollectionRules/${dcrImmutableId}/streams/Microsoft-PrometheusMetrics/api/v1/write?api-version=2023-04-24`). No AMA or DCR custom scrape config needed for VMs. Block shape:
+  ```yaml
+  remote_write:
+    - url: "..."
+      azuread:
+        cloud: AzurePublic
+        managed_identity:
+          client_id: "<uai-client-id>"
+  ```
+  Audience is implicit (`https://monitor.azure.com/`). The UAI MUST be attached to the VM AND hold Metrics Publisher on the DCR (see above).
 - **VMSS Flex + SystemAssigned identity** is rejected in subscriptions with AzSecPack/UAI-only policy (`InvalidParameter` on `identity`). VMs are fine; VMSS must use UserAssigned (or no MI).
 - Phase 1+ test region: `southafricanorth`, RG `paul-azcluster`, max 2 GPU nodes.
 

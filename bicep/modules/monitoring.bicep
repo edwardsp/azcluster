@@ -1,54 +1,27 @@
 param clusterName string
 param location string
 param grafanaLocation string
-param schedulerVmName string
-param loginVmName string
-param computeVmssNames array
 param tags object
 
 var amwName = 'amw-${clusterName}'
 var grafanaName = 'amg-${clusterName}'
+var monUaiName = 'uai-${clusterName}-mon'
 var monitoringDataReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b0d8363b-8ddd-447d-831f-62ca05bff136')
-var metricsPublisherRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')
 
 resource amw 'Microsoft.Monitor/accounts@2023-04-03' = {
   name: amwName
   location: location
   tags: tags
-}
-
-resource schedulerVm 'Microsoft.Compute/virtualMachines@2024-07-01' existing = {
-  name: schedulerVmName
-}
-
-resource loginVm 'Microsoft.Compute/virtualMachines@2024-07-01' existing = {
-  name: loginVmName
-}
-
-resource computeVmss 'Microsoft.Compute/virtualMachineScaleSets@2024-07-01' existing = [for name in computeVmssNames: {
-  name: name
-}]
-
-resource raScheduler 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: amw
-  name: guid(amw.id, schedulerVm.id, metricsPublisherRoleId)
   properties: {
-    roleDefinitionId: metricsPublisherRoleId
-    principalId: schedulerVm.identity.principalId
-    principalType: 'ServicePrincipal'
+    publicNetworkAccess: 'Enabled'
   }
 }
 
-resource raLogin 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: amw
-  name: guid(amw.id, loginVm.id, metricsPublisherRoleId)
-  properties: {
-    roleDefinitionId: metricsPublisherRoleId
-    principalId: loginVm.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
+resource monUai 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: monUaiName
+  location: location
+  tags: tags
 }
-
 
 resource grafana 'Microsoft.Dashboard/grafana@2024-10-01' = {
   name: grafanaName
@@ -83,6 +56,25 @@ resource raGrafana 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
+var managedRg = 'MA_${amwName}_${location}_managed'
+
+module ingestion 'ingestion-endpoint.bicep' = {
+  name: 'ingestionEndpoint'
+  scope: resourceGroup(managedRg)
+  params: {
+    dceName: amwName
+    dcrName: amwName
+    monUaiPrincipalId: monUai.properties.principalId
+  }
+  dependsOn: [
+    amw
+  ]
+}
+
 output grafanaEndpoint string = grafana.properties.endpoint
 output amwId string = amw.id
 output amwQueryEndpoint string = amw.properties.metrics.prometheusQueryEndpoint
+output monUaiId string = monUai.id
+output monUaiClientId string = monUai.properties.clientId
+output monUaiPrincipalId string = monUai.properties.principalId
+output ingestionEndpoint string = ingestion.outputs.ingestionEndpoint

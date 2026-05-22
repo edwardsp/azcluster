@@ -5,6 +5,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-22
+
+### Added
+- **Per-VM Prometheus on the scheduler** with `remote_write` to Azure Monitor Workspace, using Prometheus's native `azuread.managed_identity` authentication (no AMA, no DCR custom scrape). Mirrors the Azure CycleCloud monitoring pattern. Prometheus 3.3.0 binary installed to `/opt/prometheus`, data under `/mnt/prometheus/data`, listens on `127.0.0.1:9090`, scrapes the local `node_exporter` (`:9100`) and `prometheus-slurm-exporter` (`:8081`).
+- **Shared monitoring UAI** (`uai-${clusterName}-mon`) created in `monitoring.bicep` and attached to the scheduler VM alongside the existing scheduler UAI. Granted `Monitoring Metrics Publisher` (`3913510d-...`) on the AMW's auto-created default Data Collection Rule (the actual ingestion gate - role on the AMW itself is insufficient).
+- **`bicep/modules/ingestion-endpoint.bicep`** sub-module, deployed at the Azure-managed sister RG scope (`MA_<amwName>_<location>_managed`), resolves the DCE metrics ingestion endpoint + DCR immutable id and creates the cross-RG role assignment.
+
+### Changed
+- Workspace version 0.10.1 -> 0.11.0.
+- CLI default `--azcluster-version` bumped to `v0.11.0`.
+- `monitoring.bicep` no longer takes scheduler/login VM names; it just provisions AMW + monUai + AMG + cross-RG ingestion role + role assignment. Per-VM identity attachment is now done by the consuming VM module (scheduler today; login + compute in v0.11.1).
+- `cluster.bicep` now invokes the monitoring module **before** the scheduler module and threads `monUaiId`, `monUaiClientId`, and `amwIngestionEndpoint` into it.
+- Removed dead `raScheduler` / `raLogin` role assignments (SystemAssigned MI no longer used for metrics publishing).
+
+### Fixed
+- `cat >` in cloud-init creates files with mode `0600` under the cloud-init umask; explicit `chmod 0644 /opt/prometheus/prometheus.yml` so the non-root `prometheus` user can read its config.
+
+### Validated
+- Live deploy in `southafricanorth` (RG `paul-azcluster`). After RBAC propagation (~6 min on a brand-new MI + DCR), AMW query endpoint returns `up{job="node_exporter",role="scheduler"} 1` and `up{job="slurm_exporter",role="scheduler"} 1` with `cluster="paul-azcluster/mon"`, `microsoft.amwresourceid=/subscriptions/.../accounts/amw-mon`. Direct `POST` to the ingestion URL with an IMDS-issued token for the monUai also returns `HTTP 200`.
+
+### Deferred
+- Per-VM Prometheus on login and compute nodes (v0.11.1). Compute will need `monUaiId` threaded through `compute.bicep` and attached as `UserAssigned` on the VMSS (AzSecPack blocks `SystemAssigned, UserAssigned` on VMSS Flex in tenants with the UAI-only policy).
+- Grafana dashboards for node / GPU / InfiniBand panels (v0.11.2).
+- Slurm accounting via Azure Database for MySQL Flexible Server + `slurmdbd` (v0.12.x).
+
 ## [0.10.1] - 2026-05-22
 
 ### Added
@@ -211,7 +236,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.0
+[0.10.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.10.1
+[0.10.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.10.0
+[0.9.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.9.1
+[0.9.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.9.0
+[0.8.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.8.0
 [0.7.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.7.0
 [0.6.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.6.0
 [0.5.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.5.0

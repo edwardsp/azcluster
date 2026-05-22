@@ -79,6 +79,16 @@ module amlfs 'modules/amlfs.bicep' = if (amlfsSizeTiB > 0) {
 
 var partitionsConf = join(map(pools, p => 'NodeSet=${p.name}set Feature=pool_${p.name}\n      PartitionName=${p.name} Nodes=${p.name}set State=UP MaxTime=INFINITE${p.?default == true ? ' Default=YES' : ''}'), '\n      ')
 
+module monitoring 'modules/monitoring.bicep' = if (enableMonitoring) {
+  name: 'monitoring'
+  params: {
+    clusterName: clusterName
+    location: location
+    grafanaLocation: grafanaLocation
+    tags: tags
+  }
+}
+
 module scheduler 'modules/scheduler.bicep' = {
   name: 'scheduler'
   dependsOn: [
@@ -99,6 +109,9 @@ module scheduler 'modules/scheduler.bicep' = {
     partitionsConf: partitionsConf
     userAssignedIdentityId: uai.id
     userAssignedIdentityClientId: uai.properties.clientId
+    monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
+    monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
+    amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
     tags: tags
   }
 }
@@ -154,15 +167,3 @@ output amlfsMountCommand string = amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand 
 output computeVmssNames array = [for (pool, i) in pools: compute[i].outputs.vmssName]
 output grafanaEndpoint string = enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
 
-module monitoring 'modules/monitoring.bicep' = if (enableMonitoring) {
-  name: 'monitoring'
-  params: {
-    clusterName: clusterName
-    location: location
-    grafanaLocation: grafanaLocation
-    schedulerVmName: scheduler.outputs.vmName
-    loginVmName: login.outputs.vmName
-    computeVmssNames: [for (pool, i) in pools: compute[i].outputs.vmssName]
-    tags: tags
-  }
-}
