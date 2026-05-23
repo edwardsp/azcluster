@@ -151,17 +151,24 @@ If you see avg busbw well below the figures above, NCCL probably fell back to TC
 - All 8 IB devices report `State: Active LinkUp Rate: 400` (`ibstat | grep -E '(CA |State|Rate)'`).
 - The job actually ran on 2 different nodes (`grep "Hostname" nccl-allreduce-*.out` should show two distinct names).
 
-## 5. Pyxis container path (currently broken cross-node)
+## 5. Pyxis container path (cross-node)
 
-Pyxis lets you replace bare-metal with `srun --container-image=docker://...`. The container import itself works — the `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest` image (9.4 GB) pulls and extracts onto every compute node successfully. Single-node container runs that don't need cross-node MPI also work. Single-node 8-GPU `all_reduce_perf` inside the container was not measured against this image in v0.13.4 because the container ships the binary at `/usr/local/bin/all_reduce_perf`, not the `/opt/nccl-tests/build/...` path used elsewhere — your invocation must use the in-container path.
+Pyxis lets you replace bare-metal with `srun --container-image=docker://...`. The end-to-end containerised path (Pyxis import → enroot extract → cross-node PMIx world → NCCL over InfiniBand) is live-validated since v0.13.8.
 
-**Cross-node containerised NCCL is currently broken** because of a PMIx ABI mismatch:
+`/shared/examples/dgxc-nemo-multinode-smoke.sbatch` runs the same 16-rank NCCL all-reduce as above, but from inside `nvcr.io/nvidia/nemo:25.07.02`:
 
-- `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest` ships PMIx 5.x (`libpmix.so.2.13.3`).
-- Slurm 25.11 from `packages.microsoft.com/repos/slurm-ubuntu-noble` only ships `mpi_pmix_v4.so`, linked against PMIx 4.2.9.
-- HPC-X 2.25.1 (in the image) also bundles PMIx 4.2.x.
+```bash
+sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch
+```
 
-The observed failure mode on the v0.13.4 validation cluster (jobs 9-11): `srun --container-image=... --mpi=pmix` produces two isolated single-node MPI worlds. `all_reduce_perf` runs to completion on each node independently but reports `# Avg bus bandwidth : 0` because the ranks never actually exchange data. Tracked for v0.14; the bare-metal path above is the workaround for now.
+Healthy log shape (search the `.out`):
+
+- `pyxis: imported docker image: nvcr.io/nvidia/nemo:25.07.02` on every compute node (first run only — subsequent runs hit the `/mnt/nvme/enroot-data/` cache and start in seconds).
+- `NCCL INFO NET/IB : Using [0]mlx5_ib0:1/IB/SHARP [1]mlx5_ib1:1/IB/SHARP ... [7]mlx5_ib7:1/IB/SHARP` on every rank — all 8 NDR400 HCAs visible and in SHARP mode inside the container.
+- Cross-node channels via `NET/IBext_v10/0/GDRDMA` (GPUDirect RDMA between H100s on different nodes).
+- Final summary: `all_reduce size=1GiB iters=20 elapsed=0.093s algbw=~230 GB/s avg busbw=~430 GB/s`.
+
+The container path uses the same fabric as the bare-metal path; the small numerical gap at 1 GiB (~430 GB/s vs the bare-metal peak of 466 GB/s at 16 GiB) is mostly the message-size sweet spot — bare-metal saturates with larger messages.
 
 ## 6. Inspect the job in Grafana and accounting
 

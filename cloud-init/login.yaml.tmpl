@@ -88,6 +88,9 @@ write_files:
       cat > /etc/slurm/plugstack.conf <<EOF
       required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
       EOF
+      # cloud-init runcmd inherits a 0077 umask; plugstack.conf MUST be
+      # world-readable because srun loads spank plugins at submit time.
+      chmod 0644 /etc/slurm/plugstack.conf
 
       getent group slurm >/dev/null || groupadd -g 11100 slurm
       id slurm >/dev/null 2>&1 || useradd -u 11100 -g 11100 -d /var/lib/slurm -s /usr/sbin/nologin -c "Slurm" slurm

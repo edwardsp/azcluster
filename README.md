@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.13.8)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) + GPU pool live-validated. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand** (bare-metal HPC-X path) and **434 GB/s avg busbw at 1 GiB** inside Pyxis-launched `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node x 8 H100, SHARP enabled, GPUDirect RDMA). v0.13.8 finishes the cross-node containerised NCCL story: setting `MELLANOX_VISIBLE_DEVICES=all` in `/etc/enroot/environ.d/50-nccl.env` triggers enroot's shipped `99-mellanox.sh` hook to bind-mount `/dev/infiniband/{uverbs,umad,issm}*` + `/dev/infiniband/rdma_cm` into every Pyxis container. The v0.13.7 udev rule (`0666` on those device nodes) is retained because `ENROOT_REMAP_ROOT yes` maps the in-container root to a host non-root uid that cannot otherwise open `0660 root:root` devices. v0.13.5 added automatic NVMe RAID-0 ephemeral scratch on `/mnt/nvme` (28 TB on ND96isr_H100_v5), DGXC compatibility (Enroot environ.d + mounts.d + `ENROOT_REMAP_ROOT`), and `/shared/examples/dgxc-llama8b-h100.sbatch`. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next: v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
+> **Status (v0.13.9)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. **Llama 3.1 8B BF16 trains at 167,594 tok/s on 16 H100 (2 node) and 83,737 tok/s on 8 H100 (1 node) — strong scaling 2.001× / 100.07% efficiency**, ~538 NeMo `MODEL_TFLOP/s/GPU`, via `llmb-run submit` against the DGXC v25.11 toolchain. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand** (bare-metal HPC-X path) and **434 GB/s avg busbw at 1 GiB** inside Pyxis-launched `nvcr.io/nvidia/nemo:25.07.02` (16-rank, SHARP, GPUDirect RDMA). v0.13.9 fixes two cross-node training blockers shipped by v0.13.8: (1) compute `/etc/hosts` now maps the hostname to the eth0 IPv4 (not `127.0.1.1`) so PyTorch/Gloo cross-node `connectFullMesh` resolves to the peer instead of loopback; (2) all `/etc/slurm/*.conf` files written by cloud-init are now `0644` so submitting users can read `slurm.conf` + `plugstack.conf` for Pyxis spank loading at submit time. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next: v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.13.8
+VERSION=v0.13.9
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -261,7 +261,7 @@ Tag-triggered. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.
 
 ## Roadmap
 
-- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw, bare-metal HPC-X path). ✅ v0.13.6 cross-node containerised PMIx world live-validated (16-rank NeMo container all-reduce reached a single PMIx world and exited cleanly). ✅ v0.13.7 udev rule opens `/dev/infiniband/uverbs*` to `0666` so `ENROOT_REMAP_ROOT yes` no longer blocks uverbs from container userspace. ✅ v0.13.8 cross-node containerised NCCL now uses InfiniBand end-to-end (434 GB/s busbw at 1 GiB, 16 ranks, SHARP enabled): `MELLANOX_VISIBLE_DEVICES=all` in `/etc/enroot/environ.d/50-nccl.env` triggers enroot's `99-mellanox.sh` hook to bind-mount `/dev/infiniband/*` into every Pyxis container.
+- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw, bare-metal HPC-X path). ✅ v0.13.6 cross-node containerised PMIx world live-validated. ✅ v0.13.7 udev rule opens `/dev/infiniband/uverbs*` to `0666` so `ENROOT_REMAP_ROOT yes` no longer blocks uverbs from container userspace. ✅ v0.13.8 cross-node containerised NCCL now uses InfiniBand end-to-end (434 GB/s busbw at 1 GiB, 16 ranks, SHARP enabled). ✅ v0.13.9 end-to-end DGXC training live-validated: Llama 3.1 8B BF16 reaches 167,594 tok/s on 16 GPU (2 node) / 83,737 tok/s on 8 GPU (1 node) — 100.07% strong-scaling efficiency. Fixes cross-node PyTorch/Gloo rendezvous (compute `/etc/hosts` now maps the hostname to eth0 IPv4, not `127.0.1.1`) and Slurm conf perms (cloud-init now `chmod 0644` on every `/etc/slurm/*.conf`).
 - **v0.14+** — backlog:
   - **Better scaling.** Drop the `azcluster tunnel` requirement. Either run a daemon on the scheduler that reconciles `--pool` capacity directly via the ARM/Compute REST APIs (no `az` shell-out), or wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
   - **Health checks.** Port the patterns from [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck) into a small Rust binary shipped with the release tarball. Compute nodes invoke it via Slurm `HealthCheckProgram`; failures drain the node automatically.

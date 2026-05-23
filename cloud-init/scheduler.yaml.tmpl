@@ -186,6 +186,11 @@ write_files:
       EOF
 
       chown -R slurm:slurm /etc/slurm
+      # cloud-init runcmd inherits a 0077 umask, so `cat >` produces 0600 files.
+      # The configs MUST be 0644 - srun/sinfo run as the submitting user and
+      # parse /etc/slurm/slurm.conf + plugstack.conf locally (Pyxis spank loads
+      # at submit time, so plugstack.conf must be world-readable too).
+      chmod 0644 /etc/slurm/slurm.conf /etc/slurm/plugstack.conf /etc/slurm/cgroup.conf /etc/slurm/gres.conf
 
       EXAMPLES_DIR=/shared/examples
       mkdir -p "${EXAMPLES_DIR}"

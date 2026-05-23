@@ -163,7 +163,12 @@ write_files:
       NEW_HOSTNAME="${AZCLUSTER_NAME}-${AZCLUSTER_POOL}-$(printf '%04d' ${NODE_INDEX})"
       hostnamectl set-hostname "${NEW_HOSTNAME}"
       sed -i '/127\.0\.1\.1/d' /etc/hosts
-      echo "127.0.1.1 ${NEW_HOSTNAME}" >> /etc/hosts
+      # Map hostname to the eth0 IPv4 (NOT 127.0.1.1) so cross-node
+      # torch.distributed/Gloo connectFullMesh doesn't try to dial localhost.
+      # NGC PyTorch containers call gethostbyname(hostname) for the rendezvous
+      # address; the Ubuntu cloud-image default of `127.0.1.1 <hostname>` makes
+      # every remote rank attempt to connect to its own loopback.
+      echo "${IPV4} ${NEW_HOSTNAME}" >> /etc/hosts
 
       if ! grep -q " /shared " /etc/fstab; then
         echo "${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0" >> /etc/fstab
@@ -229,6 +234,9 @@ write_files:
       cat > /etc/slurm/plugstack.conf <<EOF
       required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
       EOF
+      # cloud-init runcmd inherits a 0077 umask; plugstack.conf MUST be
+      # world-readable because srun loads spank plugins at submit time.
+      chmod 0644 /etc/slurm/plugstack.conf
 
       MEM=$(awk '/^MemTotal/ {printf "%d\n", $2/1024 * 0.95}' /proc/meminfo)
       GRES_OPT=""

@@ -49,7 +49,7 @@ What you should see in the log, in order:
 4. `[NCCL INFO] Channel ...` lines that mention `IBext_v11` and `mlx5_ib0:1`, ..., `mlx5_ib7:1`. **If you see `Channel ... via SOCKET`, NCCL fell back to TCP — check the `/etc/enroot/environ.d/50-nccl.env` propagation.**
 5. Final summary: `all_reduce size=1GiB iters=20 elapsed=... algbw=... avg busbw=... GB/s`.
 
-A healthy run on a single NDv5 H100 (8x NVLink within the node, NCCL using SHARP/NVLS) should report avg busbw well above 100 GB/s. Cross-node would show similar bandwidth, but cross-node containerised collectives are blocked today by the PMIx limitation below.
+A healthy run on a single NDv5 H100 (8x NVLink within the node, NCCL using SHARP/NVLS) should report avg busbw well above 100 GB/s. The companion multinode sbatch (`/shared/examples/dgxc-nemo-multinode-smoke.sbatch`) exercises the same code on 2 nodes (16 ranks) over the 8x NDR400 InfiniBand fabric and reaches ~430 GB/s avg busbw at 1 GiB with SHARP + GPUDirect RDMA enabled.
 
 ### What this smoke test exercises
 
@@ -86,57 +86,84 @@ ngc config set
 export NGC_API_KEY="nvapi-..."
 ```
 
-### Install the LLM Benchmarking toolchain
+### Install the LLM Benchmarking toolchain (headless `--play`)
+
+DGXC v25.11 ships `llmb-install` as a Python package inside `dgxc-benchmarking/cli/llmb-install`. Use a `playfile.yaml` to drive it non-interactively:
 
 ```bash
-cd /shared/dgxc/llmb-install
-export LLMB_INSTALL=/shared/dgxc/llmb        # canonical install root
+export LLMB_INSTALL=/shared/dgxc/llmb
 mkdir -p "$LLMB_INSTALL"
-./install.sh                                  # ~30-60 min: builds NeMo container, pulls datasets
+
+# Provision a venv with uv and install the CLI
+python3 -m venv "$LLMB_INSTALL/llmb_venv"
+"$LLMB_INSTALL/llmb_venv/bin/pip" install uv
+"$LLMB_INSTALL/llmb_venv/bin/uv" pip install \
+  /shared/dgxc/dgxc-benchmarking/cli/llmb-install \
+  /shared/dgxc/dgxc-benchmarking/cli/llmb-run
+
+# Headless playfile (selects pretrain_llama3.1, h100, slurm)
+cat > /shared/dgxc/playfile.yaml <<EOF
+venv_type: uv
+gpu_type: h100
+node_architecture: x86_64
+install_method: slurm
+account: default
+gpu_partition: gpu
+cpu_partition: gpu
+selected_workloads:
+  - pretrain_llama3.1
+EOF
+
+# NGC + HF tokens (gated Meta-Llama-3.1 configs require HF_TOKEN)
+mkdir -p ~/.config/azcluster
+chmod 700 ~/.config/azcluster
+# paste tokens into these files (mode 600)
+echo "<your nvapi-... key>" > ~/.config/azcluster/ngc_key
+echo "<your hf_... token>" > ~/.config/azcluster/hf_token
+chmod 600 ~/.config/azcluster/{ngc_key,hf_token}
+
+export NGC_API_KEY=$(cat ~/.config/azcluster/ngc_key)
+export HF_TOKEN=$(cat ~/.config/azcluster/hf_token)
+
+"$LLMB_INSTALL/llmb_venv/bin/llmb-install" --play /shared/dgxc/playfile.yaml express
 ```
+
+`express` mode skips datacenter sanity checks. Plan ~10-15 min: NeMo `nvcr.io#nvidia/nemo:26.04.00` (~20 GB) imports onto `/shared`, Megatron-Bridge + NeMo-Run are cloned, HF Llama configs are downloaded.
 
 `LLMB_INSTALL` MUST live on `/shared` (or another cluster-wide filesystem) — compute nodes need read access to the container image and dataset.
 
-### Run Llama 3.1 8B at 8 GPUs (single node)
+> **Storage sizing.** The NeMo container squashfs is 17 GiB. With `--shared-storage nfs-scheduler` (test mode) the scheduler exports `/shared` from its 64 GiB root disk and enroot extraction will ENOSPC mid-import. Use `--shared-storage anf` (default) or attach a data disk to the scheduler. Hard requirement: ≥ 60 GiB free on `/shared` before running `llmb-install express`.
+
+### Run Llama 3.1 8B via `llmb-run`
+
+`llmb-install express` registers the workload + venv + container path in `$LLMB_INSTALL/cluster_config.yaml`. Use `llmb-run submit` from then on — it materialises the sbatch via NeMo-Run and submits with the correct partition + account:
 
 ```bash
-cd /shared/dgxc/dgxc-benchmarking/llama3.1
 export LLMB_INSTALL=/shared/dgxc/llmb
-export GPU_TYPE=h100
-export JOB_TOTAL_GPUS=8
-export MODEL_SIZE=8b
-export DTYPE=fp8                              # H100 supports fp8 (cs only) or bf16
-export SBATCH_ACCOUNT=default
-export SBATCH_PARTITION=gpu
-./launch.sh
+export NGC_API_KEY=$(cat ~/.config/azcluster/ngc_key)
+export HF_TOKEN=$(cat ~/.config/azcluster/hf_token)
+
+# 8 GPU single node (Tier-1 of the H100 BF16 table)
+$LLMB_INSTALL/llmb_venv/bin/llmb-run submit \
+  -w pretrain_llama3.1 --model-size 8b -d bf16 --scale 8
+
+# 16 GPU two nodes
+$LLMB_INSTALL/llmb_venv/bin/llmb-run submit \
+  -w pretrain_llama3.1 --model-size 8b -d bf16 --scale 16
 ```
 
-`launch.sh` calls Megatron-Bridge's `setup_experiment.py`, which generates a NeMo-Run sbatch and submits it. Output lands under `$LLMB_INSTALL/workloads/pretrain_llama3.1/`.
+`squeue` shows the job; logs land under `$LLMB_INSTALL/workloads/pretrain_llama3.1/experiments/.../log-default-*_<jobid>_*.out`. NeMo prints one `iteration N/50` line per step with `elapsed time per iteration (ms)` and `MODEL_TFLOP/s/GPU` — that's the throughput signal you want.
 
-DGXC's H100 BF16 table covers Llama 3.1 8B at the **8-128 GPU** range. On a 16-GPU cluster you can run 8 GPU (single node, works today) and — once the PMIx blocker below is resolved — 16 GPU (cross-node).
+### Tier-2 results (live-validated v0.13.9, southafricanorth, ND96isr_H100_v5)
 
----
+| Scale | Nodes | GBS | Steady step (ms) | Throughput (tok/s) | Per-GPU (tok/s) | MODEL_TFLOP/s/GPU |
+|---|---|---|---|---|---|---|
+| 8 GPU  | 1 | 128 | 12522.40 | 83,737  | 10,467 | ~537 |
+| 16 GPU | 2 | 256 | 12513.10 | 167,594 | 10,475 | ~538 |
 
-## The multi-node containerised PMIx blocker
+Strong scaling 8→16 GPU = **2.001× → 100.07% efficiency**. Cross-node throughput matches single-node throughput per GPU because the cluster's 8× NDR400 IB + SHARP + GPUDirect RDMA absorb the all-reduce overhead at this model size (Llama 3.1 8B fits inside one node's HBM at TP=1 PP=1 CP=2 MBS=1, so the cross-node traffic is purely data-parallel gradient reduction over IB). NeMo's `MODEL_TFLOP/s/GPU` ~538 corresponds to ~54% MFU vs H100 BF16 peak (989 TFLOPS).
 
-Slurm 25.11 from `packages.microsoft.com/repos/slurm-ubuntu-noble` only ships `mpi_pmix_v4.so`, linked against PMIx 4.2.9 (`libpmix.so.2.9.5`). Most current AI/ML containers (NVIDIA NGC 25.x, the DGXC NeMo container, `ai-infrastructure-on-azure/nccl-test`) ship PMIx 5.x (`libpmix.so.2.13.x`).
-
-When you run `srun --container-image=... --mpi=pmix ...` across more than one node, MPI_Init does NOT abort — but each container instance ends up in its own single-rank world. Cross-node collective bandwidth collapses (`busbw≈0`) and DGXC perf metrics are meaningless.
-
-This affects:
-- Any DGXC recipe with `JOB_TOTAL_GPUS > 8` on this cluster (Llama 8B 16-128, Llama 70B all scales, Nemotron, ...).
-- The Pyxis-containerised version of the multi-node NCCL all-reduce.
-
-**What still works today on multi-node:**
-- The bare-metal NCCL all-reduce in `/shared/examples/nccl-allreduce.sbatch`. It uses HPC-X (in-image, PMIx 4.x compatible) and the prebuilt `/opt/nccl-tests/build/all_reduce_perf`. Live-validated at 466.33 GB/s peak / 348.02 GB/s avg busbw on 2× H100.
-
-**Workarounds being evaluated for v0.14+:**
-1. Rebuild Slurm 25.11 with PMIx 5 (`--with-pmix=/path/to/pmix5`) and publish `slurm-smd-mpi-pmix-v5`.
-2. Repackage DGXC containers against PMIx 4. Not all containers cooperate.
-3. Switch DGXC's launch path from `srun --mpi=pmix` to `mpirun` over SSH inside the container. Requires sshd inside the container, which the upstream NVIDIA images don't ship.
-4. `LD_LIBRARY_PATH` bind-mounting host PMIx 4 over container PMIx 5 — confirmed NOT working (symbol mismatch still produces isolated worlds).
-
-The smoke test above is a 1-node job and is unaffected by this blocker.
+> **/etc/hosts gotcha** (fixed in v0.13.9). On v0.13.8 and earlier, compute nodes had `127.0.1.1 <hostname>` in `/etc/hosts` (Ubuntu cloud-image default). PyTorch/Gloo's `connectFullMesh` calls `gethostbyname(hostname)` for the rendezvous address; every remote rank then tried to dial its own loopback and stalled with `Connection refused, remote=[127.0.1.1]:...`. v0.13.9 maps the hostname to the eth0 IPv4 instead, in `cloud-init/compute.yaml.tmpl`.
 
 ---
 

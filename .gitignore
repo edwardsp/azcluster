@@ -13,3 +13,4 @@ Cargo.lock.bak
 *.json.bicep
 bicep/**/*.json
 ngc_key.txt
+hf_token.txt

@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.13.9] - 2026-05-23
+
+### Fixed
+- **Cross-node `torch.distributed`/Gloo rendezvous now works on multi-node Pyxis jobs.** v0.13.8 fixed NCCL-over-IB inside containers, but `torch.distributed.new_group(backend="gloo")` (used by Megatron-Bridge for CP groups during init) was still failing with `Gloo connectFullMesh ... timed out connecting: SO_ERROR: Connection refused, remote=[127.0.1.1]:20901`. Root cause: the Ubuntu cloud-image default `127.0.1.1 <hostname>` line in `/etc/hosts`. PyTorch/Gloo calls `gethostbyname(hostname)` for the rendezvous advertised address; every remote rank then dials its own loopback. `cloud-init/compute.yaml.tmpl` now writes the eth0 IPv4 (not `127.0.1.1`) for the renamed compute hostname, so cross-node Gloo connectFullMesh resolves to the correct VNIC IP. Live-validated on `paul-azcluster-h100d`: Llama 3.1 8B BF16 trains end-to-end at 16 GPU (2 node, 167,594 tok/s, ~538 MODEL_TFLOP/s/GPU) and 8 GPU (1 node, 83,737 tok/s, ~537 MODEL_TFLOP/s/GPU); strong scaling 8→16 = **2.001× → 100.07% efficiency**.
+- **Slurm conf files now have correct permissions out of cloud-init.** `cloud-init`'s `runcmd` stage inherits umask 0077, so any `cat > /etc/slurm/foo.conf <<EOF ... EOF` heredoc produced a 0600 file (only readable by root). `srun`/`sinfo` then run as the submitting non-root user, parse `/etc/slurm/slurm.conf` + `/etc/slurm/plugstack.conf` locally on the submit host (Pyxis spank plugins load at submit time, not at exec time), and bail with `error: s_p_parse_file: unable to read "/etc/slurm/slurm.conf": Permission denied`. `cloud-init/{scheduler,login,compute}.yaml.tmpl` now `chmod 0644` each Slurm conf file (slurm.conf, plugstack.conf, cgroup.conf, gres.conf) immediately after the heredoc.
+
+### Documentation
+- `walkthrough-dgxc.md` Tier-2 rewritten around the v25.11 `llmb-install --play` + `llmb-run submit` flow (replaces the previous `./launch.sh` env-var approach); Tier-2 results table added with the live 8 GPU / 16 GPU Llama 3.1 8B BF16 numbers from `paul-azcluster-h100d`. New "Storage sizing" callout warns that `--shared-storage nfs-scheduler` is too small for NeMo `nvcr.io#nvidia/nemo:26.04.00` (~17 GiB squashfs) and recommends ANF (default) or an attached data disk.
+- AGENTS.md gains two gotchas: "Slurm conf files cloud-init perms" and "Compute `/etc/hosts` 127.0.1.1 breaks cross-node Gloo/PyTorch rendezvous".
+
+### Changed
+- Workspace version `0.13.8` -> `0.13.9`.
+- CLI default `--azcluster-version` bumped to `v0.13.9`.
+
+
 ## [0.13.8] - 2026-05-23
 
 ### Fixed
