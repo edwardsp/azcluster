@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.16)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks (GPU device-node count, NVRM Xid scan, NIC/IB operstate, kernel critical messages, systemd unit state) drain misbehaving nodes automatically. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Status (v0.16.1)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks (GPU device-node count, NVRM Xid scan, NIC/IB operstate, kernel critical messages, systemd unit state) drain misbehaving nodes automatically. **v0.16.1 fixes a v0.16 regression where a leftover legacy wrapper in `cloud-init/compute.yaml.tmpl` overwrote the v0.16 wrapper and self-drained every CPU node every 5 min.** Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: Prometheus textfile-collector metrics from `azhealthcheck` + Grafana `health.json` dashboard, then DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.16.0
+VERSION=v0.16.1
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

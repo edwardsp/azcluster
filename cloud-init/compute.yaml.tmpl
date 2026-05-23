@@ -461,34 +461,6 @@ write_files:
       HWLOC_COMPONENTS=-opencl
       EOF
 
-      cat > /usr/local/sbin/azcluster-healthcheck <<'EOF'
-      #!/usr/bin/env bash
-      set -u
-      HOST=$(hostname -s)
-      FAIL=""
-      if command -v nvidia-smi >/dev/null 2>&1; then
-        if ! nvidia-smi -L >/dev/null 2>&1; then
-          FAIL="nvidia-smi -L failed"
-        elif nvidia-smi -q 2>/dev/null | grep -qE 'GPU is lost|Pending Page Retirement|ERR!'; then
-          FAIL="GPU health fault detected"
-        fi
-      fi
-      if [ -z "$FAIL" ] && command -v ibstat >/dev/null 2>&1; then
-        if lspci -d 15b3: 2>/dev/null | grep -q .; then
-          if ibstat 2>/dev/null | grep -A2 'CA ' | grep -q 'State: \(Init\|Down\)'; then
-            FAIL="InfiniBand link not Active"
-          fi
-        fi
-      fi
-      if [ -n "$FAIL" ]; then
-        logger -t azcluster-healthcheck "DRAIN $HOST: $FAIL"
-        scontrol update nodename="$HOST" state=DRAIN reason="azcluster-healthcheck: $FAIL" 2>/dev/null || true
-        exit 1
-      fi
-      exit 0
-      EOF
-      chmod 0755 /usr/local/sbin/azcluster-healthcheck
-
       systemctl daemon-reload
       systemctl enable munge
       systemctl restart munge

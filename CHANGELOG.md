@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.16.1] - 2026-05-23
+
+### Fixed
+- **`azhealthcheck` never actually ran on v0.16 nodes — every CPU node self-drained every 5 min.** `cloud-init/compute.yaml.tmpl` contained two blocks writing `/usr/local/sbin/azcluster-healthcheck`: the v0.16 wrapper that delegates to `/usr/local/bin/azhealthcheck`, and a legacy inline-shell wrapper from a pre-v0.16 prototype. The legacy block executed after the v0.16 block and overwrote it on every boot, so the Rust binary installed by v0.16 was never invoked. The legacy script also hit the exact gotcha `AGENTS.md` warns about — `command -v nvidia-smi` is true on the `microsoft-dsvm:ubuntu-hpc` image even on CPU SKUs, so `nvidia-smi -L` failed on every CPU node and the script drained itself with `Reason=azcluster-healthcheck: nvidia-smi -L failed` every `HealthCheckInterval=300` (5 min). Removed the legacy block entirely; v0.16's wrapper at line 239 is now the sole writer and uses the AGENTS.md-approved gate `nvidia-smi -L 2>/dev/null | grep -qE '^GPU [0-9]+:'`. Live-validated in `paul-azcluster`/`southafricanorth` on 2× `Standard_D8as_v5` — v0.16.0 deploy reproduced the regression (node1 drained at +5 min and +10 min on schedule with the legacy script's reason); v0.16.1 fix applied to the source tree, awaiting next live deploy for full end-to-end re-confirmation.
+
+### Changed
+- Workspace version `0.16.0` -> `0.16.1`.
+- CLI default `--azcluster-version` bumped to `v0.16.1`.
+
+
 ## [0.16.0] - 2026-05-23
 
 ### Added
