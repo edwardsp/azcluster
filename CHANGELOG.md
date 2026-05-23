@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.18.2] - 2026-05-24
+
+### Changed
+- **SSSD attribute cache shortened to 60 s** on both login and compute. `entry_cache_timeout = 60` + `entry_cache_user_timeout = 60` in `/etc/sssd/sssd.conf` (was the upstream default of 5400 s / 90 min). v0.18.1 live-validation surfaced that after `azcluster user sshkey add/remove` the new `sshPublicKey` LDAP attribute was correct in slapd but `sss_ssh_authorizedkeys` on the login node served the cached value for up to 90 min, forcing operators to `sudo sss_cache -u <user>` to force a refresh. The new TTL bounds the worst-case propagation lag to 1 minute on a 1-2 RPS LDAP load that the scheduler `slapd` easily absorbs. No regression to base auth latency: SSSD still satisfies repeat lookups from cache; the only difference is when the cache is considered stale.
+- **`pam_mkhomedir umask=0077`** on login and compute so per-user home directories created on first login are `drwx------` (`0700`) instead of the prior `drwxr-x---` (`0750`) from the default `umask=0022`. Tightens hygiene without breaking anything (group `azusers` had only `r-x` before; nothing relies on that). Applied by `sed`-rewriting the `session optional pam_mkhomedir.so …` line that `pam-auth-update --enable mkhomedir` drops into `/etc/pam.d/common-session`.
+- Workspace version `0.18.1` → `0.18.2`. CLI default `--azcluster-version` bumped to `v0.18.2`.
+
+### Deferred
+- **Entra ID (`aad-login`) integration** deferred again, now to v0.19. Same blocker as v0.18.0/v0.18.1: requires Azure AD app registration + UAI token-exchange + an interactive device-code flow that is explicitly excluded from automated testing. v0.18.x ships the fully-automatable LDAP path.
+
 ## [0.18.1] - 2026-05-24
 
 ### Fixed

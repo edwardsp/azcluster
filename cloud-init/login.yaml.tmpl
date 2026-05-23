@@ -214,10 +214,13 @@ write_files:
       enumerate = false
       cache_credentials = true
       override_homedir = /shared/home/%u
+      entry_cache_timeout = 60
+      entry_cache_user_timeout = 60
       EOF
       chmod 0600 /etc/sssd/sssd.conf
       chown root:root /etc/sssd/sssd.conf
       pam-auth-update --enable mkhomedir
+      sed -i 's|^session\s\+optional\s\+pam_mkhomedir\.so.*|session optional pam_mkhomedir.so umask=0077|' /etc/pam.d/common-session || true
       if ! grep -q '^AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys' /etc/ssh/sshd_config; then
         printf '\nAuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys\nAuthorizedKeysCommandUser nobody\n' >> /etc/ssh/sshd_config
       fi
