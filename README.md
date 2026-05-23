@@ -2,14 +2,14 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.16.1)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks (GPU device-node count, NVRM Xid scan, NIC/IB operstate, kernel critical messages, systemd unit state) drain misbehaving nodes automatically. **v0.16.1 fixes a v0.16 regression where a leftover legacy wrapper in `cloud-init/compute.yaml.tmpl` overwrote the v0.16 wrapper and self-drained every CPU node every 5 min.** Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: Prometheus textfile-collector metrics from `azhealthcheck` + Grafana `health.json` dashboard, then DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Status (v0.17.0)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks (GPU device-node count, NVRM Xid scan, NIC/IB operstate, kernel critical messages, systemd unit state) drain misbehaving nodes automatically. v0.16.1 fixes a v0.16 regression where a leftover legacy wrapper in `cloud-init/compute.yaml.tmpl` overwrote the v0.16 wrapper and self-drained every CPU node every 5 min. **v0.17 wires `azhealthcheck` into Prometheus via the node_exporter textfile collector and ships a `Node Health Checks` Grafana dashboard** (per-node worst-severity tiles, per-check heatmap, "seconds since last run" alert). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: DCGM-backed NVLink/throttle checks, user management (LDAP + aad-login), Slurm power-save autoscaling.
 
 ## Why azcluster
 
 - **Single binary.** Rust CLI shells out to `az` and Bicep. No Python venv, no agent, no laptop-side controller.
 - **AI-first defaults.** Default GPU pool is `Standard_ND96isr_H100_v5` with IB + NCCL tunings preconfigured. Pyxis + Enroot wired from boot: `srun --container-image=docker://...` works the moment a node registers.
 - **Multi-pool, dynamic Slurm.** One VMSS Flex per pool. Nodes register via `slurmd --conf-server` and self-tag with `Feature=pool_<name>`; `slurm.conf` `NodeSet+PartitionName` maps them into partitions.
-- **Managed observability out of the box.** Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, per-VM `prometheus` remote-writing via `azuread.managed_identity`. Three dashboards (node health, Slurm, GPU+IB) auto-imported post-deploy.
+- **Managed observability out of the box.** Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, per-VM `prometheus` remote-writing via `azuread.managed_identity`. Four dashboards (node health, Slurm, GPU+IB, healthcheck) auto-imported post-deploy.
 - **Observable provisioning.** Every deploy captures per-resource Azure Resource Manager timings to `~/.config/azcluster/deployments/<cluster>/`. `azcluster timings` prints a sorted table and a trend across runs.
 - **Test mode that's actually fast.** `--shared-storage nfs-scheduler --no-monitoring --no-accounting` deploys a functional 1-CPU cluster in ~7 minutes (vs ~15 with ANF + AMW + AMG).
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.16.1
+VERSION=v0.17.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -235,6 +235,7 @@ grafana/dashboards/
   node.json             node_exporter health
   slurm.json            slurm scheduler metrics
   gpu_ib.json           dcgm + InfiniBand counters
+  health.json           azhealthcheck per-node/per-check severity
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
 .sisyphus/              planning artifacts (gitignored)

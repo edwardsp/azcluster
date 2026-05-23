@@ -6,6 +6,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.17.0] - 2026-05-23
+
+### Added
+- **Prometheus textfile metrics from `azhealthcheck` + Grafana `Node Health Checks` dashboard.** New `--metrics-dir <path>` flag on `azhealthcheck` writes a Prometheus exposition file (`azhealthcheck.prom`) atomically via `tmp + rename(2)` with mode `0644` so the unprivileged `node_exporter` user can scrape it. The compute cloud-init wrapper (`/usr/local/sbin/azcluster-healthcheck`) now passes `--metrics-dir /var/lib/node_exporter/textfile_collector`, and `node_exporter.service` is started with `--collector.textfile --collector.textfile.directory=/var/lib/node_exporter/textfile_collector`. The directory is pre-created `node_exporter:node_exporter 0755` so the service starts cleanly even before the first healthcheck run.
+- **Metrics emitted** (labelled by `check` and `host`; `host` defaults to `/etc/hostname` and can be overridden with `--metrics-host`):
+  - `azcluster_healthcheck_severity{check,host}` — `0`/`1`/`2` per check.
+  - `azcluster_healthcheck_findings_total{check,host}` — number of findings emitted by each check on this run.
+  - `azcluster_healthcheck_worst_severity{host}` — max severity across all checks.
+  - `azcluster_healthcheck_last_run_timestamp_seconds{host}` — unix time of the most recent run; the dashboard alerts when this falls more than 10 min behind `time()`.
+- **`grafana/dashboards/health.json`** — new auto-imported dashboard (`uid: azcluster-health`): per-node worst-severity stat tiles (green/yellow/red), per-check severity heatmap, cluster-wide findings-by-check timeseries, "seconds since last healthcheck run" tile (thresholds: 10 min warn / 30 min crit), node counts in WARN/ERROR, and a sortable per-node/per-check table with value mappings. Templating vars: `$host`, `$check`. Wired into `crates/azcluster-cli/src/main.rs` via the existing `DASHBOARDS` `include_str!` array; the CLI imports it post-deploy alongside `node.json`/`slurm.json`/`gpu_ib.json`.
+- **5 new unit tests** in `crates/azhealthcheck/src/metrics.rs` covering exposition format, severity mapping, label escaping (`"`, `\`, `\n`), empty-outcome edge case, atomic write with `0644` mode, no-temp-file leakage on overwrite, and parent-dir auto-creation. Test count: 14 -> 19.
+
+### Changed
+- Workspace version `0.16.1` -> `0.17.0`.
+- CLI default `--azcluster-version` bumped to `v0.17.0`.
+
+
 ## [0.16.1] - 2026-05-23
 
 ### Fixed

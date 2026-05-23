@@ -46,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.16.1")]
+    #[arg(long, default_value = "v0.17.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -636,6 +636,10 @@ const DASHBOARDS: &[(&str, &str)] = &[
     (
         "azcluster-gpu-ib",
         include_str!("../../../grafana/dashboards/gpu_ib.json"),
+    ),
+    (
+        "azcluster-health",
+        include_str!("../../../grafana/dashboards/health.json"),
     ),
 ];
 

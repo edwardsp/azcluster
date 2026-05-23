@@ -1,4 +1,5 @@
 mod checks;
+mod metrics;
 mod types;
 
 use clap::Parser;
@@ -29,6 +30,15 @@ struct Cli {
     /// Override /dev root (default `/dev`). For testing.
     #[arg(long, default_value = "/dev")]
     dev_root: PathBuf,
+    /// Write a Prometheus textfile collector exposition file
+    /// (`azhealthcheck.prom`) into this directory after running checks.
+    /// Intended for `node_exporter --collector.textfile.directory=<path>`.
+    #[arg(long)]
+    metrics_dir: Option<PathBuf>,
+    /// Override the `host` label written into the metrics file. Defaults to
+    /// the system hostname; falls back to `unknown` if both are unavailable.
+    #[arg(long)]
+    metrics_host: Option<String>,
 }
 
 const ALL_CHECKS: &[&str] = &["gpu_count", "gpu_xid", "network", "kmsg", "systemd"];
@@ -67,6 +77,23 @@ fn main() -> ExitCode {
         .map(|o| o.severity)
         .max()
         .unwrap_or(Severity::Ok);
+
+    if let Some(dir) = cli.metrics_dir.as_deref() {
+        let host = cli
+            .metrics_host
+            .clone()
+            .or_else(|| {
+                std::fs::read_to_string("/etc/hostname")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let body = metrics::render(&host, &outcomes, metrics::now_unix_seconds());
+        if let Err(e) = metrics::write_atomic(dir, &body) {
+            eprintln!("warning: failed to write metrics file: {e:#}");
+        }
+    }
 
     if cli.json {
         let body = serde_json::json!({

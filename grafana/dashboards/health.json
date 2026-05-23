@@ -1,0 +1,88 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 2}]}, "mappings": [{"type": "value", "options": {"0": {"text": "OK", "color": "green"}, "1": {"text": "WARN", "color": "yellow"}, "2": {"text": "ERROR", "color": "red"}}}]}, "overrides": []},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "max by (host) (azcluster_healthcheck_worst_severity{host=~\"$host\"})", "legendFormat": "{{host}}", "refId": "A"}],
+      "title": "Worst severity per node",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 2, "custom": {"hideFrom": {"legend": false, "tooltip": false, "viz": false}}, "color": {"mode": "continuous-GrYlRd"}}, "overrides": []},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 6},
+      "id": 2,
+      "options": {"calculate": false, "cellGap": 1, "color": {"mode": "scheme", "scheme": "RdYlGn", "reverse": true, "steps": 3, "fill": "dark-orange"}, "exemplars": {"color": "rgba(255,0,255,0.7)"}, "legend": {"show": true}, "rowsFrame": {"layout": "auto"}, "tooltip": {"show": true, "yHistogram": false}, "yAxis": {"axisPlacement": "left", "reverse": false}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "max by (host, check) (azcluster_healthcheck_severity{host=~\"$host\",check=~\"$check\"})", "format": "time_series", "legendFormat": "{{host}}/{{check}}", "refId": "A"}],
+      "title": "Severity per check (0=ok, 1=warn, 2=error)",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 6},
+      "id": 3,
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "sum by (check) (azcluster_healthcheck_findings_total{host=~\"$host\",check=~\"$check\"})", "legendFormat": "{{check}}", "refId": "A"}],
+      "title": "Findings total by check (cluster-wide)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 600}, {"color": "red", "value": 1800}]}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "time() - max by (host) (azcluster_healthcheck_last_run_timestamp_seconds{host=~\"$host\"})", "legendFormat": "{{host}}", "refId": "A"}],
+      "title": "Seconds since last healthcheck run (alert >10m)",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "count(max by (host) (azcluster_healthcheck_worst_severity{host=~\"$host\"}) >= 2)", "legendFormat": "nodes in ERROR", "refId": "A"}, {"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "count(max by (host) (azcluster_healthcheck_worst_severity{host=~\"$host\"}) == 1)", "legendFormat": "nodes in WARN", "refId": "B"}],
+      "title": "Nodes by severity",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto", "displayMode": "color-background", "filterable": true}, "mappings": [{"type": "value", "options": {"0": {"text": "OK", "color": "green"}, "1": {"text": "WARN", "color": "yellow"}, "2": {"text": "ERROR", "color": "red"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 2}]}}, "overrides": []},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 24},
+      "id": 6,
+      "options": {"showHeader": true, "sortBy": [{"displayName": "Value", "desc": true}]},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "expr": "max by (host, check) (azcluster_healthcheck_severity{host=~\"$host\",check=~\"$check\"})", "format": "table", "instant": true, "legendFormat": "", "refId": "A"}],
+      "title": "Per-node, per-check severity (current)",
+      "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": true}, "indexByName": {"host": 0, "check": 1, "Value": 2}, "renameByName": {"Value": "severity"}}}],
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["azcluster", "managed-prometheus", "health"],
+  "templating": {
+    "list": [
+      {"current": {"selected": false, "text": "Prometheus", "value": "prometheus"}, "hide": 0, "includeAll": false, "label": "Prometheus datasource", "multi": false, "name": "DS_PROMETHEUS", "options": [], "query": "prometheus", "refresh": 1, "regex": "", "type": "datasource"},
+      {"current": {"selected": false, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "definition": "label_values(azcluster_healthcheck_worst_severity, host)", "hide": 0, "includeAll": true, "label": "Host", "multi": true, "name": "host", "options": [], "query": {"query": "label_values(azcluster_healthcheck_worst_severity, host)", "refId": "HostVariable"}, "refresh": 1, "regex": "", "sort": 1, "type": "query"},
+      {"current": {"selected": false, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "definition": "label_values(azcluster_healthcheck_severity, check)", "hide": 0, "includeAll": true, "label": "Check", "multi": true, "name": "check", "options": [], "query": {"query": "label_values(azcluster_healthcheck_severity, check)", "refId": "CheckVariable"}, "refresh": 1, "regex": "", "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "azcluster / Node Health Checks",
+  "uid": "azcluster-health",
+  "version": 1,
+  "weekStart": ""
+}

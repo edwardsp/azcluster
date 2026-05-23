@@ -242,7 +242,10 @@ write_files:
       if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -qE '^GPU [0-9]+:'; then
         SERVICES="${SERVICES},dcgm-exporter"
       fi
-      exec /usr/local/bin/azhealthcheck --services "${SERVICES}" "$@"
+      exec /usr/local/bin/azhealthcheck \
+        --services "${SERVICES}" \
+        --metrics-dir /var/lib/node_exporter/textfile_collector \
+        "$@"
       HC_EOF
       chmod 0755 /usr/local/sbin/azcluster-healthcheck
 
@@ -471,6 +474,7 @@ write_files:
       tar -xzf "node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz"
       install -m 0755 "node_exporter-${NODE_EXP_VER}.linux-amd64/node_exporter" /usr/local/bin/node_exporter
       id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter
+      install -d -o node_exporter -g node_exporter -m 0755 /var/lib/node_exporter/textfile_collector
       cat > /etc/systemd/system/node_exporter.service <<'EOF'
       [Unit]
       Description=Prometheus Node Exporter
@@ -478,7 +482,7 @@ write_files:
       Wants=network-online.target
       [Service]
       User=node_exporter
-      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100
+      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100 --collector.textfile --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
       Restart=on-failure
       RestartSec=5
       [Install]
