@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.15)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke that catches IB-in-container / PMIx-multi-node regressions at deploy time. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: health checks via Slurm `HealthCheckProgram`.
+> **Status (v0.16)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks (GPU device-node count, NVRM Xid scan, NIC/IB operstate, kernel critical messages, systemd unit state) drain misbehaving nodes automatically. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.15.0
+VERSION=v0.16.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -265,7 +265,7 @@ Tag-triggered. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.
 - **v0.14** — ✅ `azcluster scale` no longer requires a separate `azcluster tunnel` shell. CLI invokes `az vmss scale --new-capacity` directly using the operator's existing `az` login, identical to how every other ARM op (deploy/delete/status) already works. Scheduler-side `azcluster-server` keeps `/v1/healthz` as a future hook point; the `/v1/pools/:name/scale` endpoint is removed.
 - **v0.14+** — backlog:
   - **Better scaling.** Wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
-  - **Health checks.** Port the patterns from [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck) into a small Rust binary shipped with the release tarball. Compute nodes invoke it via Slurm `HealthCheckProgram`; failures drain the node automatically.
+  - **Health checks.** ✅ Shipped in v0.16: `azhealthcheck` Rust binary in the release tarball (`/usr/local/bin/azhealthcheck`) + wrapper at `/usr/local/sbin/azcluster-healthcheck`. Slurm `HealthCheckProgram` runs it every 5 min on every compute node; non-zero exit drains. 5 checks: `gpu_count`, `gpu_xid` (catastrophic + soft XID classification), `network` (eth + IB operstate/carrier + flap), `kmsg` (kernel critical), `systemd` (`slurmd,prometheus,node_exporter` + `dcgm-exporter` on GPU). DCGM-backed checks (NVLink CRC, throttle) deferred to v0.17.
   - **User management.** Add a directory backend so user accounts aren't local-only. Options: stand up `slapd` on the scheduler (LDAP) and `sssd` on every node, or — preferred — federate against Microsoft Entra ID (Azure AD DS join or `aad-login` PAM module).
   - **Multi-node container validation.** ✅ Shipped in v0.15: `azcluster validate --multi-node` (with `--gpu` for the NCCL all-reduce path). NDv5-tuned NCCL env; cross-SKU is part of "NCCL env vars per SKU" below.
   - **NCCL env vars per SKU.** The current `/etc/profile.d/nccl-azcluster.sh` hardcodes NDv5-flavoured settings (`NCCL_IB_HCA=mlx5`, `NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml`). These are wrong for GB-series (no static topo file needed) and arguably should be a user concern. Either dispatch on SKU family at boot, or drop the file and document the recommended exports per SKU.

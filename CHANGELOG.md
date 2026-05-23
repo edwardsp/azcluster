@@ -6,6 +6,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.16.0] - 2026-05-23
+
+### Added
+- **`azhealthcheck` — node health-check binary for Slurm `HealthCheckProgram`.** New crate `crates/azhealthcheck/` (Rust, MIT). Ships as a release artifact (`azhealthcheck-vX.Y.Z-x86_64-linux.tar.gz`) and is installed by `cloud-init/compute.yaml.tmpl` on every compute node at `/usr/local/bin/azhealthcheck`, with a small wrapper at `/usr/local/sbin/azcluster-healthcheck` that supplies the default service list (`slurmd,prometheus,node_exporter` + `dcgm-exporter` on GPU nodes). The Slurm scheduler config (`slurm.conf`) already pointed at this wrapper path (`HealthCheckProgram=/usr/local/sbin/azcluster-healthcheck`, `HealthCheckInterval=300`, `HealthCheckNodeState=ANY,CYCLE`); v0.16 makes that pointer real. Exit codes: `0` (Ok), `1` (Warning), `2` (Error); Slurm drains the node on any non-zero exit.
+- **Checks shipped in v0.16** (5; ported from patterns in [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck), MIT):
+  - `gpu_count` — sysfs PCI scan (NVIDIA vendor `0x10de`, class `0x0300|0x0302`) vs. `/dev/nvidia[0-9]+` count. Mismatch → Error. Returns Ok on CPU nodes (no GPUs).
+  - `gpu_xid` — scans `dmesg` for `NVRM: Xid` events. Fatal XIDs (48/61/62/63/64/74/79/94/95) and uncategorised → Error; soft XIDs (43/45) → Warning.
+  - `network` — sysfs scan of `/sys/class/net/*` Ethernet (`type=1`) and InfiniBand (`type=32`) interfaces. `operstate != up` or `carrier != 1` → Error; `carrier_down_count > 0` while up → Warning (link flapped).
+  - `kmsg` — `dmesg --level=emerg,alert,crit --since "1 hour ago"`. Any line → Error.
+  - `systemd` — `systemctl is-active <svc>` for each configured service. Any `failed` → Error; `inactive`/`activating` → Warning; missing units are silently skipped (lets the GPU-only `dcgm-exporter` slot be absent on CPU nodes).
+- **Flags**: `--checks gpu_count,gpu_xid,network,kmsg,systemd` (default: all), `--services <list>` (for the `systemd` check), `--json` (machine-readable output for human debugging), `--sys-root`/`--dev-root` (for unit testing). Unit tests inject fake `dmesg`/`systemctl` output via a `Runner` trait; 14 tests live alongside the implementation.
+- Release pipeline (`.github/workflows/release.yml`) now builds `azhealthcheck` on the linux job and uploads `azhealthcheck-vX.Y.Z-x86_64-linux.tar.gz` alongside `azcluster-cli`/`azcluster-server`/`spank_pyxis.so`.
+
+### Changed
+- Workspace version `0.15.0` -> `0.16.0`.
+- CLI default `--azcluster-version` bumped to `v0.16.0`.
+
+### Deferred to v0.17+
+- DCGM-backed GPU checks (`gpu_dcgm`, `gpu_nvlink`) — need either `libdcgm` Rust bindings or a `nvidia-smi -q` shim. The 5 dep-free checks above cover the most common drain triggers (catastrophic XIDs, link-down, kernel critical, failed services, missing GPU device nodes).
+- Intrusive active diagnostics (`gpu_diag`) — not appropriate for periodic `HealthCheckProgram` invocation.
+- Azure GHR (GPU Health Reporting) integration — start with exit-code-based draining first.
+
+
 ## [0.15.0] - 2026-05-23
 
 ### Added

@@ -231,6 +231,21 @@ write_files:
       curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so "${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so"
       chmod 0755 /opt/pyxis/spank_pyxis.so
 
+      cd /tmp
+      HC_TARBALL="azhealthcheck-${AZCLUSTER_VERSION}-x86_64-linux.tar.gz"
+      curl -fsSL --retry 8 --retry-delay 5 -O "${BASE}/${HC_TARBALL}"
+      tar -xzf "${HC_TARBALL}" -C /usr/local/bin/
+      chmod 0755 /usr/local/bin/azhealthcheck
+      cat > /usr/local/sbin/azcluster-healthcheck <<'HC_EOF'
+      #!/bin/bash
+      SERVICES="slurmd,prometheus,node_exporter"
+      if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -qE '^GPU [0-9]+:'; then
+        SERVICES="${SERVICES},dcgm-exporter"
+      fi
+      exec /usr/local/bin/azhealthcheck --services "${SERVICES}" "$@"
+      HC_EOF
+      chmod 0755 /usr/local/sbin/azcluster-healthcheck
+
       cat > /etc/slurm/plugstack.conf <<EOF
       required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime
       EOF
