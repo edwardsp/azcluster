@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.13.10] - 2026-05-23
+
+### Documentation
+- Strip unqualified bare-metal NCCL bandwidth claims (peak/avg busbw numbers from a single `all_reduce_perf` run) and MFU-vs-theoretical-peak claims (`~54% MFU vs 989 TFLOPS H100 BF16 peak`, `100.07% efficiency`) from forward-facing docs: `README.md` status block + feature matrix row + v0.13.x roadmap bullet, `walkthrough.md` §4 "What good looks like" + §5 container summary, `walkthrough-dgxc.md` Tier-2 results table. azcluster does not currently run a qualified bandwidth-acceptance baseline; treat `NCCL_DEBUG=INFO` signals (`NET/IB ... mlx5_ib*:1/IB/SHARP`, `NVLS multicast support is available`, `NCCL RDMA Plugin v11`) as the pass/fail criterion. Measured DGXC training throughput (167,594 tok/s on 16 GPU / 83,737 tok/s on 8 GPU, 2.001× strong scaling) and the v0.13.8 container all-reduce summary (`avg busbw=434.40 GB/s` on a single run) are retained as observed values without comparison to a theoretical peak. Historical AGENTS.md and CHANGELOG entries left unchanged for the internal debugging record.
+
+### Changed
+- Workspace version `0.13.9` -> `0.13.10`.
+- CLI default `--azcluster-version` bumped to `v0.13.10`.
+
+
 ## [0.13.9] - 2026-05-23
 
 ### Fixed

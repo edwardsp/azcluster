@@ -161,7 +161,7 @@ $LLMB_INSTALL/llmb_venv/bin/llmb-run submit \
 | 8 GPU  | 1 | 128 | 12522.40 | 83,737  | 10,467 | ~537 |
 | 16 GPU | 2 | 256 | 12513.10 | 167,594 | 10,475 | ~538 |
 
-Strong scaling 8→16 GPU = **2.001× → 100.07% efficiency**. Cross-node throughput matches single-node throughput per GPU because the cluster's 8× NDR400 IB + SHARP + GPUDirect RDMA absorb the all-reduce overhead at this model size (Llama 3.1 8B fits inside one node's HBM at TP=1 PP=1 CP=2 MBS=1, so the cross-node traffic is purely data-parallel gradient reduction over IB). NeMo's `MODEL_TFLOP/s/GPU` ~538 corresponds to ~54% MFU vs H100 BF16 peak (989 TFLOPS).
+Strong scaling 8→16 GPU = **2.001×**. Per-GPU throughput is essentially identical at 1-node and 2-node scale at this model size, indicating the 8× NDR400 IB + SHARP + GPUDirect RDMA fabric absorbs the cross-node data-parallel gradient reduction without throttling per-GPU compute. `MODEL_TFLOP/s/GPU` is the NeMo-reported model-FLOPs throughput — useful for run-to-run comparisons on the same recipe; not a hardware utilization claim against any qualified peak.
 
 > **/etc/hosts gotcha** (fixed in v0.13.9). On v0.13.8 and earlier, compute nodes had `127.0.1.1 <hostname>` in `/etc/hosts` (Ubuntu cloud-image default). PyTorch/Gloo's `connectFullMesh` calls `gethostbyname(hostname)` for the rendezvous address; every remote rank then tried to dial its own loopback and stalled with `Connection refused, remote=[127.0.1.1]:...`. v0.13.9 maps the hostname to the eth0 IPv4 instead, in `cloud-init/compute.yaml.tmpl`.
 

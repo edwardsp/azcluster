@@ -109,53 +109,24 @@ srun --mpi=pmix /opt/nccl-tests/build/all_reduce_perf -b 8M -e 16G -f 2 -g 1
 
 ### What "good" looks like
 
-Actual output from the v0.13.4 validation run (job 6 on `paul-azcluster-h100a`, 2x `Standard_ND96isr_H100_v5`, `southafricanorth`, 2026-05-22):
+The job should:
 
-```
-# nccl-tests version 2.18.3 nccl-headers=22907 nccl-library=22907
-# Collective test starting: all_reduce_perf
-# nThread 1 nGpus 1 minBytes 8388608 maxBytes 17179869184 step: 2(factor) warmup iters: 1 iters: 20
-# Using devices
-#  Rank  0 .. Rank  7 on h100a-gpu-0001  NVIDIA H100 80GB HBM3
-#  Rank  8 .. Rank 15 on h100a-gpu-0002  NVIDIA H100 80GB HBM3
-#                                                              out-of-place                       in-place
-#       size         count      type   redop    root     time   algbw   busbw  #wrong     time   algbw   busbw  #wrong
-#        (B)    (elements)                               (us)  (GB/s)  (GB/s)             (us)  (GB/s)  (GB/s)
-     8388608       2097152     float     sum      -1   175.69   47.75   89.52       0   150.32   55.80  104.63       0
-    16777216       4194304     float     sum      -1   200.32   83.75  157.04       0   201.43   83.29  156.17       0
-    33554432       8388608     float     sum      -1   274.33  122.31  229.34       0   274.66  122.17  229.06       0
-    67108864      16777216     float     sum      -1   480.83  139.57  261.69       0   476.16  140.94  264.26       0
-   134217728      33554432     float     sum      -1   759.11  176.81  331.52       0   763.14  175.87  329.77       0
-   268435456      67108864     float     sum      -1  1304.40  205.79  385.86       0  1314.20  204.26  382.98       0
-   536870912     134217728     float     sum      -1  2387.39  224.88  421.65       0  2387.93  224.83  421.55       0
-  1073741824     268435456     float     sum      -1  4531.91  236.93  444.24       0  4537.36  236.64  443.71       0
-  2147483648     536870912     float     sum      -1  8813.94  243.65  456.84       0  8830.41  243.19  455.98       0
-  4294967296    1073741824     float     sum      -1  17394.4  246.92  462.97       0  17371.9  247.24  463.57       0
-  8589934592    2147483648     float     sum      -1  34613.7  248.17  465.31       0  34896.1  246.16  461.55       0
- 17179869184    4294967296     float     sum      -1  69076.8  248.71  466.33       0  68981.5  249.05  466.97       0
-# Out of bounds values : 0 OK
-# Avg bus bandwidth    : 348.02
-# Collective test concluded: all_reduce_perf
-```
+- Complete with `#wrong = 0` on every row of the size sweep (8 MiB → 16 GiB).
+- Log `NVLS multicast support is available`, `Initialized NET plugin IBext_v11`, `NET/IB : Using [0]mlx5_ib0:1/IB/SHARP ... [7]mlx5_ib7:1/IB/SHARP`, and `Loaded net plugin NCCL RDMA Plugin v11` (from HPC-X's `nccl_rdma_sharp_plugin`) in the `NCCL_DEBUG=INFO` output. Those confirm NCCL picked up the NDv5 topology file and is using NVLink SHARP intra-node + IB SHARP RDMA inter-node on all 8 NDR400 NICs.
 
-Key numbers to look for:
-
-- **Peak busbw at the largest message size (16 GiB)**: 466.33 GB/s on this run.
-- **Avg busbw across all message sizes**: 348.02 GB/s on this run.
-- `#wrong` must be `0` for every row.
-- `NCCL_DEBUG=INFO` output (in the job stderr) should mention `NVLS multicast support is available`, `Initialized NET plugin IBext_v11`, `NET/IB : Using [0]mlx5_ib0:1/IB/SHARP ... [7]mlx5_ib7:1/IB/SHARP`, and `Loaded net plugin NCCL RDMA Plugin v11` (from HPC-X's `nccl_rdma_sharp_plugin`). Those confirm NCCL picked up the NDv5 topology file and is using NVLink SHARP intra-node + IB SHARP RDMA inter-node on all 8 NDR400 NICs.
-
-If you see avg busbw well below the figures above, NCCL probably fell back to TCP. Re-check that:
+If `NCCL_DEBUG=INFO` shows `NET/Socket` channels instead, NCCL fell back to TCP. Re-check that:
 
 - `/opt/microsoft/ndv5-topo.xml` exists on every node (`ls -l /opt/microsoft/ndv5-topo.xml`).
 - All 8 IB devices report `State: Active LinkUp Rate: 400` (`ibstat | grep -E '(CA |State|Rate)'`).
 - The job actually ran on 2 different nodes (`grep "Hostname" nccl-allreduce-*.out` should show two distinct names).
 
+azcluster does not publish a bare-metal busbw target — `all_reduce_perf` numbers depend on NCCL version, image patch level, IB tuning, and message-size sweep, and we don't run a qualified bandwidth-acceptance baseline. Treat the `NCCL_DEBUG` signals above as the pass/fail criterion.
+
 ## 5. Pyxis container path (cross-node)
 
 Pyxis lets you replace bare-metal with `srun --container-image=docker://...`. The end-to-end containerised path (Pyxis import → enroot extract → cross-node PMIx world → NCCL over InfiniBand) is live-validated since v0.13.8.
 
-`/shared/examples/dgxc-nemo-multinode-smoke.sbatch` runs the same 16-rank NCCL all-reduce as above, but from inside `nvcr.io/nvidia/nemo:25.07.02`:
+`/shared/examples/dgxc-nemo-multinode-smoke.sbatch` runs a 16-rank NCCL all-reduce from inside `nvcr.io/nvidia/nemo:25.07.02`:
 
 ```bash
 sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch
@@ -166,9 +137,7 @@ Healthy log shape (search the `.out`):
 - `pyxis: imported docker image: nvcr.io/nvidia/nemo:25.07.02` on every compute node (first run only — subsequent runs hit the `/mnt/nvme/enroot-data/` cache and start in seconds).
 - `NCCL INFO NET/IB : Using [0]mlx5_ib0:1/IB/SHARP [1]mlx5_ib1:1/IB/SHARP ... [7]mlx5_ib7:1/IB/SHARP` on every rank — all 8 NDR400 HCAs visible and in SHARP mode inside the container.
 - Cross-node channels via `NET/IBext_v10/0/GDRDMA` (GPUDirect RDMA between H100s on different nodes).
-- Final summary: `all_reduce size=1GiB iters=20 elapsed=0.093s algbw=~230 GB/s avg busbw=~430 GB/s`.
-
-The container path uses the same fabric as the bare-metal path; the small numerical gap at 1 GiB (~430 GB/s vs the bare-metal peak of 466 GB/s at 16 GiB) is mostly the message-size sweet spot — bare-metal saturates with larger messages.
+- Final summary line `all_reduce size=1GiB iters=20 elapsed=...s algbw=... avg busbw=... GB/s`. On the v0.13.8 validation run (`paul-azcluster-h100d`, 16 ranks, 1 GiB message) this reported `avg busbw=434.40 GB/s`.
 
 ## 6. Inspect the job in Grafana and accounting
 

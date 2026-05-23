@@ -46,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.13.9")]
+    #[arg(long, default_value = "v0.13.10")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
