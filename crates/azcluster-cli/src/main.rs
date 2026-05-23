@@ -1,5 +1,6 @@
 mod cluster_state;
 mod timings;
+mod user;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -30,6 +31,7 @@ enum CliCommand {
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
+    User(UserArgs),
 }
 
 #[derive(Args)]
@@ -46,7 +48,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.17.0")]
+    #[arg(long, default_value = "v0.18.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -279,6 +281,69 @@ struct TimingsCaptureArgs {
     shared_storage: String,
 }
 
+#[derive(Args)]
+struct UserArgs {
+    #[command(subcommand)]
+    cmd: UserCmd,
+}
+
+#[derive(Subcommand)]
+enum UserCmd {
+    /// Add a POSIX user to the cluster directory (LDAP).
+    Add {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        uid: Option<u32>,
+        #[arg(long)]
+        gid: Option<u32>,
+        #[arg(long, default_value = "")]
+        gecos: String,
+        #[arg(long, default_value = "/bin/bash")]
+        shell: String,
+        /// SSH public key files (repeatable). One key per file (extra lines after the first are ignored).
+        #[arg(long = "ssh-key")]
+        ssh_keys: Vec<PathBuf>,
+    },
+    /// Remove a user.
+    Remove {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+    },
+    /// List users.
+    List { cluster: String },
+    /// Manage authorized SSH keys for a user.
+    Sshkey {
+        #[command(subcommand)]
+        cmd: SshkeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SshkeyCmd {
+    Add {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    Remove {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    List {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -306,6 +371,7 @@ fn main() -> Result<()> {
             )?;
             Ok(())
         }
+        CliCommand::User(args) => user_dispatch(args),
     }
 }
 
@@ -442,6 +508,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
     } else {
         String::new()
     };
+    let ldap_password = gen_mysql_password()?;
 
     let mut params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
@@ -466,6 +533,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("sharedStorageMode", args.shared_storage.clone()),
         ("enableAccounting", accounting_enabled.to_string()),
         ("mysqlAdminPassword", mysql_password.clone()),
+        ("ldapAdminPassword", ldap_password.clone()),
         (
             "grafanaLocation",
             args.grafana_location
@@ -567,6 +635,12 @@ fn deploy(args: DeployArgs) -> Result<()> {
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());
+
+    let secrets = cluster_state::ClusterSecrets {
+        ldap_admin_password: ldap_password,
+    };
+    let secrets_path = secrets.save(&args.name)?;
+    eprintln!("==> saved cluster secrets -> {}", secrets_path.display());
 
     if let Err(e) = timings::capture(
         &args.name,
@@ -1180,4 +1254,51 @@ fn timings(args: TimingsArgs) -> Result<()> {
         timings::print_table(t);
     }
     Ok(())
+}
+
+fn user_dispatch(args: UserArgs) -> Result<()> {
+    match args.cmd {
+        UserCmd::Add {
+            cluster,
+            username,
+            uid,
+            gid,
+            gecos,
+            shell,
+            ssh_keys,
+        } => {
+            let state = ClusterState::load(&cluster)?;
+            user::user_add(&state, &username, uid, gid, &gecos, &shell, &ssh_keys)
+        }
+        UserCmd::Remove { cluster, username } => {
+            let state = ClusterState::load(&cluster)?;
+            user::user_remove(&state, &username)
+        }
+        UserCmd::List { cluster } => {
+            let state = ClusterState::load(&cluster)?;
+            user::user_list(&state)
+        }
+        UserCmd::Sshkey { cmd } => match cmd {
+            SshkeyCmd::Add {
+                cluster,
+                username,
+                key_file,
+            } => {
+                let state = ClusterState::load(&cluster)?;
+                user::sshkey_add(&state, &username, &key_file)
+            }
+            SshkeyCmd::Remove {
+                cluster,
+                username,
+                key_file,
+            } => {
+                let state = ClusterState::load(&cluster)?;
+                user::sshkey_remove(&state, &username, &key_file)
+            }
+            SshkeyCmd::List { cluster, username } => {
+                let state = ClusterState::load(&cluster)?;
+                user::sshkey_list(&state, &username)
+            }
+        },
+    }
 }

@@ -23,10 +23,12 @@ param accountingMysqlUser string = ''
 param accountingMysqlDatabase string = ''
 @secure()
 param mysqlAdminPassword string = ''
+@secure()
+param ldapAdminPassword string
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -43,7 +45,8 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{ACCT_MYSQL_FQDN}}', accountingMysqlFqdn),
     '{{ACCT_MYSQL_USER}}', accountingMysqlUser),
     '{{ACCT_MYSQL_DB}}', accountingMysqlDatabase),
-    '{{ACCT_MYSQL_PASSWORD}}', mysqlAdminPassword)
+    '{{ACCT_MYSQL_PASSWORD}}', mysqlAdminPassword),
+    '{{LDAP_ADMIN_PASSWORD}}', ldapAdminPassword)
 
 var userIdentities = empty(monUaiId) ? {
   '${userAssignedIdentityId}': {}

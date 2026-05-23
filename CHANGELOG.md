@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.18.0] - 2026-05-23
+
+### Added
+- **LDAP-backed user management.** The scheduler now runs `slapd` (configured non-interactively via `debconf-set-selections` during cloud-init) with base DN `dc=azcluster,dc=local`, admin DN `cn=admin,dc=azcluster,dc=local`. The OpenSSH-LPK schema is loaded so user entries can carry `sshPublicKey` attributes. Base structure (`ou=people`, `ou=groups`, default group `cn=azusers,…` gid 20000, `cn=uidNext` counter starting at 20001) is seeded on first boot.
+- **SSSD on login + compute** (`sssd`, `sssd-ldap`, `libnss-sss`, `libpam-sss`, `oddjob-mkhomedir`). Config: `services = nss, pam, ssh`, `id_provider = ldap`, `ldap_uri = ldap://<scheduler-ip>`, `ldap_user_extra_attrs = sshPublicKey:sshPublicKey`, `ldap_user_ssh_public_key = sshPublicKey`, `override_homedir = /shared/home/%u`. `pam-auth-update --enable mkhomedir` creates home directories on first login. sshd `AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys` resolves authorized keys from LDAP at SSH-connect time.
+- **`azcluster user` CLI subcommand** with `add`, `remove`, `list`, and `sshkey {add, remove, list}`. UID auto-allocated from the `cn=uidNext` counter (operator can override with `--uid`); default gid 20000. `--ssh-key <file>` (repeatable on `add`) seeds initial `sshPublicKey` attributes. All ops run on the scheduler via `ssh -J <login> <scheduler>`; the LDAP admin password is sent over stdin (never argv) and the scheduler's local `ldapadd`/`ldapmodify`/`ldapsearch` talks to `ldap://127.0.0.1`.
+- **CLI-side secret store.** Deploys auto-generate a 36-char LDAP admin password (reusing the existing `gen_mysql_password` helper) and persist it to `~/.config/azcluster/clusters/<name>-secrets.toml` (mode `0600`). Sibling file pattern keeps the secret out of `<name>.toml` (which is read by `azcluster status`).
+- **Bicep parameter threading.** New `@secure() ldapAdminPassword` param flows `main.bicep` → `cluster.bicep` → `scheduler.bicep` and into `cloud-init/scheduler.yaml.tmpl` via the existing `replace(...)` chain, mirroring the MySQL accounting password pattern. Compute and login use the existing `SCHEDULER_IP` substitution; no new bicep params needed (LDAP traffic is intra-VNet on port 389, already allowed by the `internalNsg`'s `allow-vnet-inbound` rule, and on login by the default NSG `AllowVnetInBound`).
+- **8 new unit tests** in `crates/azcluster-cli/src/user.rs` covering LDIF rendering (add user, delete user, add/remove ssh key, uid bump) and username validation (`[a-z][a-z0-9_-]{0,31}`). Total CLI test count: 6 → 14. Workspace total: 31 → 39.
+
+### Changed
+- Workspace version `0.17.0` → `0.18.0`.
+- CLI default `--azcluster-version` bumped to `v0.18.0`.
+- `cloud-init/scheduler.yaml.tmpl` now installs `slapd`, `ldap-utils`, and `debconf-utils`; creates `/shared/home` (0755 root:root) so SSSD's `oddjob-mkhomedir` can create per-user subdirectories at first login.
+
+### Deferred
+- **Entra ID (`aad-login`) integration** deferred to v0.18.1. Adding it requires an Azure AD app registration + UAI token-exchange wiring that is not CI-testable end-to-end without an interactive device-code flow, and the user explicitly excluded the device-code flow from automated testing. v0.18.0 ships the LDAP + SSH-key authentication path which is fully automatable and live-validatable on the standard test cluster.
+
+
 ## [0.17.0] - 2026-05-23
 
 ### Added

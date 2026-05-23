@@ -27,6 +27,8 @@ param sharedStorageMode string = 'anf'
 param enableAccounting bool = false
 @secure()
 param mysqlAdminPassword string = ''
+@secure()
+param ldapAdminPassword string
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -139,6 +141,7 @@ module scheduler 'modules/scheduler.bicep' = {
     accountingMysqlUser: enableAccounting ? accounting!.outputs.adminLogin : ''
     accountingMysqlDatabase: enableAccounting ? accounting!.outputs.databaseName : ''
     mysqlAdminPassword: mysqlAdminPassword
+    ldapAdminPassword: ldapAdminPassword
     tags: tags
   }
 }

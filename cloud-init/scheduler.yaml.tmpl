@@ -13,6 +13,8 @@ packages:
   - nfs-common
   - munge
   - libmunge2
+  - debconf-utils
+  - ldap-utils
 
 write_files:
   - path: /etc/azcluster/install.env
@@ -29,11 +31,51 @@ write_files:
       ACCT_MYSQL_FQDN={{ACCT_MYSQL_FQDN}}
       ACCT_MYSQL_USER={{ACCT_MYSQL_USER}}
       ACCT_MYSQL_DB={{ACCT_MYSQL_DB}}
+      LDAP_BASE_DN=dc=azcluster,dc=local
   - path: /etc/azcluster/accounting.password
     permissions: '0600'
     owner: 'root:root'
     content: |
       {{ACCT_MYSQL_PASSWORD}}
+  - path: /etc/azcluster/ldap.password
+    permissions: '0600'
+    owner: 'root:root'
+    content: |
+      {{LDAP_ADMIN_PASSWORD}}
+  - path: /etc/azcluster/openssh-lpk.ldif
+    permissions: '0644'
+    content: |
+      dn: cn=openssh-lpk,cn=schema,cn=config
+      objectClass: olcSchemaConfig
+      cn: openssh-lpk
+      olcAttributeTypes: ( 1.3.6.1.4.1.24552.500.1.1.1.13
+        NAME 'sshPublicKey' DESC 'MANDATORY: OpenSSH Public key'
+        EQUALITY octetStringMatch
+        SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 )
+      olcObjectClasses: ( 1.3.6.1.4.1.24552.500.1.1.2.0
+        NAME 'ldapPublicKey' SUP top AUXILIARY
+        DESC 'MANDATORY: OpenSSH LPK objectclass'
+        MAY ( sshPublicKey $ uid ) )
+  - path: /etc/azcluster/ldap-base.ldif.tmpl
+    permissions: '0644'
+    content: |
+      dn: ou=people,__BASE_DN__
+      objectClass: organizationalUnit
+      ou: people
+
+      dn: ou=groups,__BASE_DN__
+      objectClass: organizationalUnit
+      ou: groups
+
+      dn: cn=azusers,ou=groups,__BASE_DN__
+      objectClass: posixGroup
+      cn: azusers
+      gidNumber: 20000
+
+      dn: cn=uidNext,__BASE_DN__
+      objectClass: extensibleObject
+      cn: uidNext
+      uidNumber: 20001
   - path: /etc/systemd/system/azcluster-server.service
     permissions: '0644'
     content: |
@@ -516,6 +558,45 @@ write_files:
         sacctmgr -i add account default Description="Default account" Organization=azcluster >/dev/null 2>&1 || true
         sacctmgr -i add user azureuser DefaultAccount=default >/dev/null 2>&1 || true
       fi
+
+      LDAP_ADMIN_PW=$(cat /etc/azcluster/ldap.password)
+      export DEBIAN_FRONTEND=noninteractive
+      printf '%s\n' \
+        "slapd slapd/internal/adminpw password ${LDAP_ADMIN_PW}" \
+        "slapd slapd/internal/generated_adminpw password ${LDAP_ADMIN_PW}" \
+        "slapd slapd/password1 password ${LDAP_ADMIN_PW}" \
+        "slapd slapd/password2 password ${LDAP_ADMIN_PW}" \
+        "slapd slapd/domain string azcluster.local" \
+        "slapd shared/organization string azcluster" \
+        "slapd slapd/backend select MDB" \
+        "slapd slapd/purge_database boolean true" \
+        "slapd slapd/move_old_database boolean true" \
+        "slapd slapd/no_configuration boolean false" \
+        | debconf-set-selections
+      apt-get -o DPkg::Lock::Timeout=600 install -y slapd
+      for i in $(seq 1 30); do
+        if ldapsearch -Y EXTERNAL -H ldapi:/// -b cn=schema,cn=config dn 2>/dev/null | grep -q '^dn: cn=.*core,cn=schema'; then
+          break
+        fi
+        sleep 2
+      done
+
+      if ! ldapsearch -Y EXTERNAL -H ldapi:/// -b cn=schema,cn=config 'cn=*openssh-lpk*' dn 2>/dev/null | grep -q openssh-lpk; then
+        ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/azcluster/openssh-lpk.ldif
+      fi
+
+      BASE_LDIF=/etc/azcluster/ldap-base.ldif
+      sed 's|__BASE_DN__|dc=azcluster,dc=local|g' /etc/azcluster/ldap-base.ldif.tmpl > ${BASE_LDIF}
+      if ! ldapsearch -x -H ldap://127.0.0.1 -b "ou=people,dc=azcluster,dc=local" -s base 'objectClass=*' dn 2>/dev/null | grep -q '^dn: ou=people'; then
+        ldapadd -x -D "cn=admin,dc=azcluster,dc=local" -w "${LDAP_ADMIN_PW}" -f ${BASE_LDIF}
+      fi
+
+      sed -i 's|^SLAPD_SERVICES=.*|SLAPD_SERVICES="ldap:/// ldapi:///"|' /etc/default/slapd
+      systemctl restart slapd
+      systemctl enable slapd
+      unset LDAP_ADMIN_PW
+
+      install -d -m 0755 -o root -g root /shared/home
 
       touch /var/log/azcluster/ready
 

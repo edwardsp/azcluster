@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.17.0)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks (GPU device-node count, NVRM Xid scan, NIC/IB operstate, kernel critical messages, systemd unit state) drain misbehaving nodes automatically. v0.16.1 fixes a v0.16 regression where a leftover legacy wrapper in `cloud-init/compute.yaml.tmpl` overwrote the v0.16 wrapper and self-drained every CPU node every 5 min. **v0.17 wires `azhealthcheck` into Prometheus via the node_exporter textfile collector and ships a `Node Health Checks` Grafana dashboard** (per-node worst-severity tiles, per-check heatmap, "seconds since last run" alert). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: DCGM-backed NVLink/throttle checks, user management (LDAP + aad-login), Slurm power-save autoscaling.
+> **Status (v0.18.0)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks drain misbehaving nodes automatically. v0.16.1 fixes a v0.16 regression where a leftover legacy wrapper in `cloud-init/compute.yaml.tmpl` overwrote the v0.16 wrapper and self-drained every CPU node every 5 min. v0.17 wires `azhealthcheck` into Prometheus via the node_exporter textfile collector and ships a `Node Health Checks` Grafana dashboard. **v0.18 adds LDAP-backed user management.** The scheduler runs `slapd` (`dc=azcluster,dc=local`); login + compute nodes resolve users via `sssd`; sshd authenticates against `sshPublicKey` LDAP attribute via `sss_ssh_authorizedkeys`; home directories live under `/shared/home/<user>` on the cluster-wide NFS share. New `azcluster user {add,remove,list,sshkey {add,remove,list}}` CLI manages directory entries over SSH-jump. Entra ID (`aad-login`) integration deferred to v0.18.1. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.17.0
+VERSION=v0.18.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -196,6 +196,10 @@ Mounted on login + compute at `/amlfs`.
 | `azcluster monitor <name>` | Print the AMG Grafana URL for this cluster. |
 | `azcluster timings <name> [--last N] [--trend]` | Per-resource deploy times; sorted table or trend TSV. |
 | `azcluster delete <name>` | Delete the resource group (async). |
+| `azcluster user add <name> --username <u> [--ssh-key <path>]` | Create an LDAP user (auto-allocated UID, default gid 20000, home `/shared/home/<u>`). |
+| `azcluster user remove <name> --username <u>` | Delete an LDAP user. |
+| `azcluster user list <name>` | List LDAP users. |
+| `azcluster user sshkey {add,remove,list} <name> --username <u> [--key-file <path>]` | Manage `sshPublicKey` LDAP attribute used by `sss_ssh_authorizedkeys`. |
 
 ### Submitting jobs
 

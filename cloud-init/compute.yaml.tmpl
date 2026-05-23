@@ -559,6 +559,34 @@ write_files:
 
       systemctl enable --now slurmd
 
+      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \
+        sssd sssd-ldap sssd-tools libnss-sss libpam-sss oddjob-mkhomedir
+      cat > /etc/sssd/sssd.conf <<EOF
+      [sssd]
+      domains = azcluster
+      config_file_version = 2
+      services = nss, pam, ssh
+
+      [domain/azcluster]
+      id_provider = ldap
+      auth_provider = ldap
+      ldap_uri = ldap://${SCHEDULER_IP}
+      ldap_search_base = dc=azcluster,dc=local
+      ldap_user_extra_attrs = sshPublicKey:sshPublicKey
+      ldap_user_ssh_public_key = sshPublicKey
+      enumerate = false
+      cache_credentials = true
+      override_homedir = /shared/home/%u
+      EOF
+      chmod 0600 /etc/sssd/sssd.conf
+      chown root:root /etc/sssd/sssd.conf
+      pam-auth-update --enable mkhomedir
+      if ! grep -q '^AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys' /etc/ssh/sshd_config; then
+        printf '\nAuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys\nAuthorizedKeysCommandUser nobody\n' >> /etc/ssh/sshd_config
+      fi
+      systemctl enable --now sssd
+      systemctl restart ssh
+
       touch /var/log/azcluster/ready
 
 runcmd:
