@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.13.6)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) + GPU pool live-validated. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand**. v0.13.6 enables cross-node containerised MPI via the CCWS-style runtime fix (slurmd `PMIX_MCA_*` env + upstream NVIDIA enroot `50-slurm-pmi.sh`/`50-slurm-pytorch.sh` hooks pinned in-tree); NGC audit confirmed all production NGC training containers (PyTorch/NeMo/TensorFlow 2024-2025) and `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test` ship HPC-X 2.20-2.26 → PMIx 4.2.x, matching the host's `mpi_pmix_v4.so` (the earlier "PMIx 4↔5 ABI mismatch" framing was a misdiagnosis). New `/shared/examples/dgxc-nemo-multinode-smoke.sbatch` exercises 2-node × 8-GPU = 16-rank NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02`. v0.13.5 added automatic NVMe RAID-0 ephemeral scratch on `/mnt/nvme` (28 TB on ND96isr_H100_v5), DGXC compatibility (Enroot environ.d + mounts.d + `ENROOT_REMAP_ROOT`), and `/shared/examples/dgxc-llama8b-h100.sbatch`. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next: v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
+> **Status (v0.13.7)**: phases 0-3 + Slurm accounting (managed MySQL + slurmdbd) + GPU pool live-validated. **2-node NDv5 H100 NCCL all-reduce achieves 466 GB/s peak / 348 GB/s avg busbw at 16 GiB across 8x NDR400 InfiniBand** (bare-metal HPC-X path). v0.13.7 makes cross-node containerised NCCL use InfiniBand instead of falling back to OOB ethernet: a persistent udev rule opens `/dev/infiniband/uverbs*` / `rdma_cm` / `ucm*` / `umad*` / `issm*` to `0666` so the in-container "root" (mapped to a host non-root uid by `ENROOT_REMAP_ROOT yes`) can open the uverbs devices, plus an immediate first-boot `chmod` and `udevadm trigger` so the running kernel doesn't have to wait for a reboot. Cross-node containerised PMIx world remains live-validated from v0.13.6 (16-rank NeMo container all-reduce reaches a single PMIx world). v0.13.5 added automatic NVMe RAID-0 ephemeral scratch on `/mnt/nvme` (28 TB on ND96isr_H100_v5), DGXC compatibility (Enroot environ.d + mounts.d + `ENROOT_REMAP_ROOT`), and `/shared/examples/dgxc-llama8b-h100.sbatch`. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next: v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.13.6
+VERSION=v0.13.7
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -261,7 +261,7 @@ Tag-triggered. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.
 
 ## Roadmap
 
-- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw, bare-metal HPC-X path). ✅ v0.13.6 cross-node containerised PMIx world live-validated (16-rank NeMo container all-reduce reached single PMIx world and exited cleanly). Remaining for v0.13.7: container NCCL falls back to OOB ethernet on NDv5 because `ENROOT_REMAP_ROOT yes` blocks uverbs access — fix via enroot hook chmod'ing `/dev/infiniband/uverbs*` for the container view.
+- **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-validated (466 GB/s peak busbw, bare-metal HPC-X path). ✅ v0.13.6 cross-node containerised PMIx world live-validated (16-rank NeMo container all-reduce reached a single PMIx world and exited cleanly). ✅ v0.13.7 cross-node containerised NCCL now uses InfiniBand (udev rule opens `/dev/infiniband/uverbs*` to `0666` so `ENROOT_REMAP_ROOT yes` no longer blocks uverbs from container userspace).
 - **v0.14+** — backlog:
   - **Better scaling.** Drop the `azcluster tunnel` requirement. Either run a daemon on the scheduler that reconciles `--pool` capacity directly via the ARM/Compute REST APIs (no `az` shell-out), or wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
   - **Health checks.** Port the patterns from [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck) into a small Rust binary shipped with the release tarball. Compute nodes invoke it via Slurm `HealthCheckProgram`; failures drain the node automatically.
