@@ -73,6 +73,7 @@ write_files:
       gidNumber: 20000
 
       dn: cn=uidNext,__BASE_DN__
+      objectClass: device
       objectClass: extensibleObject
       cn: uidNext
       uidNumber: 20001
@@ -581,14 +582,24 @@ write_files:
         sleep 2
       done
 
-      if ! ldapsearch -Y EXTERNAL -H ldapi:/// -b cn=schema,cn=config 'cn=*openssh-lpk*' dn 2>/dev/null | grep -q openssh-lpk; then
-        ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/azcluster/openssh-lpk.ldif
+      set +e
+      ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/azcluster/openssh-lpk.ldif
+      rc=$?
+      set -e
+      if [ $rc -ne 0 ] && [ $rc -ne 68 ]; then
+        echo "openssh-lpk schema add failed (rc=$rc)" >&2
+        exit $rc
       fi
 
       BASE_LDIF=/etc/azcluster/ldap-base.ldif
       sed 's|__BASE_DN__|dc=azcluster,dc=local|g' /etc/azcluster/ldap-base.ldif.tmpl > ${BASE_LDIF}
-      if ! ldapsearch -x -H ldap://127.0.0.1 -b "ou=people,dc=azcluster,dc=local" -s base 'objectClass=*' dn 2>/dev/null | grep -q '^dn: ou=people'; then
-        ldapadd -x -D "cn=admin,dc=azcluster,dc=local" -w "${LDAP_ADMIN_PW}" -f ${BASE_LDIF}
+      set +e
+      ldapadd -x -D "cn=admin,dc=azcluster,dc=local" -w "${LDAP_ADMIN_PW}" -H ldap://127.0.0.1 -c -f ${BASE_LDIF}
+      rc=$?
+      set -e
+      if [ $rc -ne 0 ] && [ $rc -ne 68 ]; then
+        echo "base LDIF add failed (rc=$rc)" >&2
+        exit $rc
       fi
 
       sed -i 's|^SLAPD_SERVICES=.*|SLAPD_SERVICES="ldap:/// ldapi:///"|' /etc/default/slapd
@@ -596,6 +607,7 @@ write_files:
       systemctl enable slapd
       unset LDAP_ADMIN_PW
 
+      chmod 0755 /shared
       install -d -m 0755 -o root -g root /shared/home
 
       touch /var/log/azcluster/ready

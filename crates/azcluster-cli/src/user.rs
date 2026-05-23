@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::cluster_state::{ClusterSecrets, ClusterState};
 
@@ -90,11 +89,36 @@ pub fn validate_username(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn ssh_to_scheduler_with_stdin(
-    state: &ClusterState,
-    remote_cmd: &str,
-    stdin_data: &str,
-) -> Result<String> {
+pub fn b64_encode(data: &[u8]) -> String {
+    const ALPHA: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    let mut i = 0;
+    while i + 3 <= data.len() {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | (data[i + 2] as u32);
+        out.push(ALPHA[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHA[((n >> 12) & 0x3f) as usize] as char);
+        out.push(ALPHA[((n >> 6) & 0x3f) as usize] as char);
+        out.push(ALPHA[(n & 0x3f) as usize] as char);
+        i += 3;
+    }
+    let rem = data.len() - i;
+    if rem == 1 {
+        let n = (data[i] as u32) << 16;
+        out.push(ALPHA[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHA[((n >> 12) & 0x3f) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rem == 2 {
+        let n = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8);
+        out.push(ALPHA[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHA[((n >> 12) & 0x3f) as usize] as char);
+        out.push(ALPHA[((n >> 6) & 0x3f) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+fn ssh_run(state: &ClusterState, remote_cmd: &str) -> Result<String> {
     let host = state.login_public_ip.as_deref().ok_or_else(|| {
         anyhow!(
             "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
@@ -103,10 +127,12 @@ fn ssh_to_scheduler_with_stdin(
     })?;
     let login_target = format!("{}@{}", state.admin_username, host);
     let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
-    let mut child = Command::new("ssh")
+    let out = Command::new("ssh")
         .args([
             "-o",
             "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes",
             "-J",
             &login_target,
             &sched_target,
@@ -115,22 +141,54 @@ fn ssh_to_scheduler_with_stdin(
             "-lc",
             remote_cmd,
         ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .output()
         .context("spawn ssh -J")?;
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin_data.as_bytes())
-        .context("write stdin")?;
-    let out = child.wait_with_output().context("wait ssh")?;
     if !out.status.success() {
-        return Err(anyhow!("ssh exec failed: status={:?}", out.status.code()));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(anyhow!(
+            "ssh exec failed: status={:?} stderr={}",
+            out.status.code(),
+            stderr
+        ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn build_ldap_write_cmd(password: &str, ldif: &str, tool: &str, extra_args: &str) -> String {
+    let pw_b64 = b64_encode(password.as_bytes());
+    let ldif_b64 = b64_encode(ldif.as_bytes());
+    format!(
+        "set -e; \
+         PW=$(printf %s '{pw_b64}' | base64 -d); \
+         LDIF=$(printf %s '{ldif_b64}' | base64 -d); \
+         printf %s \"$LDIF\" | {tool} -x -D '{admin}' -w \"$PW\" -H ldap://127.0.0.1 {extra}",
+        pw_b64 = pw_b64,
+        ldif_b64 = ldif_b64,
+        tool = tool,
+        admin = ADMIN_DN,
+        extra = extra_args,
+    )
+}
+
+fn build_ldap_search_cmd(
+    password: &str,
+    base: &str,
+    scope: &str,
+    filter: &str,
+    attrs: &str,
+) -> String {
+    let pw_b64 = b64_encode(password.as_bytes());
+    format!(
+        "set -e; \
+         PW=$(printf %s '{pw_b64}' | base64 -d); \
+         ldapsearch -x -LLL -D '{admin}' -w \"$PW\" -H ldap://127.0.0.1 -b '{base}' -s {scope} '{filter}' {attrs}",
+        pw_b64 = pw_b64,
+        admin = ADMIN_DN,
+        base = base,
+        scope = scope,
+        filter = filter,
+        attrs = attrs,
+    )
 }
 
 fn read_ldap_password(cluster_name: &str) -> Result<String> {
@@ -138,12 +196,14 @@ fn read_ldap_password(cluster_name: &str) -> Result<String> {
 }
 
 fn fetch_next_uid(state: &ClusterState, password: &str) -> Result<u32> {
-    let cmd = format!(
-        "ldapsearch -x -LLL -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1 -b 'cn=uidNext,{}' -s base uidNumber",
-        ADMIN_DN, BASE_DN
+    let cmd = build_ldap_search_cmd(
+        password,
+        &format!("cn=uidNext,{}", BASE_DN),
+        "base",
+        "(objectClass=*)",
+        "uidNumber",
     );
-    let wrapped = format!("LDAP_PW=$(cat); export LDAP_PW; {}", cmd);
-    let out = ssh_to_scheduler_with_stdin(state, &wrapped, password)?;
+    let out = ssh_run(state, &cmd)?;
     for line in out.lines() {
         if let Some(rest) = line.strip_prefix("uidNumber:") {
             return rest.trim().parse::<u32>().context("parse uidNumber");
@@ -195,12 +255,8 @@ pub fn user_add(
         ldif.push('\n');
         ldif.push_str(&render_uid_bump_ldif(uid));
     }
-    let remote = format!(
-        "LDAP_PW=$(head -c 1024); LDIF=$(cat); echo \"$LDIF\" | ldapadd -x -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1 -c",
-        ADMIN_DN
-    );
-    let stdin_payload = format!("{}\n{}", password, ldif);
-    ssh_to_scheduler_with_stdin(state, &remote, &stdin_payload)?;
+    let cmd = build_ldap_write_cmd(&password, &ldif, "ldapadd", "-c");
+    ssh_run(state, &cmd)?;
     eprintln!("==> added user '{}' (uid={}, gid={})", username, uid, gid);
     Ok(())
 }
@@ -209,23 +265,22 @@ pub fn user_remove(state: &ClusterState, username: &str) -> Result<()> {
     validate_username(username)?;
     let password = read_ldap_password(&state.name)?;
     let ldif = render_user_delete_ldif(username);
-    let remote = format!(
-        "LDAP_PW=$(head -c 1024); LDIF=$(cat); echo \"$LDIF\" | ldapmodify -x -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1",
-        ADMIN_DN
-    );
-    let stdin_payload = format!("{}\n{}", password, ldif);
-    ssh_to_scheduler_with_stdin(state, &remote, &stdin_payload)?;
+    let cmd = build_ldap_write_cmd(&password, &ldif, "ldapmodify", "");
+    ssh_run(state, &cmd)?;
     eprintln!("==> removed user '{}'", username);
     Ok(())
 }
 
 pub fn user_list(state: &ClusterState) -> Result<()> {
     let password = read_ldap_password(&state.name)?;
-    let cmd = format!(
-        "LDAP_PW=$(cat); ldapsearch -x -LLL -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1 -b 'ou=people,{}' '(objectClass=posixAccount)' uid uidNumber gidNumber loginShell gecos",
-        ADMIN_DN, BASE_DN
+    let cmd = build_ldap_search_cmd(
+        &password,
+        &format!("ou=people,{}", BASE_DN),
+        "sub",
+        "(objectClass=posixAccount)",
+        "uid uidNumber gidNumber loginShell gecos",
     );
-    let out = ssh_to_scheduler_with_stdin(state, &cmd, &password)?;
+    let out = ssh_run(state, &cmd)?;
     print!("{}", out);
     Ok(())
 }
@@ -245,12 +300,8 @@ pub fn sshkey_add(state: &ClusterState, username: &str, key_file: &std::path::Pa
         .trim()
         .to_string();
     let ldif = render_sshkey_add_ldif(username, &key);
-    let remote = format!(
-        "LDAP_PW=$(head -c 1024); LDIF=$(cat); echo \"$LDIF\" | ldapmodify -x -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1",
-        ADMIN_DN
-    );
-    let payload = format!("{}\n{}", password, ldif);
-    ssh_to_scheduler_with_stdin(state, &remote, &payload)?;
+    let cmd = build_ldap_write_cmd(&password, &ldif, "ldapmodify", "");
+    ssh_run(state, &cmd)?;
     eprintln!("==> added ssh key for '{}'", username);
     Ok(())
 }
@@ -274,12 +325,8 @@ pub fn sshkey_remove(
         .trim()
         .to_string();
     let ldif = render_sshkey_remove_ldif(username, &key);
-    let remote = format!(
-        "LDAP_PW=$(head -c 1024); LDIF=$(cat); echo \"$LDIF\" | ldapmodify -x -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1",
-        ADMIN_DN
-    );
-    let payload = format!("{}\n{}", password, ldif);
-    ssh_to_scheduler_with_stdin(state, &remote, &payload)?;
+    let cmd = build_ldap_write_cmd(&password, &ldif, "ldapmodify", "");
+    ssh_run(state, &cmd)?;
     eprintln!("==> removed ssh key for '{}'", username);
     Ok(())
 }
@@ -287,11 +334,14 @@ pub fn sshkey_remove(
 pub fn sshkey_list(state: &ClusterState, username: &str) -> Result<()> {
     validate_username(username)?;
     let password = read_ldap_password(&state.name)?;
-    let cmd = format!(
-        "LDAP_PW=$(cat); ldapsearch -x -LLL -D '{}' -w \"$LDAP_PW\" -H ldap://127.0.0.1 -b 'uid={},ou=people,{}' -s base sshPublicKey",
-        ADMIN_DN, username, BASE_DN
+    let cmd = build_ldap_search_cmd(
+        &password,
+        &format!("uid={},ou=people,{}", username, BASE_DN),
+        "base",
+        "(objectClass=*)",
+        "sshPublicKey",
     );
-    let out = ssh_to_scheduler_with_stdin(state, &cmd, &password)?;
+    let out = ssh_run(state, &cmd)?;
     print!("{}", out);
     Ok(())
 }
@@ -382,5 +432,34 @@ mod tests {
         for n in &["", "Alice", "1alice", "alice!", too_long.as_str()] {
             assert!(validate_username(n).is_err(), "accepted: {}", n);
         }
+    }
+
+    #[test]
+    fn b64_matches_rfc4648_vectors() {
+        assert_eq!(b64_encode(b""), "");
+        assert_eq!(b64_encode(b"f"), "Zg==");
+        assert_eq!(b64_encode(b"fo"), "Zm8=");
+        assert_eq!(b64_encode(b"foo"), "Zm9v");
+        assert_eq!(b64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(b64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(b64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn build_write_cmd_inlines_b64_and_no_stdin() {
+        let cmd = build_ldap_write_cmd("hunter2", "dn: uid=x,ou=people\n", "ldapadd", "-c");
+        assert!(cmd.contains("base64 -d"));
+        assert!(cmd.contains("ldapadd -x -D 'cn=admin,dc=azcluster,dc=local'"));
+        assert!(cmd.contains(" -c"));
+        assert!(cmd.contains(&b64_encode(b"hunter2")));
+        assert!(cmd.contains(&b64_encode(b"dn: uid=x,ou=people\n")));
+    }
+
+    #[test]
+    fn build_search_cmd_inlines_password_b64() {
+        let cmd = build_ldap_search_cmd("pw", "ou=people,dc=x", "sub", "(uid=*)", "uid");
+        assert!(cmd.contains("ldapsearch -x -LLL -D 'cn=admin,"));
+        assert!(cmd.contains(&b64_encode(b"pw")));
+        assert!(cmd.contains("-b 'ou=people,dc=x' -s sub '(uid=*)' uid"));
     }
 }
