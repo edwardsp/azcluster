@@ -46,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.13.10")]
+    #[arg(long, default_value = "v0.14.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -268,11 +268,6 @@ struct TimingsCaptureArgs {
     resource_group: String,
     #[arg(long, default_value = "anf")]
     shared_storage: String,
-}
-
-#[derive(Serialize)]
-struct ScaleRequest {
-    count: u32,
 }
 
 fn main() -> Result<()> {
@@ -806,24 +801,52 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
 }
 
 fn scale(args: ScaleArgs) -> Result<()> {
+    ensure_az()?;
     let state = ClusterState::load(&args.name)?;
-    let url = format!("http://localhost:8443/v1/pools/{}/scale", args.pool);
-    eprintln!(
-        "==> POST {url} (requires `azcluster tunnel {}` to be running in another shell)",
-        state.name
-    );
-    let res = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?
-        .post(&url)
-        .json(&ScaleRequest { count: args.count })
-        .send()?;
-    let status = res.status();
-    let body = res.text().unwrap_or_default();
-    if !status.is_success() {
-        bail!("scale request failed ({status}): {body}");
+    let vmss_name = format!("vmss-{}-{}", state.name, args.pool);
+    if !state.compute_vmss_names.is_empty() && !state.compute_vmss_names.contains(&vmss_name) {
+        bail!(
+            "pool '{}' not found in cluster state (vmss '{vmss_name}' not in {:?}). \
+             Known pools: {}",
+            args.pool,
+            state.compute_vmss_names,
+            state
+                .compute_vmss_names
+                .iter()
+                .filter_map(|n| n.strip_prefix(&format!("vmss-{}-", state.name)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
-    println!("{body}");
+    eprintln!(
+        "==> az vmss scale --resource-group {} --name {vmss_name} --new-capacity {}",
+        state.resource_group, args.count
+    );
+    let out = Command::new("az")
+        .args([
+            "vmss",
+            "scale",
+            "--resource-group",
+            &state.resource_group,
+            "--name",
+            &vmss_name,
+            "--new-capacity",
+            &args.count.to_string(),
+            "--only-show-errors",
+        ])
+        .output()
+        .context("spawn az vmss scale")?;
+    if !out.status.success() {
+        bail!(
+            "az vmss scale failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    println!(
+        "scaled {vmss_name} to capacity {} (resource group {})",
+        args.count, state.resource_group
+    );
     Ok(())
 }
 

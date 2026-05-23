@@ -6,6 +6,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.14.0] - 2026-05-23
+
+### Changed
+- **`azcluster scale` no longer requires `azcluster tunnel`.** The CLI now invokes `az vmss scale --resource-group <rg> --name vmss-<cluster>-<pool> --new-capacity <n>` directly using the operator's existing `az` login, identical to how `deploy`, `delete`, `status`, and `timings` already work. Removes the previous architecture (CLI → reqwest POST → localhost:8443 → ssh local-forward → scheduler:8443 → `azcluster-server` → `az vmss scale`) that required the operator to keep `azcluster tunnel <name>` running in a second shell for the duration of every scale call. The scheduler-side `azcluster-server` daemon still ships and runs (kept as a future hook point for `/v1/healthz` and for the eventual Slurm power-save autoscaling integration); the `/v1/pools/:name/scale` route is removed. Operator now needs `Microsoft.Compute/virtualMachineScaleSets/write` on the resource group (already required for `deploy`/`delete`).
+- `azcluster scale` now validates the pool name against `compute_vmss_names` in cluster state and bails with the list of known pools if the pool is unknown, instead of failing at HTTP time.
+- Workspace version `0.13.10` -> `0.14.0`.
+- CLI default `--azcluster-version` bumped to `v0.14.0`.
+
+### Removed
+- `reqwest` dependency from `azcluster-cli` (the scale HTTP POST was its only consumer).
+- `ScaleRequest`/`ScaleResponse`/`ErrorBody` types + `scale_pool` handler + `/v1/pools/:name/scale` route from `azcluster-server`.
+
+
 ## [0.13.10] - 2026-05-23
 
 ### Documentation

@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.13.10)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.13.9 fixes two cross-node training blockers shipped by v0.13.8: (1) compute `/etc/hosts` now maps the hostname to the eth0 IPv4 (not `127.0.1.1`) so PyTorch/Gloo cross-node `connectFullMesh` resolves to the peer instead of loopback; (2) all `/etc/slurm/*.conf` files written by cloud-init are now `0644` so submitting users can read `slurm.conf` + `plugstack.conf` for Pyxis spank loading at submit time. v0.13.10 strips unqualified bare-metal NCCL bandwidth claims from forward-facing docs (azcluster does not currently run a qualified bandwidth-acceptance baseline). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next: v0.14+ usability backlog (no-tunnel scaling, health checks, LDAP/Entra).
+> **Status (v0.14)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`: the CLI now calls `az vmss scale --new-capacity` directly using the operator's existing `az` login, matching how deploy/delete/status already work. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: validate-mpi smoke test, health checks via Slurm `HealthCheckProgram`.
 
 ## Why azcluster
 
@@ -28,7 +28,7 @@ Legend: ✅ implemented & live-validated · 🟡 implemented, not live-tested th
 | Shared FS — ANF NFSv4.1 | ✅ | on (2 TiB Standard) | `--anf-size-tib`, `--anf-tier {Standard,Premium,Ultra}` | Mounted on `/shared` |
 | Shared FS — NFS on scheduler (test mode) | ✅ | off | `--shared-storage nfs-scheduler` | SPOF, ~12 min faster, test only |
 | AMLFS (Lustre) at `/amlfs` | 🟡 | off | `--amlfs-size-tib`, `--amlfs-sku`, `--amlfs-zone` | Provisioning path validated in earlier phases; not exercised since v0.10 |
-| `azcluster scale <name> <pool> <current/target>` | ✅ | — | — | Live-tested (v0.1.x). Requires `azcluster tunnel <name>` running in a second shell — operator → `localhost:8443` → scheduler `:8443` → `az vmss scale --new-capacity` |
+| `azcluster scale <name> <pool> <current/target>` | ✅ | — | — | New in v0.14: CLI calls `az vmss scale --new-capacity` directly using the operator's `az` login. No tunnel, no scheduler-side daemon involvement. Operator needs `Microsoft.Compute/virtualMachineScaleSets/write` on the resource group. |
 | `azcluster validate` (sinfo + srun + Pyxis) | ✅ | — | `--gpu`, `--no-container` | Run every release; v0.12.1 green |
 | `azcluster ssh`, `tunnel`, `exec`, `logs`, `status`, `monitor`, `delete` | ✅ | — | — | Used daily during validation |
 | `azcluster timings` (per-deploy ARM timings, JSON + trend.tsv) | ✅ | — | `--last N`, `--trend` | Live-validated v0.12.0/.1 (18 resources, 417s on mon6) |
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.13.10
+VERSION=v0.14.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -262,8 +262,9 @@ Tag-triggered. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.
 ## Roadmap
 
 - **v0.13.x** — ✅ Slurm accounting live-validated. ✅ 2-node NDv5 H100 NCCL all-reduce live-exercised (bare-metal HPC-X path). ✅ v0.13.6 cross-node containerised PMIx world live-validated. ✅ v0.13.7 udev rule opens `/dev/infiniband/uverbs*` to `0666` so `ENROOT_REMAP_ROOT yes` no longer blocks uverbs from container userspace. ✅ v0.13.8 cross-node containerised NCCL uses InfiniBand end-to-end. ✅ v0.13.9 end-to-end DGXC training live-validated: Llama 3.1 8B BF16 reaches 167,594 tok/s on 16 GPU (2 node) / 83,737 tok/s on 8 GPU (1 node) — 2.001× strong scaling. Fixes cross-node PyTorch/Gloo rendezvous (compute `/etc/hosts` now maps the hostname to eth0 IPv4, not `127.0.1.1`) and Slurm conf perms (cloud-init now `chmod 0644` on every `/etc/slurm/*.conf`).
+- **v0.14** — ✅ `azcluster scale` no longer requires a separate `azcluster tunnel` shell. CLI invokes `az vmss scale --new-capacity` directly using the operator's existing `az` login, identical to how every other ARM op (deploy/delete/status) already works. Scheduler-side `azcluster-server` keeps `/v1/healthz` as a future hook point; the `/v1/pools/:name/scale` endpoint is removed.
 - **v0.14+** — backlog:
-  - **Better scaling.** Drop the `azcluster tunnel` requirement. Either run a daemon on the scheduler that reconciles `--pool` capacity directly via the ARM/Compute REST APIs (no `az` shell-out), or wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
+  - **Better scaling.** Wire Slurm's power-save plugin (`SuspendProgram`/`ResumeProgram`) to `az vmss scale` so Slurm itself sizes pools based on queued work.
   - **Health checks.** Port the patterns from [`edwardsp/azhealthcheck`](https://github.com/edwardsp/azhealthcheck) into a small Rust binary shipped with the release tarball. Compute nodes invoke it via Slurm `HealthCheckProgram`; failures drain the node automatically.
   - **User management.** Add a directory backend so user accounts aren't local-only. Options: stand up `slapd` on the scheduler (LDAP) and `sssd` on every node, or — preferred — federate against Microsoft Entra ID (Azure AD DS join or `aad-login` PAM module).
   - **Multi-node container validation.** Extend `azcluster validate` (or a new `validate-mpi` subcommand) to run a 2-node Pyxis + MPI smoke job, not just single-node `srun --container-image=…`.

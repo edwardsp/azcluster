@@ -1,14 +1,8 @@
 use anyhow::Result;
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    routing::{get, post},
-    Json, Router,
-};
-use serde::{Deserialize, Serialize};
+use axum::{routing::get, Json, Router};
+use serde::Serialize;
 use std::net::SocketAddr;
-use tokio::process::Command;
-use tracing::{error, info};
+use tracing::info;
 
 #[derive(Serialize)]
 struct Health {
@@ -23,77 +17,8 @@ async fn healthz() -> Json<Health> {
     })
 }
 
-#[derive(Deserialize)]
-struct ScaleRequest {
-    count: u32,
-}
-
-#[derive(Serialize)]
-struct ScaleResponse {
-    pool: String,
-    vmss: String,
-    requested_count: u32,
-}
-
-#[derive(Serialize)]
-struct ErrorBody {
-    error: String,
-}
-
-async fn scale_pool(
-    Path(pool): Path<String>,
-    Json(req): Json<ScaleRequest>,
-) -> Result<Json<ScaleResponse>, (StatusCode, Json<ErrorBody>)> {
-    let cluster = std::env::var("AZCLUSTER_CLUSTER_NAME")
-        .map_err(|_| internal("AZCLUSTER_CLUSTER_NAME not set"))?;
-    let resource_group = std::env::var("AZCLUSTER_RESOURCE_GROUP")
-        .map_err(|_| internal("AZCLUSTER_RESOURCE_GROUP not set"))?;
-
-    let vmss_name = format!("vmss-{cluster}-{pool}");
-
-    info!(%pool, %vmss_name, requested_count = req.count, "scaling VMSS");
-
-    let output = Command::new("az")
-        .args([
-            "vmss",
-            "scale",
-            "--resource-group",
-            &resource_group,
-            "--name",
-            &vmss_name,
-            "--new-capacity",
-            &req.count.to_string(),
-        ])
-        .output()
-        .await
-        .map_err(|e| internal(&format!("failed to spawn az: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        error!(%vmss_name, %stderr, "az vmss scale failed");
-        return Err(internal(&format!("az vmss scale failed: {stderr}")));
-    }
-
-    Ok(Json(ScaleResponse {
-        pool,
-        vmss: vmss_name,
-        requested_count: req.count,
-    }))
-}
-
-fn internal(msg: &str) -> (StatusCode, Json<ErrorBody>) {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorBody {
-            error: msg.to_string(),
-        }),
-    )
-}
-
 fn router() -> Router {
-    Router::new()
-        .route("/v1/healthz", get(healthz))
-        .route("/v1/pools/:name/scale", post(scale_pool))
+    Router::new().route("/v1/healthz", get(healthz))
 }
 
 #[tokio::main]
@@ -167,7 +92,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scale_route_exists() {
+    async fn scale_route_removed() {
+        // The /scale endpoint moved to direct ARM calls from the CLI in v0.14.
+        // This test ensures it cannot be re-added accidentally without intent.
         let app = router();
         let res = app
             .oneshot(
@@ -180,6 +107,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_ne!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }
