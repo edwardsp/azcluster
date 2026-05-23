@@ -6,6 +6,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.13.8] - 2026-05-23
+
+### Fixed
+- **Cross-node containerised NCCL now uses InfiniBand end-to-end on NDv5 H100.** v0.13.7 opened `/dev/infiniband/*` perms to `0666` (still needed and retained) but was insufficient on its own: enroot's default `/dev` handling does NOT bind-mount `/dev/infiniband` into containers, so NCCL inside Pyxis still logged `NET/IB : No device found.` and fell back to OOB ethernet. v0.13.8 sets `MELLANOX_VISIBLE_DEVICES=all` in `/etc/enroot/environ.d/50-nccl.env`, which triggers enroot's shipped `/etc/enroot/hooks.d/99-mellanox.sh` hook to bind-mount `/dev/infiniband/{uverbs,umad,issm}*` + `/dev/infiniband/rdma_cm` (and matching `/sys/class/infiniband*` entries) into every Pyxis container. The hook discovers all `mlx?_core` HCAs on the host and binds them based on `MELLANOX_VISIBLE_DEVICES` (parity with `NVIDIA_VISIBLE_DEVICES`). Live-validated on `paul-azcluster-h100d` (2× ND96isr_H100_v5): the multinode NeMo all-reduce smoke (16 ranks, `nvcr.io/nvidia/nemo:25.07.02`, `srun --mpi=pmix`) now logs `NET/IB : Using [0]mlx5_ib0:1/IB/SHARP ... [7]mlx5_ib7:1/IB/SHARP` on every rank and reaches `avg busbw=434.40 GB/s` at 1 GiB (SHARP path), up from TCP-fallback levels in v0.13.7.
+
+### Changed
+- Workspace version `0.13.7` -> `0.13.8`.
+- CLI default `--azcluster-version` bumped to `v0.13.8`.
+- Updated the `cloud-init/compute.yaml.tmpl` comment block above the udev rule to clarify it complements (rather than replaces) the enroot mellanox hook: the hook does the bind-mount, the udev rule keeps the in-container UID (mapped through `ENROOT_REMAP_ROOT`) able to open the bound devices.
+- AGENTS.md IB-visibility gotcha updated: the operative fix is `MELLANOX_VISIBLE_DEVICES=all` + the enroot `99-mellanox.sh` hook; the v0.13.7 udev rule is necessary but not sufficient.
+
+
 ## [0.13.7] - 2026-05-23
 
 ### Fixed
@@ -417,7 +429,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.11.4...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.13.8...HEAD
+[0.13.8]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.8
+[0.13.7]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.7
+[0.13.6]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.6
+[0.13.5]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.5
 [0.11.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.4
 [0.11.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.3
 [0.11.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.11.2

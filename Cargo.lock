@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "azcluster-cli"
-version = "0.13.7"
+version = "0.13.8"
 dependencies = [
  "anyhow",
  "azcluster-core",
@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "azcluster-core"
-version = "0.13.7"
+version = "0.13.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "azcluster-server"
-version = "0.13.7"
+version = "0.13.8"
 dependencies = [
  "anyhow",
  "axum",

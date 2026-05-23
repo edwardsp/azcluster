@@ -273,15 +273,15 @@ write_files:
         done
 
         # InfiniBand userspace devices ship as 0660 root:root on the
-        # microsoft-dsvm:ubuntu-hpc image. Combined with ENROOT_REMAP_ROOT
-        # (set below for DGXC compatibility), the in-container "root"
-        # maps to a host non-root uid and cannot open /dev/infiniband/uverbs*.
-        # NCCL then logs "NET/IB : No device found." and silently falls
-        # back to TCP over the regular Azure VNIC, killing busbw. Open the
-        # device nodes 0666 via a persistent udev rule and apply
-        # immediately for the current boot (devices are already present
-        # by the time cloud-init runs because the kernel module loaded
-        # at boot).
+        # microsoft-dsvm:ubuntu-hpc image. The enroot 99-mellanox.sh hook
+        # (triggered by MELLANOX_VISIBLE_DEVICES=all, set below in
+        # environ.d/50-nccl.env) bind-mounts these device nodes into the
+        # container preserving host perms. With ENROOT_REMAP_ROOT yes
+        # (set below for DGXC compatibility) the in-container "root" maps
+        # to a host non-root uid and cannot open 0660 root:root devices.
+        # Open them 0666 via a persistent udev rule and apply immediately
+        # for the current boot (devices are already present by the time
+        # cloud-init runs).
         cat > /etc/udev/rules.d/91-azcluster-ib-perms.rules <<'EOF'
         KERNEL=="uverbs*", MODE="0666"
         KERNEL=="rdma_cm", MODE="0666"
@@ -309,6 +309,12 @@ write_files:
         # DGXC + most NCCL containers need these env vars set INSIDE the
         # container. Enroot's environ.d gets sourced by Pyxis on container
         # start, unlike /etc/profile.d which only fires for host login shells.
+        # MELLANOX_VISIBLE_DEVICES=all triggers enroot's /etc/enroot/hooks.d/
+        # 99-mellanox.sh hook to bind-mount /dev/infiniband/{uverbs,umad,issm}*
+        # + /dev/infiniband/rdma_cm into the container. Without it, enroot
+        # does not expose /dev/infiniband by default and NCCL inside the
+        # container logs "NET/IB : No device found." then falls back to
+        # OOB ethernet (~5-15 GB/s vs ~430 GB/s on IB+SHARP).
         cat > /etc/enroot/environ.d/50-nccl.env <<'EOF'
         NCCL_IB_DISABLE=0
         NCCL_IB_HCA=mlx5_ib
@@ -318,6 +324,7 @@ write_files:
         NCCL_MIN_NCHANNELS=32
         UCX_TLS=tcp
         UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1
+        MELLANOX_VISIBLE_DEVICES=all
       EOF
         chmod 0644 /etc/enroot/environ.d/50-nccl.env
 
