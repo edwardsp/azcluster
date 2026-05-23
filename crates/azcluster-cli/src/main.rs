@@ -46,7 +46,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.14.0")]
+    #[arg(long, default_value = "v0.15.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -226,6 +226,15 @@ struct ValidateArgs {
     /// Run nvidia-smi via srun (requires a GPU pool with nodes up).
     #[arg(long, default_value_t = false)]
     gpu: bool,
+    /// Run 2-node variants: cross-node hostname, cross-node Pyxis container,
+    /// and (with --gpu) a bounded NCCL all-reduce via HPC-X. Requires >=2
+    /// idle nodes in the target partition. The NCCL check is tuned for
+    /// Azure ND H100 v5 (mlx5_ib + ndv5-topo.xml).
+    #[arg(long, default_value_t = false)]
+    multi_node: bool,
+    /// Slurm partition to target (defaults to the cluster's default partition).
+    #[arg(long)]
+    partition: Option<String>,
 }
 
 #[derive(Args)]
@@ -1020,25 +1029,75 @@ fn validate(args: ValidateArgs) -> Result<()> {
     })?;
     let login_target = format!("{}@{}", state.admin_username, host);
 
+    let part = args
+        .partition
+        .as_deref()
+        .map(|p| format!(" --partition={p}"))
+        .unwrap_or_default();
+
     let mut checks: Vec<(&str, String)> = vec![
         ("sinfo", "sinfo -h -o '%P %D %T %N'".into()),
         (
             "srun hostname",
-            "timeout 60 srun -N1 --time=1 hostname".into(),
+            format!("timeout 60 srun{part} -N1 --time=1 hostname"),
         ),
     ];
     if !args.no_container {
         checks.push((
             "srun pyxis alpine",
-            "timeout 180 srun -N1 --time=2 --container-image=docker://alpine:latest hostname"
-                .into(),
+            format!(
+                "timeout 180 srun{part} -N1 --time=2 \
+                 --container-image=docker://alpine:latest hostname"
+            ),
         ));
     }
     if args.gpu {
         checks.push((
             "srun gpu nvidia-smi",
-            "timeout 180 srun -N1 --gres=gpu:1 --time=2 nvidia-smi -L".into(),
+            format!("timeout 180 srun{part} -N1 --gres=gpu:1 --time=2 nvidia-smi -L"),
         ));
+    }
+    if args.multi_node {
+        checks.push((
+            "srun 2-node hostname",
+            format!(
+                "timeout 120 srun{part} -N2 --ntasks-per-node=1 --time=2 \
+                 bash -c 'hostname; sleep 1'"
+            ),
+        ));
+        if !args.no_container {
+            checks.push((
+                "srun 2-node pyxis alpine",
+                format!(
+                    "timeout 300 srun{part} -N2 --ntasks-per-node=1 --time=4 \
+                     --container-image=docker://alpine:latest hostname"
+                ),
+            ));
+        }
+        if args.gpu {
+            let script = "set -euo pipefail\n\
+                 HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 \
+                 2>/dev/null | head -1)\n\
+                 if [ -z \"$HPCX_DIR\" ]; then echo 'HPC-X not found' >&2; exit 1; fi\n\
+                 if [ ! -x /opt/nccl-tests/build/all_reduce_perf ]; then \
+                 echo 'nccl-tests not found' >&2; exit 1; fi\n\
+                 source \"$HPCX_DIR/hpcx-init.sh\"; hpcx_load\n\
+                 export NCCL_IB_HCA=mlx5_ib\n\
+                 export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml\n\
+                 export UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,\
+                 mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1\n\
+                 timeout 300 srun --mpi=pmix -N2 --ntasks-per-node=8 \
+                 --gpus-per-node=8 --exclusive --time=5 \
+                 /opt/nccl-tests/build/all_reduce_perf -b 8M -e 64M -f 2 -g 1";
+            let script = script.replace("\n                 ", "\n");
+            let script = if part.is_empty() {
+                script
+            } else {
+                script.replace("srun --mpi=pmix", &format!("srun{part} --mpi=pmix"))
+            };
+            let remote = format!("bash -lc {}", shell_quote(&script));
+            checks.push(("srun 2-node nccl-allreduce (NDv5)", remote));
+        }
     }
 
     let mut all_ok = true;

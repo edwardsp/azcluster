@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.15.0] - 2026-05-23
+
+### Added
+- **`azcluster validate --multi-node`** runs cross-node smoke checks before users hit them: a 2-node `srun -N2 hostname`, a 2-node Pyxis container launch (`srun -N2 --container-image=docker://alpine:latest`), and (when combined with `--gpu`) a bounded 2-node NCCL all-reduce via HPC-X + `/opt/nccl-tests/build/all_reduce_perf` over message sizes 8M..64M (~30 s). The NCCL check is tuned for ND H100 v5 (`NCCL_IB_HCA=mlx5_ib`, `NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml`, all 8 `mlx5_ib*` HCAs in `UCX_NET_DEVICES`) and would catch regressions in the IB-fabric-in-container / PMIx-multi-node class (e.g. v0.13.6 → v0.13.8) at deploy time. Requires ≥2 idle nodes in the target partition.
+- **`azcluster validate --partition <name>`** targets a specific Slurm partition for every check (defaults to the cluster default partition).
+
+### Changed
+- Workspace version `0.14.0` -> `0.15.0`.
+- CLI default `--azcluster-version` bumped to `v0.15.0`.
+
+
 ## [0.14.0] - 2026-05-23
 
 ### Changed
