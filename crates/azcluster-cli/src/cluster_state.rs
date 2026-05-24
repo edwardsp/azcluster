@@ -39,6 +39,8 @@ pub fn secrets_path(name: &str) -> Result<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterSecrets {
     pub ldap_admin_password: String,
+    #[serde(default)]
+    pub mysql_admin_password: Option<String>,
 }
 
 impl ClusterSecrets {
@@ -47,6 +49,17 @@ impl ClusterSecrets {
         let body = std::fs::read_to_string(&path)
             .with_context(|| format!("no secrets for cluster '{name}' at {}", path.display()))?;
         toml::from_str(&body).with_context(|| format!("parse {}", path.display()))
+    }
+
+    pub fn load_optional(name: &str) -> Result<Option<Self>> {
+        let path = secrets_path(name)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let body =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let s: Self = toml::from_str(&body).with_context(|| format!("parse {}", path.display()))?;
+        Ok(Some(s))
     }
 
     pub fn save(&self, name: &str) -> Result<PathBuf> {
@@ -79,5 +92,30 @@ impl ClusterState {
         }
         std::fs::write(&path, toml::to_string_pretty(self)?)?;
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secrets_backward_compat_without_mysql_field() {
+        let body = "ldap_admin_password = \"hunter2\"\n";
+        let s: ClusterSecrets = toml::from_str(body).unwrap();
+        assert_eq!(s.ldap_admin_password, "hunter2");
+        assert!(s.mysql_admin_password.is_none());
+    }
+
+    #[test]
+    fn secrets_round_trip_with_both_fields() {
+        let s = ClusterSecrets {
+            ldap_admin_password: "ldap-pw".into(),
+            mysql_admin_password: Some("mysql-pw".into()),
+        };
+        let ser = toml::to_string(&s).unwrap();
+        let de: ClusterSecrets = toml::from_str(&ser).unwrap();
+        assert_eq!(de.ldap_admin_password, "ldap-pw");
+        assert_eq!(de.mysql_admin_password.as_deref(), Some("mysql-pw"));
     }
 }

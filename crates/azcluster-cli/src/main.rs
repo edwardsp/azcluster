@@ -48,7 +48,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.18.2")]
+    #[arg(long, default_value = "v0.18.3")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -503,12 +503,31 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     let monitoring_enabled = args.monitoring && !args.no_monitoring;
     let accounting_enabled = args.accounting && !args.no_accounting;
+    let existing_secrets = cluster_state::ClusterSecrets::load_optional(&args.name)?;
+    if existing_secrets.is_some() {
+        eprintln!(
+            "==> reusing persisted secrets for cluster '{}' (re-invocation safe)",
+            args.name
+        );
+    }
     let mysql_password = if accounting_enabled {
-        gen_mysql_password()?
+        match existing_secrets
+            .as_ref()
+            .and_then(|s| s.mysql_admin_password.clone())
+        {
+            Some(p) => p,
+            None => gen_mysql_password()?,
+        }
     } else {
         String::new()
     };
-    let ldap_password = gen_mysql_password()?;
+    let ldap_password = match existing_secrets
+        .as_ref()
+        .map(|s| s.ldap_admin_password.clone())
+    {
+        Some(p) => p,
+        None => gen_mysql_password()?,
+    };
 
     let mut params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
@@ -638,6 +657,13 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     let secrets = cluster_state::ClusterSecrets {
         ldap_admin_password: ldap_password,
+        mysql_admin_password: if accounting_enabled {
+            Some(mysql_password.clone())
+        } else {
+            existing_secrets
+                .as_ref()
+                .and_then(|s| s.mysql_admin_password.clone())
+        },
     };
     let secrets_path = secrets.save(&args.name)?;
     eprintln!("==> saved cluster secrets -> {}", secrets_path.display());

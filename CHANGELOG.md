@@ -6,6 +6,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.18.3] - 2026-05-24
+
+### Added
+- **`azcluster user`/`sshkey` mutations now push SSSD cache invalidation on the login VM** immediately after the LDAP write returns. New `flush_login_sssd_cache(state, user)` opens a direct (non-jump) ssh to `<login-public-ip>` and runs `sudo -n sss_cache -u <user>` + `sudo -n sss_cache -E`. Best-effort — any failure (no public IP, ssh rejected, sudo absent) logs a warning and falls through to the v0.18.2 60 s `entry_cache_timeout` floor; the LDAP write itself is already durable in slapd. Wired into `user_add`, `user_remove`, `sshkey_add`, `sshkey_remove`. After v0.18.2 live-validation showed sshkey propagation at 47 s (within the new 60 s TTL but still operator-perceptible), this lands it at a couple of seconds for the SSH-as-LDAP-user path while keeping compute's longer-tail propagation bounded by the same 60 s TTL. 2 new unit tests cover the flush command shape (`sudo -n sss_cache -u 'user'`, `|| true` for best-effort, username quoting).
+- **`ClusterSecrets::load_optional(name)`** returns `Ok(None)` when the secrets file is absent (vs. `load()` which errors). Used by the deploy flow to detect re-invocations.
+
+### Fixed
+- **`azcluster deploy` is now re-invocable against an existing cluster.** v0.17 live-validation surfaced that re-running deploy against a cluster whose ARM deployment had already succeeded failed with `Missing input parameters: ldapAdminPassword` because the CLI generated a fresh password every invocation and ARM rejected the second deploy when the value differed from what slapd had already been provisioned with. v0.18.0 + .1 + .2 inherited the same gap (also affected `mysqlAdminPassword` when accounting was on). Fix: deploy now calls `ClusterSecrets::load_optional` first; if a secrets file exists, it reuses both `ldap_admin_password` and (when `--accounting`) `mysql_admin_password` and prints `==> reusing persisted secrets for cluster '<name>' (re-invocation safe)`. First-deploy behaviour unchanged (fresh generation + persistence). Re-invocation now succeeds and re-runs the post-deploy hooks (dashboard import, timings JSON, state file refresh) without ARM drift.
+
+### Changed
+- **`ClusterSecrets` schema**: added `mysql_admin_password: Option<String>` (defaults to `None`, `#[serde(default)]`). Backward-compatible with v0.18.x secrets files that only carry `ldap_admin_password`. 2 new unit tests cover the round-trip and the v0.18.x → v0.18.3 read path.
+- Workspace version `0.18.2` → `0.18.3`. CLI default `--azcluster-version` bumped to `v0.18.3`.
+
+### Deferred
+- **Entra ID (`aad-login`) integration** deferred again, now to v0.19. Unchanged blocker: interactive device-code flow explicitly excluded from automated testing.
+
 ## [0.18.2] - 2026-05-24
 
 ### Changed

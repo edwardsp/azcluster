@@ -154,6 +154,54 @@ fn ssh_run(state: &ClusterState, remote_cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+fn build_sssd_flush_cmd(username: &str) -> String {
+    format!(
+        "sudo -n sss_cache -u '{u}' >/dev/null 2>&1 || true; \
+         sudo -n sss_cache -E >/dev/null 2>&1 || true",
+        u = username,
+    )
+}
+
+fn flush_login_sssd_cache(state: &ClusterState, username: &str) {
+    let Some(host) = state.login_public_ip.as_deref() else {
+        return;
+    };
+    let target = format!("{}@{}", state.admin_username, host);
+    let cmd = build_sssd_flush_cmd(username);
+    let out = Command::new("ssh")
+        .args([
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            &target,
+            "--",
+            "bash",
+            "-lc",
+            &cmd,
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            eprintln!("==> flushed SSSD cache on login for '{}'", username);
+        }
+        Ok(o) => {
+            eprintln!(
+                "==> warn: SSSD cache flush on login returned status={:?} (key changes will propagate within ~60s via entry_cache_timeout)",
+                o.status.code()
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "==> warn: could not ssh to login to flush SSSD cache ({}); key changes will propagate within ~60s via entry_cache_timeout",
+                e
+            );
+        }
+    }
+}
+
 fn build_ldap_write_cmd(password: &str, ldif: &str, tool: &str, extra_args: &str) -> String {
     let pw_b64 = b64_encode(password.as_bytes());
     let ldif_b64 = b64_encode(ldif.as_bytes());
@@ -258,6 +306,7 @@ pub fn user_add(
     let cmd = build_ldap_write_cmd(&password, &ldif, "ldapadd", "-c");
     ssh_run(state, &cmd)?;
     eprintln!("==> added user '{}' (uid={}, gid={})", username, uid, gid);
+    flush_login_sssd_cache(state, username);
     Ok(())
 }
 
@@ -268,6 +317,7 @@ pub fn user_remove(state: &ClusterState, username: &str) -> Result<()> {
     let cmd = build_ldap_write_cmd(&password, &ldif, "ldapmodify", "");
     ssh_run(state, &cmd)?;
     eprintln!("==> removed user '{}'", username);
+    flush_login_sssd_cache(state, username);
     Ok(())
 }
 
@@ -303,6 +353,7 @@ pub fn sshkey_add(state: &ClusterState, username: &str, key_file: &std::path::Pa
     let cmd = build_ldap_write_cmd(&password, &ldif, "ldapmodify", "");
     ssh_run(state, &cmd)?;
     eprintln!("==> added ssh key for '{}'", username);
+    flush_login_sssd_cache(state, username);
     Ok(())
 }
 
@@ -328,6 +379,7 @@ pub fn sshkey_remove(
     let cmd = build_ldap_write_cmd(&password, &ldif, "ldapmodify", "");
     ssh_run(state, &cmd)?;
     eprintln!("==> removed ssh key for '{}'", username);
+    flush_login_sssd_cache(state, username);
     Ok(())
 }
 
@@ -461,5 +513,22 @@ mod tests {
         assert!(cmd.contains("ldapsearch -x -LLL -D 'cn=admin,"));
         assert!(cmd.contains(&b64_encode(b"pw")));
         assert!(cmd.contains("-b 'ou=people,dc=x' -s sub '(uid=*)' uid"));
+    }
+
+    #[test]
+    fn flush_cmd_uses_sudo_n_and_invalidates_user_and_full() {
+        let cmd = build_sssd_flush_cmd("alice");
+        assert!(cmd.contains("sudo -n sss_cache -u 'alice'"));
+        assert!(cmd.contains("sudo -n sss_cache -E"));
+        assert!(
+            cmd.contains("|| true"),
+            "must be best-effort so remote failure does not propagate"
+        );
+    }
+
+    #[test]
+    fn flush_cmd_quotes_username() {
+        let cmd = build_sssd_flush_cmd("bob_user-1");
+        assert!(cmd.contains("'bob_user-1'"));
     }
 }
