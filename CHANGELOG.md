@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.19.1] - 2026-05-24
+
+### Added
+- **`azcluster resume --name <name>`** is the new explicit verb to run post-deploy hooks (state file, timings JSON, Grafana dashboard import) after a `--no-wait` deploy. Reads the persisted `PendingDeploy` marker, polls ARM until terminal (Succeeded / Failed / Canceled), loads the cluster secrets, runs `finalize_deploy()`, and deletes the marker. Replaces the v0.19.0 "re-run `azcluster deploy` with the same args to finalize" UX — that overload was confusing because "deploy" reads as "deploy again".
+- **`PendingDeploy` marker is now written for blocking deploys too**, BEFORE `az deployment sub create` is invoked. If the operator's shell dies mid-ARM (terminal disconnect, OOM kill, hibernate), the deploy is now recoverable via `azcluster resume --name <name>` — same path as `--no-wait`. On the blocking happy path the marker is deleted at the end of `deploy()`, so steady-state operation is unchanged.
+- **`azcluster status <name>` always nags about pending markers.** When a pending marker exists the status block now prints `-> run azcluster resume --name <name> once ARM state is Succeeded`. The "no cluster state yet" footer points at `resume` (not at re-running `deploy`).
+
+### Changed
+- **`azcluster deploy` is now strictly linear and single-purpose**: it submits ARM and (without `--no-wait`) runs `finalize_deploy()` inline. The v0.19.0 "detect pending marker, switch to resume mode" magic at the top of `deploy()` is gone. The only resume path is `azcluster resume`.
+- `resume_deploy()` deleted; new `resume()` (driven by `ResumeArgs`) absorbs its body. `resume()` builds a synthetic `DeployArgs` from the pending marker + an `az group show --query location` lookup (PendingDeploy does not persist `location`). `finalize_deploy()` retains its name as the internal helper that runs post-deploy hooks (state save, secrets persist, timings capture, dashboard import).
+- `--no-wait` deploy completion message now points at `azcluster resume --name <name>`, not "re-run azcluster deploy".
+- Workspace version `0.19.0` → `0.19.1`. CLI default `--azcluster-version` bumped to `v0.19.1`.
+
+
 ## [0.19.0] - 2026-05-24
 
 ### Added
@@ -604,7 +618,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.1
 [0.19.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.0
 [0.13.8]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.8
 [0.13.7]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.7

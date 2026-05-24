@@ -21,6 +21,15 @@ If a PR touches code but skips any of these three, it is incomplete.
 5. Commit, tag `vX.Y.Z`, push tag — CI publishes the release.
 6. Live-validate on `paul-azcluster`/`southafricanorth` before declaring done.
 
+## v0.19.1 deploy UX (`azcluster resume`)
+
+- v0.19.0 overloaded `azcluster deploy` to detect a pending marker and switch to "resume" mode. That was confusing — "deploy" reads as "deploy again". v0.19.1 replaces it with an explicit verb: **`azcluster resume --name <name>`**.
+- New invariant: **`deploy` is strictly linear**. It writes the pending marker, submits ARM, and (without `--no-wait`) calls `finalize_deploy()` inline + deletes the marker. There is no resume branch in `deploy()` anymore.
+- New invariant: **blocking deploys also write+delete the pending marker** (around the ARM submission). If the operator's shell dies mid-deploy (terminal disconnect, hibernate, OOM kill), `azcluster resume --name <name>` recovers — same code path as `--no-wait`.
+- `finalize()` reads the pending marker, polls ARM until terminal, loads `ClusterSecrets`, queries `az group show --query location` to recover the missing `location` field (PendingDeploy schema doesn't persist `location`), builds a synthetic `DeployArgs`, calls `finalize_deploy()`, deletes the marker. On Failed/Canceled it bails with the standard delete-+-remove-pending-file hint.
+- `status` now appends `-> run azcluster resume --name <name> once ARM state is Succeeded` to the pending block, and the no-state footer points at `resume` instead of re-running `deploy`.
+- `resume_deploy()` function deleted. `PendingDeploy` schema unchanged from v0.19.0 (still 8 fields: `cluster, deployment_name, resource_group, started_at, monitoring_enabled, accounting_enabled, shared_storage, grafana_location`) — backward-compatible with v0.19.0 markers (validated live by `azcluster resume` finalising the `v19walk` pending marker that was created with v0.19.0).
+
 ## v0.19.0 deploy UX (`--no-wait` + resume + enhanced status)
 
 - **`--no-wait`** is plumbed through `clap` on `DeployArgs` and appended verbatim to `az deployment sub create`. CLI exits after writing `~/.config/azcluster/clusters/<name>-pending.toml` (`PendingDeploy` schema: `cluster, deployment_name, resource_group, started_at (UTC iso8601), monitoring_enabled, accounting_enabled, shared_storage, grafana_location`). Secrets MUST be persisted **before** `az deployment sub create` returns — ARM secure parameters are not retrievable from `properties.outputs`, so the resume path needs them on local disk. v0.19.0 enforces this by calling `secrets.save(...)` before building the `az` argv.

@@ -24,6 +24,7 @@ enum CliCommand {
     Tunnel(ConnectArgs),
     Scale(ScaleArgs),
     Status(StatusArgs),
+    Resume(ResumeArgs),
     Delete(DeleteArgs),
     Exec(ExecArgs),
     Logs(LogsArgs),
@@ -48,7 +49,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.19.0")]
+    #[arg(long, default_value = "v0.19.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -92,9 +93,16 @@ struct DeployArgs {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     what_if: bool,
-    /// Submit ARM with `--no-wait` and exit. Resume by re-running `azcluster deploy <name>`.
+    /// Submit ARM with `--no-wait` and return immediately. Run `azcluster resume <name>` afterwards to wait for ARM and run post-deploy hooks (state file, timings JSON, Grafana dashboard import). Without `--no-wait`, deploy blocks and finalizes in one shot.
     #[arg(long, default_value_t = false)]
     no_wait: bool,
+}
+
+#[derive(Args)]
+struct ResumeArgs {
+    /// Cluster name (matches the `--name` used at deploy time).
+    #[arg(long)]
+    name: String,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -359,6 +367,7 @@ fn main() -> Result<()> {
         CliCommand::Tunnel(args) => tunnel(args),
         CliCommand::Scale(args) => scale(args),
         CliCommand::Status(args) => status(args),
+        CliCommand::Resume(args) => resume(args),
         CliCommand::Delete(args) => delete(args),
         CliCommand::Exec(args) => exec(args),
         CliCommand::Logs(args) => logs(args),
@@ -449,10 +458,6 @@ fn az_json(args: &[&str]) -> Result<serde_json::Value> {
 
 fn deploy(args: DeployArgs) -> Result<()> {
     ensure_az()?;
-
-    if let Some(pending) = PendingDeploy::load_optional(&args.name)? {
-        return resume_deploy(args, pending);
-    }
 
     let template = resolve_template(args.template.clone())?;
     let ssh_key_path = resolve_ssh_key(args.ssh_key.clone())?;
@@ -617,6 +622,21 @@ fn deploy(args: DeployArgs) -> Result<()> {
         az_args.push("--no-wait".into());
     }
 
+    if !args.what_if {
+        let pending = PendingDeploy {
+            cluster: args.name.clone(),
+            deployment_name: deployment_name.clone(),
+            resource_group: resolved_rg.clone(),
+            started_at: utc_iso8601(),
+            monitoring_enabled,
+            accounting_enabled,
+            shared_storage: args.shared_storage.clone(),
+            grafana_location: args.grafana_location.clone(),
+        };
+        let pending_path = pending.save()?;
+        eprintln!("==> saved pending deploy -> {}", pending_path.display());
+    }
+
     eprintln!(
         "==> az deployment sub {} --name {}{}",
         if args.what_if { "what-if" } else { "create" },
@@ -640,20 +660,8 @@ fn deploy(args: DeployArgs) -> Result<()> {
     }
 
     if args.no_wait {
-        let pending = PendingDeploy {
-            cluster: args.name.clone(),
-            deployment_name: deployment_name.clone(),
-            resource_group: resolved_rg.clone(),
-            started_at: utc_iso8601(),
-            monitoring_enabled,
-            accounting_enabled,
-            shared_storage: args.shared_storage.clone(),
-            grafana_location: args.grafana_location.clone(),
-        };
-        let pending_path = pending.save()?;
-        eprintln!("==> saved pending deploy -> {}", pending_path.display());
         eprintln!(
-            "==> ARM deployment '{}' submitted. Re-run `azcluster deploy --name {}` (same args) to resume and run post-deploy hooks once ARM completes.",
+            "==> ARM deployment '{}' submitted. Run `azcluster resume --name {}` to wait for completion and run post-deploy hooks.",
             deployment_name, args.name
         );
         eprintln!("==> Track progress with: azcluster status {}", args.name);
@@ -670,27 +678,22 @@ fn deploy(args: DeployArgs) -> Result<()> {
         &ldap_password,
         &mysql_password,
         existing_secrets.as_ref(),
-    )
+    )?;
+    PendingDeploy::delete(&args.name)?;
+    Ok(())
 }
 
-fn resume_deploy(args: DeployArgs, pending: PendingDeploy) -> Result<()> {
-    let resolved_rg = args
-        .resource_group
-        .clone()
-        .unwrap_or_else(|| format!("rg-azcluster-{}", args.name));
-    if pending.resource_group != resolved_rg {
-        bail!(
-            "pending deploy for cluster '{}' targets resource group '{}', not '{}'. Remove ~/.config/azcluster/clusters/{}-pending.toml or pass --resource-group {} to resume.",
-            args.name,
-            pending.resource_group,
-            resolved_rg,
-            args.name,
-            pending.resource_group
-        );
-    }
+fn resume(args: ResumeArgs) -> Result<()> {
+    ensure_az()?;
+    let pending = PendingDeploy::load_optional(&args.name)?.ok_or_else(|| {
+        anyhow!(
+            "no pending deploy for cluster '{}'. If `azcluster deploy` already finalized successfully, there is nothing to do. Otherwise run `azcluster deploy --name {} …` first.",
+            args.name, args.name
+        )
+    })?;
 
     eprintln!(
-        "==> found pending deploy {} (started {}); resuming",
+        "==> resuming pending deploy {} (started {})",
         pending.deployment_name, pending.started_at
     );
 
@@ -702,30 +705,67 @@ fn resume_deploy(args: DeployArgs, pending: PendingDeploy) -> Result<()> {
     let terminal = poll_deployment_until_terminal(&pending.deployment_name)?;
     match terminal.as_str() {
         "Succeeded" => {
-            let existing_secrets = cluster_state::ClusterSecrets::load_optional(&args.name)?
+            let secrets = cluster_state::ClusterSecrets::load_optional(&args.name)?
                 .ok_or_else(|| {
                     anyhow!(
                         "pending deploy resumed but secrets file ~/.config/azcluster/clusters/{}-secrets.toml is missing; cannot recover ARM secure parameters",
                         args.name
                     )
                 })?;
-            let ldap_password = existing_secrets.ldap_admin_password.clone();
-            let mysql_password = existing_secrets
-                .mysql_admin_password
-                .clone()
-                .unwrap_or_default();
+            let ldap_password = secrets.ldap_admin_password.clone();
+            let mysql_password = secrets.mysql_admin_password.clone().unwrap_or_default();
+            let location = az_json(&[
+                "group",
+                "show",
+                "--name",
+                &pending.resource_group,
+                "--query",
+                "location",
+                "-o",
+                "json",
+            ])?
+            .as_str()
+            .ok_or_else(|| anyhow!("could not resolve location for {}", pending.resource_group))?
+            .to_string();
+            let synthetic_args = DeployArgs {
+                name: args.name.clone(),
+                location,
+                resource_group: Some(pending.resource_group.clone()),
+                ssh_key: None,
+                login_public_ip: false,
+                allowed_ssh_cidrs: None,
+                azcluster_version: String::new(),
+                azcluster_repo: String::new(),
+                ubuntu: String::new(),
+                anf_size_tib: 0,
+                anf_tier: String::new(),
+                amlfs_size_tib: 0,
+                amlfs_sku: String::new(),
+                amlfs_zone: String::new(),
+                pools: Vec::new(),
+                monitoring: pending.monitoring_enabled,
+                no_monitoring: !pending.monitoring_enabled,
+                accounting: pending.accounting_enabled,
+                no_accounting: !pending.accounting_enabled,
+                shared_storage: pending.shared_storage.clone(),
+                grafana_location: pending.grafana_location.clone(),
+                template: None,
+                what_if: false,
+                no_wait: false,
+            };
             finalize_deploy(
-                &args,
+                &synthetic_args,
                 &pending.deployment_name,
-                &resolved_rg,
+                &pending.resource_group,
                 &sub_id,
                 pending.accounting_enabled,
                 pending.monitoring_enabled,
                 &ldap_password,
                 &mysql_password,
-                Some(&existing_secrets),
+                Some(&secrets),
             )?;
             PendingDeploy::delete(&args.name)?;
+            eprintln!("==> resume complete");
             Ok(())
         }
         other => {
@@ -1221,12 +1261,16 @@ fn status(args: StatusArgs) -> Result<()> {
             }
             Err(e) => println!("  operations:      ERR ({e:#})"),
         }
+        println!(
+            "  -> run `azcluster resume --name {}` once ARM state is Succeeded",
+            args.name
+        );
         println!();
     }
 
     let Some(state) = state_opt else {
         println!(
-            "no cluster state yet. Once the ARM deployment succeeds, re-run `azcluster deploy --name {}` to finalize.",
+            "no cluster state yet. Once the ARM deployment succeeds, run `azcluster resume --name {}` to run post-deploy hooks.",
             args.name
         );
         return Ok(());
