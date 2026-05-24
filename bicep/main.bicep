@@ -119,6 +119,9 @@ param mysqlAdminPassword string = ''
 @secure()
 param ldapAdminPassword string
 
+@description('Space-joined list of extra apt packages to install on every node (scheduler, login, compute). Each token validated CLI-side against ^[a-z0-9][a-z0-9.+-]*$.')
+param extraPackages string = ''
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -167,6 +170,7 @@ module cluster 'cluster.bicep' = {
     enableAccounting: enableAccounting
     mysqlAdminPassword: mysqlAdminPassword
     ldapAdminPassword: ldapAdminPassword
+    extraPackages: extraPackages
     tags: commonTags
   }
 }

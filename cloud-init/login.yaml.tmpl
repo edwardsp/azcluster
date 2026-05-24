@@ -25,6 +25,7 @@ write_files:
       SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}
       SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
+      EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"
   - path: /etc/profile.d/azcluster.sh
     permissions: '0644'
     content: |
@@ -43,6 +44,10 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
       . /etc/azcluster/cluster.env
+
+      if [ -n "${EXTRA_PACKAGES:-}" ]; then
+        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}
+      fi
 
       mkdir -p /shared /var/log/azcluster /etc/slurm
 

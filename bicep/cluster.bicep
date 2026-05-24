@@ -29,6 +29,7 @@ param enableAccounting bool = false
 param mysqlAdminPassword string = ''
 @secure()
 param ldapAdminPassword string
+param extraPackages string = ''
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -142,6 +143,7 @@ module scheduler 'modules/scheduler.bicep' = {
     accountingMysqlDatabase: enableAccounting ? accounting!.outputs.databaseName : ''
     mysqlAdminPassword: mysqlAdminPassword
     ldapAdminPassword: ldapAdminPassword
+    extraPackages: extraPackages
     tags: tags
   }
 }
@@ -169,6 +171,7 @@ module login 'modules/login.bicep' = {
     monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
     amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
+    extraPackages: extraPackages
     tags: tags
   }
 }
@@ -194,6 +197,7 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
     amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
+    extraPackages: extraPackages
     tags: tags
   }
 }]

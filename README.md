@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.19.1)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. **v0.19 ships deploy-UX**: `azcluster deploy --no-wait` submits the ARM deployment and returns immediately; run `azcluster resume --name <name>` afterwards to wait for ARM and run all post-deploy hooks (state file, timings JSON, Grafana dashboard import). Blocking deploys also write the pending marker first, so a terminal interrupt mid-ARM is recoverable via the same `azcluster resume` command. `azcluster status` surfaces ARM phase + operation roll-up + 8 s SSH bootstrap probe and nags about pending markers. `azcluster delete` works on pending-only clusters. Entra ID (`aad-login`) integration deferred to v0.19.2 / v0.20. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Status (v0.19.2)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. **v0.19.2 adds**: `--extra-package <name>` deploy flag (repeatable; installs apt packages on every scheduler/login/compute node before bootstrap completes — `--extra-package git-lfs --extra-package python3.12-venv` validated live on `southafricanorth`); per-user enroot cache path (`/var/lib/enroot-data/cache/user-$(id -u)`) so each LDAP user's container imports land on `/mnt/nvme` without colliding with others; scheduler SSSD wired against the local `slapd` via `ldap://127.0.0.1` so `getent passwd <ldap-user>` resolves on the scheduler too (previously only login + compute); idempotent `azcluster deploy` (re-running with a stale pending file or after a crash now reuses persisted secrets instead of crashing). Llama 3.1 8B BF16 throughput baselines from v0.13.9 still hold: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node), 2.001× strong scaling. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.19.1
+VERSION=v0.19.2
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

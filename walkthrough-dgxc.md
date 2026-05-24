@@ -63,85 +63,92 @@ A healthy run on a single NDv5 H100 (8x NVLink within the node, NCCL using SHARP
 
 ---
 
-## Tier 2 — full `llmb-run` flow
+## Tier 2 — full `llmb-run` flow (per-user)
 
 DGXC ships its own driver (`llmb-run`) that automates: NeMo container builds, dataset prep, multi-scale sweeps (8 GPU → 1024 GPU), FP8/NVFP4/BF16 variants, and result aggregation. It requires an NGC API key (free at `ngc.nvidia.com`).
 
-### One-time setup on the scheduler
+The toolchain is **self-contained** — each user installs it under their own `$HOME/dgxc` (shared across nodes via `/shared/home/<user>`) and registers their own NGC + HF credentials. Operators do not install DGXC globally; users who want it install it themselves.
+
+### Prereq: an LDAP user (skip if you already have one)
+
+Run as the operator (`azureuser` / your laptop) once per user:
 
 ```bash
-azcluster ssh dgxc --scheduler
-sudo mkdir -p /shared/dgxc && sudo chown azureuser:azureuser /shared/dgxc
-cd /shared/dgxc
+azcluster user add dgxc --username paul --ssh-key ~/.ssh/id_rsa.pub
+```
+
+That creates the LDAP entry (UID auto-allocated, default gid 20000), a shared home at `/shared/home/paul`, and primes SSSD on login + compute. The user can now `ssh paul@<login-public-ip>` and submit jobs.
+
+### One-time per-user setup (on login VM)
+
+```bash
+ssh paul@<login-public-ip>
+mkdir -p $HOME/dgxc && cd $HOME/dgxc
 git clone https://github.com/NVIDIA/dgxc-benchmarking.git
-git clone https://github.com/NVIDIA/llmb-install.git
 ```
 
-### Register your NGC API key
+`$HOME` is `/shared/home/paul` — visible on every compute node, so the venv + container path resolve identically wherever the job lands.
+
+### Register your NGC + HF tokens (per user, mode 0600)
 
 ```bash
-# Paste your NGC API key when prompted (starts with "nvapi-")
-ngc config set
-# Or env-only, no interactive prompt:
-export NGC_API_KEY="nvapi-..."
+mkdir -p $HOME/.config/azcluster && chmod 700 $HOME/.config/azcluster
+echo "nvapi-..." > $HOME/.config/azcluster/ngc_key
+echo "hf_..."    > $HOME/.config/azcluster/hf_token
+chmod 600 $HOME/.config/azcluster/{ngc_key,hf_token}
 ```
+
+NGC: free at `ngc.nvidia.com`. HF: gated Meta-Llama-3.1 configs require `HF_TOKEN` with the model licence accepted in your HF account.
 
 ### Install the LLM Benchmarking toolchain (headless `--play`)
 
 DGXC v25.11 ships `llmb-install` as a Python package inside `dgxc-benchmarking/cli/llmb-install`. Use a `playfile.yaml` to drive it non-interactively:
 
 ```bash
-export LLMB_INSTALL=/shared/dgxc/llmb
+export LLMB_INSTALL=$HOME/dgxc/llmb
 mkdir -p "$LLMB_INSTALL"
 
-# Provision a venv with uv and install the CLI
+# Provision a venv with uv and install the CLI.
+# Requires python3-venv (deployed cluster-wide via `azcluster deploy --extra-package python3.12-venv`).
 python3 -m venv "$LLMB_INSTALL/llmb_venv"
 "$LLMB_INSTALL/llmb_venv/bin/pip" install uv
 "$LLMB_INSTALL/llmb_venv/bin/uv" pip install \
-  /shared/dgxc/dgxc-benchmarking/cli/llmb-install \
-  /shared/dgxc/dgxc-benchmarking/cli/llmb-run
+  $HOME/dgxc/dgxc-benchmarking/cli/llmb-install \
+  $HOME/dgxc/dgxc-benchmarking/cli/llmb-run
 
 # Headless playfile (selects pretrain_llama3.1, h100, slurm)
-cat > /shared/dgxc/playfile.yaml <<EOF
+cat > $HOME/dgxc/playfile.yaml <<EOF
 venv_type: uv
 gpu_type: h100
 node_architecture: x86_64
 install_method: slurm
 account: default
-gpu_partition: gpu
-cpu_partition: gpu
+gpu_partition: h100
+cpu_partition: h100
 selected_workloads:
   - pretrain_llama3.1
 EOF
 
-# NGC + HF tokens (gated Meta-Llama-3.1 configs require HF_TOKEN)
-mkdir -p ~/.config/azcluster
-chmod 700 ~/.config/azcluster
-# paste tokens into these files (mode 600)
-echo "<your nvapi-... key>" > ~/.config/azcluster/ngc_key
-echo "<your hf_... token>" > ~/.config/azcluster/hf_token
-chmod 600 ~/.config/azcluster/{ngc_key,hf_token}
+export NGC_API_KEY=$(cat $HOME/.config/azcluster/ngc_key)
+export HF_TOKEN=$(cat $HOME/.config/azcluster/hf_token)
 
-export NGC_API_KEY=$(cat ~/.config/azcluster/ngc_key)
-export HF_TOKEN=$(cat ~/.config/azcluster/hf_token)
-
-"$LLMB_INSTALL/llmb_venv/bin/llmb-install" --play /shared/dgxc/playfile.yaml express
+"$LLMB_INSTALL/llmb_venv/bin/llmb-install" --play $HOME/dgxc/playfile.yaml express
 ```
 
-`express` mode skips datacenter sanity checks. Plan ~10-15 min: NeMo `nvcr.io#nvidia/nemo:26.04.00` (~20 GB) imports onto `/shared`, Megatron-Bridge + NeMo-Run are cloned, HF Llama configs are downloaded.
-
-`LLMB_INSTALL` MUST live on `/shared` (or another cluster-wide filesystem) — compute nodes need read access to the container image and dataset.
+`express` mode skips datacenter sanity checks. Plan ~10-15 min: NeMo `nvcr.io#nvidia/nemo:26.04.00` (~20 GB) imports onto `$HOME/dgxc/llmb`, Megatron-Bridge + NeMo-Run are cloned, HF Llama configs are downloaded.
 
 > **Storage sizing.** The NeMo container squashfs is 17 GiB. With `--shared-storage nfs-scheduler` (test mode) the scheduler exports `/shared` from its 64 GiB root disk and enroot extraction will ENOSPC mid-import. Use `--shared-storage anf` (default) or attach a data disk to the scheduler. Hard requirement: ≥ 60 GiB free on `/shared` before running `llmb-install express`.
+>
+> **Container import speed.** v0.19.2 wires per-user enroot cache (`ENROOT_CACHE_PATH /var/lib/enroot-data/cache/user-$(id -u)`) on /mnt/nvme so each user's container imports land on the ephemeral NVMe RAID without colliding with others. First-time import of a ~20 GB NeMo container still takes ~10-20 min over the pull from NGC; subsequent jobs that reuse the same image start in seconds.
 
 ### Run Llama 3.1 8B via `llmb-run`
 
 `llmb-install express` registers the workload + venv + container path in `$LLMB_INSTALL/cluster_config.yaml`. Use `llmb-run submit` from then on — it materialises the sbatch via NeMo-Run and submits with the correct partition + account:
 
 ```bash
-export LLMB_INSTALL=/shared/dgxc/llmb
-export NGC_API_KEY=$(cat ~/.config/azcluster/ngc_key)
-export HF_TOKEN=$(cat ~/.config/azcluster/hf_token)
+export LLMB_INSTALL=$HOME/dgxc/llmb
+export NGC_API_KEY=$(cat $HOME/.config/azcluster/ngc_key)
+export HF_TOKEN=$(cat $HOME/.config/azcluster/hf_token)
 
 # 8 GPU single node (Tier-1 of the H100 BF16 table)
 $LLMB_INSTALL/llmb_venv/bin/llmb-run submit \

@@ -49,7 +49,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.19.1")]
+    #[arg(long, default_value = "v0.19.2")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -96,6 +96,9 @@ struct DeployArgs {
     /// Submit ARM with `--no-wait` and return immediately. Run `azcluster resume <name>` afterwards to wait for ARM and run post-deploy hooks (state file, timings JSON, Grafana dashboard import). Without `--no-wait`, deploy blocks and finalizes in one shot.
     #[arg(long, default_value_t = false)]
     no_wait: bool,
+    /// Extra apt packages to install on every node (scheduler, login, compute). Repeatable. Validated against a Debian package name grammar subset (`^[a-z0-9][a-z0-9.+-]*$`). Example: --extra-package git-lfs --extra-package python3.12-venv
+    #[arg(long = "extra-package", action = clap::ArgAction::Append, value_parser = parse_pkg_name)]
+    extra_packages: Vec<String>,
 }
 
 #[derive(Args)]
@@ -112,6 +115,29 @@ struct PoolSpec {
     count: u32,
     #[serde(rename = "default")]
     is_default: bool,
+}
+
+fn parse_pkg_name(s: &str) -> Result<String, String> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() {
+        return Err("empty package name".into());
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return Err(format!(
+            "package name '{s}' must start with [a-z0-9] (Debian package name grammar)"
+        ));
+    }
+    for &b in &bytes[1..] {
+        let ok =
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'+' || b == b'-';
+        if !ok {
+            return Err(format!(
+                "package name '{s}' contains invalid character; allowed: [a-z0-9.+-]"
+            ));
+        }
+    }
+    Ok(s.to_string())
 }
 
 fn parse_pool(spec: &str) -> Result<PoolSpec> {
@@ -150,6 +176,29 @@ fn parse_pool(spec: &str) -> Result<PoolSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_pkg_name_accepts_canonical() {
+        for ok in ["git-lfs", "python3.12-venv", "libssl3", "g++", "0ad"] {
+            assert!(parse_pkg_name(ok).is_ok(), "should accept '{ok}'");
+        }
+    }
+
+    #[test]
+    fn parse_pkg_name_rejects_bad_inputs() {
+        for bad in [
+            "",
+            "-leading-dash",
+            "UPPER",
+            "with space",
+            "semi;rm",
+            "$(whoami)",
+            "../etc/passwd",
+            "name\nwith\nnewline",
+        ] {
+            assert!(parse_pkg_name(bad).is_err(), "should reject '{bad}'");
+        }
+    }
 
     #[test]
     fn parse_pool_minimal() {
@@ -590,6 +639,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| args.location.clone()),
         ),
+        ("extraPackages", args.extra_packages.join(" ")),
     ];
 
     if monitoring_enabled {
@@ -632,6 +682,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
             accounting_enabled,
             shared_storage: args.shared_storage.clone(),
             grafana_location: args.grafana_location.clone(),
+            extra_packages: args.extra_packages.clone(),
         };
         let pending_path = pending.save()?;
         eprintln!("==> saved pending deploy -> {}", pending_path.display());
@@ -752,6 +803,7 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 template: None,
                 what_if: false,
                 no_wait: false,
+                extra_packages: pending.extra_packages.clone(),
             };
             finalize_deploy(
                 &synthetic_args,
@@ -832,6 +884,7 @@ fn finalize_deploy(
                     .collect()
             })
             .unwrap_or_default(),
+        extra_packages: args.extra_packages.clone(),
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());

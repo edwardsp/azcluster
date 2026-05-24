@@ -15,6 +15,8 @@ pub struct ClusterState {
     pub anf_mount_ip: Option<String>,
     #[serde(default)]
     pub compute_vmss_names: Vec<String>,
+    #[serde(default)]
+    pub extra_packages: Vec<String>,
 }
 
 fn project_dirs() -> Result<ProjectDirs> {
@@ -54,6 +56,8 @@ pub struct PendingDeploy {
     pub shared_storage: String,
     #[serde(default)]
     pub grafana_location: Option<String>,
+    #[serde(default)]
+    pub extra_packages: Vec<String>,
 }
 
 impl PendingDeploy {
@@ -180,6 +184,7 @@ mod tests {
             accounting_enabled: false,
             shared_storage: "anf".into(),
             grafana_location: Some("uksouth".into()),
+            extra_packages: vec!["git-lfs".into(), "python3.12-venv".into()],
         };
         let ser = toml::to_string(&p).unwrap();
         let de: PendingDeploy = toml::from_str(&ser).unwrap();
@@ -187,5 +192,22 @@ mod tests {
         assert_eq!(de.resource_group, p.resource_group);
         assert_eq!(de.grafana_location.as_deref(), Some("uksouth"));
         assert!(!de.accounting_enabled);
+        assert_eq!(de.extra_packages, vec!["git-lfs", "python3.12-venv"]);
+    }
+
+    #[test]
+    fn pending_deploy_backward_compat_without_extra_packages() {
+        // v0.19.0 / v0.19.1 markers had no extra_packages field; must still parse.
+        let body = r#"cluster = "demo"
+deployment_name = "azcluster-demo-x"
+resource_group = "rg-azcluster-demo"
+started_at = "2026-05-24T07:20:35Z"
+monitoring_enabled = true
+accounting_enabled = false
+shared_storage = "anf"
+"#;
+        let de: PendingDeploy = toml::from_str(body).unwrap();
+        assert_eq!(de.cluster, "demo");
+        assert!(de.extra_packages.is_empty());
     }
 }

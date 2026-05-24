@@ -32,6 +32,7 @@ write_files:
       ACCT_MYSQL_USER={{ACCT_MYSQL_USER}}
       ACCT_MYSQL_DB={{ACCT_MYSQL_DB}}
       LDAP_BASE_DN=dc=azcluster,dc=local
+      EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"
   - path: /etc/azcluster/accounting.password
     permissions: '0600'
     owner: 'root:root'
@@ -108,6 +109,10 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
       . /etc/azcluster/install.env
+
+      if [ -n "${EXTRA_PACKAGES:-}" ]; then
+        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}
+      fi
 
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmctld /var/log/slurm /etc/slurm /opt/pyxis
 
@@ -473,7 +478,10 @@ write_files:
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_CODENAME} main" > /etc/apt/sources.list.d/azure-cli.list
       apt-get -o DPkg::Lock::Timeout=600 update
       apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends azure-cli
-      az login --identity --client-id {{UAI_CLIENT_ID}} --only-show-errors >/dev/null
+      # Defensive login: scheduler UAI may have no subscription RBAC under
+      # --no-monitoring --no-accounting test mode. No `az` calls follow on
+      # the scheduler itself, so a failed login is tolerable.
+      az login --identity --client-id {{UAI_CLIENT_ID}} --only-show-errors >/dev/null 2>&1 || true
 
       NODE_EXP_VER=1.8.2
       cd /tmp
@@ -606,6 +614,30 @@ write_files:
       systemctl restart slapd
       systemctl enable slapd
       unset LDAP_ADMIN_PW
+
+      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \
+        sssd sssd-ldap sssd-tools libnss-sss
+      cat > /etc/sssd/sssd.conf <<EOF
+      [sssd]
+      domains = azcluster
+      config_file_version = 2
+      services = nss, pam
+
+      [domain/azcluster]
+      id_provider = ldap
+      auth_provider = ldap
+      ldap_uri = ldap://127.0.0.1
+      ldap_search_base = dc=azcluster,dc=local
+      enumerate = false
+      cache_credentials = true
+      override_homedir = /shared/home/%u
+      entry_cache_timeout = 60
+      entry_cache_user_timeout = 60
+      EOF
+      chmod 0600 /etc/sssd/sssd.conf
+      chown root:root /etc/sssd/sssd.conf
+      systemctl enable --now sssd
+      systemctl restart slurmctld
 
       chmod 0755 /shared
       install -d -m 0755 -o root -g root /shared/home

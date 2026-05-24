@@ -31,6 +31,7 @@ write_files:
       SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}
       SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
+      EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"
       ENROOT_VERSION=4.0.1
   - path: /etc/apt/preferences.d/slurm-repository-pin-990
     permissions: '0644'
@@ -66,6 +67,10 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
       . /etc/azcluster/install.env
+
+      if [ -n "${EXTRA_PACKAGES:-}" ]; then
+        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}
+      fi
 
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /run/enroot
 
@@ -217,7 +222,7 @@ write_files:
       mkdir -p /etc/enroot /etc/enroot/environ.d
       cat > /etc/enroot/enroot.conf <<'EOF'
       ENROOT_RUNTIME_PATH    /var/lib/enroot/runtime/user-$(id -u)
-      ENROOT_CACHE_PATH      /var/lib/enroot-data/cache
+      ENROOT_CACHE_PATH      /var/lib/enroot-data/cache/user-$(id -u)
       ENROOT_DATA_PATH       /var/lib/enroot-data/user-$(id -u)
       ENROOT_TEMP_PATH       /run/enroot
       ENROOT_SQUASH_OPTIONS  -comp lzo -noI

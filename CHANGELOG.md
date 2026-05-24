@@ -5,8 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-05-24
+
+### Added
+- **`azcluster deploy --extra-package <pkg>` (repeatable)**: installs arbitrary apt packages on every node (scheduler / login / compute) right after the cluster.env / install.env sources during cloud-init, before any service starts. Validated live on `southafricanorth` with `--extra-package git-lfs --extra-package python3.12-venv` — both packages report `ii` on scheduler, login, and compute after deploy. Empty default; package names are validated CLI-side against `^[a-z0-9][a-z0-9+.:-]*$` (regex-free Rust validator). Persisted in `ClusterState` + `PendingDeploy` (`extra_packages: Vec<String>` with `#[serde(default)]` for backward compat) and threaded through Bicep (`extraPackages` param on `main.bicep` → `cluster.bicep` → `modules/{scheduler,login,compute}.bicep`).
+- **Scheduler-side SSSD** so `getent passwd <ldap-user>` and `id <ldap-user>` resolve on the scheduler too (previously only login + compute did). Wired against the local `slapd` via `ldap://127.0.0.1` (NOT `ldapi:///` — see Fixed below). `services = nss, pam` only; no `ssh` provider needed (operators don't SSH as LDAP users to the scheduler). Followed by `systemctl restart slurmctld` to clear any cached uid lookups from before SSSD came up.
+- **Per-user enroot CACHE path** on every compute node: `/etc/enroot/enroot.conf` now sets `ENROOT_CACHE_PATH /var/lib/enroot-data/cache/user-$(id -u)`. Parent dir `/var/lib/enroot-data/cache/` is already mounted on `/mnt/nvme` (the NVMe RAID-0) via the existing v0.13.5 symlink, and is 1777-sticky so each user's subdir is created on first import without collision. Matches the per-user pattern used by CCWS (cyclecloud-slurm-workspace).
+- **Idempotent `azcluster deploy`**: re-running `deploy` after a crash or with a stale `<name>-secrets.toml` now reuses the persisted `ldap_admin_password` + `mysql_admin_password` instead of generating fresh ones (which ARM would reject as different from the LDAP/MySQL admin password already in the cluster). `ClusterSecrets::load_optional` is called first; if absent, fresh secrets are generated and saved before ARM submission. Surfaced by v0.17 live-validation (wrapper-CLI crash mid-deploy left ARM-Succeeded but post-deploy hooks unrun; v0.18.3 captured the symptom, v0.19.2 fixes the root cause).
+
 ### Changed
-- **`walkthrough.md` rewritten end-to-end against a live v0.19.1 v19walk run** (2× ND96isr_H100_v5, southafricanorth, 2026-05-24). Every wall-clock and throughput number is captured from that run: ARM deploy 3064 s with full per-resource breakdown, bare-metal NCCL 1n/2n × 10 reps @ 16 GiB (481.13 / 466.40 GB/s busbw), container pull (nemo:25.07.02 293 s + nccl-test 305 s), containerised NCCL 1n via torchrun / 2n via `srun --mpi=pmix python` (480.49 / 458.08 GB/s busbw), DGXC `llmb-install express` (533 s), and Llama 3.1 8B BF16 50-iter runs at scale 8 and scale 16 (12.548 / 12.515 s/iter steady, 537.6 / 538.7 TFLOPS/GPU — ~100% weak scaling at 2× GBS). Includes troubleshooting notes for the known v0.19.1 gaps (scheduler-side SSSD, per-user enroot cache, `python3.12-venv`+`git-lfs` not in cloud-init, container PMIx singleton with `all_reduce_perf`) — all tracked for v0.19.2.
+- `Cargo.toml` workspace version `0.19.1` → `0.19.2`. CLI default `--azcluster-version` bumped to `v0.19.2`.
+- `walkthrough-dgxc.md` Tier 2 rewritten as a **per-user** flow rooted at `$HOME/dgxc` (under the LDAP user's `/shared/home/<user>` shared home), not `/shared/dgxc` owned by root. Operators run `azcluster user add` once per user; users install DGXC + register their own NGC + HF tokens + `llmb-install express` themselves. Removes the implicit "operator installs DGXC globally for everyone" assumption. Notes that `python3.12-venv` is required (use `--extra-package python3.12-venv` at deploy time) and explains the per-user enroot cache.
+
+### Fixed
+- **`EXTRA_PACKAGES` env var was unquoted in install.env / cluster.env**, so when the value contained whitespace (e.g. `EXTRA_PACKAGES=git-lfs python3.12-venv`), bash parsed the line as a scoped assignment + command execution under `set -e`, exited 127 (`python3.12-venv: command not found`), and aborted `install-scheduler.sh` at line 1. Caught by live-validation on deploy `#1`. Fix: emit `EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"` (quoted) in all three templates.
+- **Scheduler `az login --identity` was unconditionally non-defensive**, so under `--no-monitoring --no-accounting` test mode (where the UAI has no subscription-level RBAC) it returned non-zero and `set -e` killed `install-scheduler.sh` mid-bootstrap. The scheduler doesn't actually invoke any `az` subcommands later, so the login was vestigial defensive code that became fatal. Fix: append `|| true 2>&1`. Pre-existing bug surfaced by deploy `#2`.
+
+### Live-validated
+- Deploy on `southafricanorth` / `rg-azcluster-v192a`, 2× ND96isr_H100_v5, `--shared-storage nfs-scheduler --no-monitoring --no-accounting --login-public-ip --extra-package git-lfs --extra-package python3.12-venv`. ARM Succeeded in 494 s. Scheduler: `dpkg -l git-lfs python3.12-venv` → both `ii`, `sssd active`, `slurmctld active`, `slapd active`, `sinfo` shows `h100*` UP idle with `v192a-h100-[0001-0002]`, `ldapsearch -H ldapi:///` works, `/var/log/azcluster/ready` present. Login: same packages installed, `sssd active`, `sackd active`. Compute (via `srun -p h100 -N1`): `ENROOT_CACHE_PATH /var/lib/enroot-data/cache/user-$(id -u)` in `/etc/enroot/enroot.conf`, both packages `ii`, `/mnt/nvme drwxrwxrwt`. LDAP user `paul` created via `azcluster user add`, `id paul` resolves on scheduler (after SSSD `ldap_uri` fix), `ssh paul@<login>` works with `/shared/home/paul` shared across nodes. Bare-metal `srun --mpi=pmix bash -c '...PMIX_RANK...'` and `srun --mpi=pmi2 bash -c '...PMI_RANK...'` both form a 4-rank world across 2 nodes; `pmi2` returns size cleanly (`size=4`), `pmix` does not populate `PMIX_SIZE` env (but does propagate `PMIX_RANK`).
+
+### Known limitations
+- **Containerised `--mpi=pmix` cross-node** still produces incomplete rank propagation when launched via Pyxis (`--container-image` per srun). The container import itself takes ~20 min on first run even with `/mnt/nvme` RAID-0 (NGC pull dominates), and re-using a per-node `--container-name` across multiple srun steps fails because pyxis container names are per-node, not global. Documented; no in-product fix in v0.19.2. Workaround: use `--mpi=pmi2` if the container's MPI stack supports it, or use the `srun --container-image=... torchrun` pattern (one container per srun, torchrun handles rendezvous over TCP) that the v0.19.1 `walkthrough.md` documents.
+
 
 
 ## [0.19.1] - 2026-05-24
@@ -622,6 +642,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
 [Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.19.1...HEAD
+[0.19.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.2
 [0.19.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.1
 [0.19.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.0
 [0.13.8]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.8

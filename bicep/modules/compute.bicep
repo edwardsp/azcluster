@@ -17,10 +17,11 @@ param amlfsMountCommand string
 param monUaiId string = ''
 param monUaiClientId string = ''
 param amwIngestionEndpoint string = ''
+param extraPackages string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/compute.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -32,7 +33,8 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{AMLFS_MOUNT_CMD}}', amlfsMountCommand),
     '{{MON_UAI_CLIENT_ID}}', monUaiClientId),
     '{{AMW_INGEST_URL}}', amwIngestionEndpoint),
-    '{{SUBSCRIPTION_ID}}', subscription().subscriptionId)
+    '{{SUBSCRIPTION_ID}}', subscription().subscriptionId),
+    '{{EXTRA_PACKAGES}}', extraPackages)
 
 var hasMonUai = !empty(monUaiId)
 
