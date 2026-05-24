@@ -5,6 +5,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+- **`walkthrough.md` rewritten end-to-end against a live v0.19.1 v19walk run** (2× ND96isr_H100_v5, southafricanorth, 2026-05-24). Every wall-clock and throughput number is captured from that run: ARM deploy 3064 s with full per-resource breakdown, bare-metal NCCL 1n/2n × 10 reps @ 16 GiB (481.13 / 466.40 GB/s busbw), container pull (nemo:25.07.02 293 s + nccl-test 305 s), containerised NCCL 1n via torchrun / 2n via `srun --mpi=pmix python` (480.49 / 458.08 GB/s busbw), DGXC `llmb-install express` (533 s), and Llama 3.1 8B BF16 50-iter runs at scale 8 and scale 16 (12.548 / 12.515 s/iter steady, 537.6 / 538.7 TFLOPS/GPU — ~100% weak scaling at 2× GBS). Includes troubleshooting notes for the known v0.19.1 gaps (scheduler-side SSSD, per-user enroot cache, `python3.12-venv`+`git-lfs` not in cloud-init, container PMIx singleton with `all_reduce_perf`) — all tracked for v0.19.2.
+
 
 ## [0.19.1] - 2026-05-24
 
