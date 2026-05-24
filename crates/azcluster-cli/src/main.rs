@@ -4,7 +4,7 @@ mod user;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use cluster_state::ClusterState;
+use cluster_state::{ClusterState, PendingDeploy};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -48,7 +48,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.18.3")]
+    #[arg(long, default_value = "v0.19.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -92,6 +92,9 @@ struct DeployArgs {
     template: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     what_if: bool,
+    /// Submit ARM with `--no-wait` and exit. Resume by re-running `azcluster deploy <name>`.
+    #[arg(long, default_value_t = false)]
+    no_wait: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -446,6 +449,11 @@ fn az_json(args: &[&str]) -> Result<serde_json::Value> {
 
 fn deploy(args: DeployArgs) -> Result<()> {
     ensure_az()?;
+
+    if let Some(pending) = PendingDeploy::load_optional(&args.name)? {
+        return resume_deploy(args, pending);
+    }
+
     let template = resolve_template(args.template.clone())?;
     let ssh_key_path = resolve_ssh_key(args.ssh_key.clone())?;
     let ssh_key = std::fs::read_to_string(&ssh_key_path)
@@ -463,13 +471,18 @@ fn deploy(args: DeployArgs) -> Result<()> {
         _ => "[]".to_string(),
     };
 
-    if let Some(rg) = args.resource_group.as_deref() {
+    let resolved_rg = args
+        .resource_group
+        .clone()
+        .unwrap_or_else(|| format!("rg-azcluster-{}", args.name));
+
+    if args.resource_group.is_some() {
         let status = Command::new("az")
             .args([
                 "group",
                 "create",
                 "--name",
-                rg,
+                &resolved_rg,
                 "--location",
                 &args.location,
                 "--tags",
@@ -529,6 +542,19 @@ fn deploy(args: DeployArgs) -> Result<()> {
         None => gen_mysql_password()?,
     };
 
+    let secrets_to_save = cluster_state::ClusterSecrets {
+        ldap_admin_password: ldap_password.clone(),
+        mysql_admin_password: if accounting_enabled {
+            Some(mysql_password.clone())
+        } else {
+            existing_secrets
+                .as_ref()
+                .and_then(|s| s.mysql_admin_password.clone())
+        },
+    };
+    let secrets_path = secrets_to_save.save(&args.name)?;
+    eprintln!("==> saved cluster secrets -> {}", secrets_path.display());
+
     let mut params: Vec<(&str, String)> = vec![
         ("clusterName", args.name.clone()),
         ("location", args.location.clone()),
@@ -587,11 +613,19 @@ fn deploy(args: DeployArgs) -> Result<()> {
     for (k, v) in &params {
         az_args.push(format!("{k}={v}"));
     }
+    if args.no_wait && !args.what_if {
+        az_args.push("--no-wait".into());
+    }
 
     eprintln!(
-        "==> az deployment sub {} --name {}",
+        "==> az deployment sub {} --name {}{}",
         if args.what_if { "what-if" } else { "create" },
-        deployment_name
+        deployment_name,
+        if args.no_wait && !args.what_if {
+            " (--no-wait)"
+        } else {
+            ""
+        }
     );
     let status = Command::new("az")
         .args(&az_args)
@@ -605,12 +639,122 @@ fn deploy(args: DeployArgs) -> Result<()> {
         return Ok(());
     }
 
+    if args.no_wait {
+        let pending = PendingDeploy {
+            cluster: args.name.clone(),
+            deployment_name: deployment_name.clone(),
+            resource_group: resolved_rg.clone(),
+            started_at: utc_iso8601(),
+            monitoring_enabled,
+            accounting_enabled,
+            shared_storage: args.shared_storage.clone(),
+            grafana_location: args.grafana_location.clone(),
+        };
+        let pending_path = pending.save()?;
+        eprintln!("==> saved pending deploy -> {}", pending_path.display());
+        eprintln!(
+            "==> ARM deployment '{}' submitted. Re-run `azcluster deploy --name {}` (same args) to resume and run post-deploy hooks once ARM completes.",
+            deployment_name, args.name
+        );
+        eprintln!("==> Track progress with: azcluster status {}", args.name);
+        return Ok(());
+    }
+
+    finalize_deploy(
+        &args,
+        &deployment_name,
+        &resolved_rg,
+        &sub_id,
+        accounting_enabled,
+        monitoring_enabled,
+        &ldap_password,
+        &mysql_password,
+        existing_secrets.as_ref(),
+    )
+}
+
+fn resume_deploy(args: DeployArgs, pending: PendingDeploy) -> Result<()> {
+    let resolved_rg = args
+        .resource_group
+        .clone()
+        .unwrap_or_else(|| format!("rg-azcluster-{}", args.name));
+    if pending.resource_group != resolved_rg {
+        bail!(
+            "pending deploy for cluster '{}' targets resource group '{}', not '{}'. Remove ~/.config/azcluster/clusters/{}-pending.toml or pass --resource-group {} to resume.",
+            args.name,
+            pending.resource_group,
+            resolved_rg,
+            args.name,
+            pending.resource_group
+        );
+    }
+
+    eprintln!(
+        "==> found pending deploy {} (started {}); resuming",
+        pending.deployment_name, pending.started_at
+    );
+
+    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
+        .as_str()
+        .ok_or_else(|| anyhow!("subscription id not a string"))?
+        .to_string();
+
+    let terminal = poll_deployment_until_terminal(&pending.deployment_name)?;
+    match terminal.as_str() {
+        "Succeeded" => {
+            let existing_secrets = cluster_state::ClusterSecrets::load_optional(&args.name)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "pending deploy resumed but secrets file ~/.config/azcluster/clusters/{}-secrets.toml is missing; cannot recover ARM secure parameters",
+                        args.name
+                    )
+                })?;
+            let ldap_password = existing_secrets.ldap_admin_password.clone();
+            let mysql_password = existing_secrets
+                .mysql_admin_password
+                .clone()
+                .unwrap_or_default();
+            finalize_deploy(
+                &args,
+                &pending.deployment_name,
+                &resolved_rg,
+                &sub_id,
+                pending.accounting_enabled,
+                pending.monitoring_enabled,
+                &ldap_password,
+                &mysql_password,
+                Some(&existing_secrets),
+            )?;
+            PendingDeploy::delete(&args.name)?;
+            Ok(())
+        }
+        other => {
+            bail!(
+                "ARM deployment {} ended in state '{}'. Run `azcluster delete {}` (or `az group delete --name {}`) and retry, then remove ~/.config/azcluster/clusters/{}-pending.toml.",
+                pending.deployment_name, other, args.name, pending.resource_group, args.name
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_deploy(
+    args: &DeployArgs,
+    deployment_name: &str,
+    resolved_rg: &str,
+    sub_id: &str,
+    accounting_enabled: bool,
+    monitoring_enabled: bool,
+    ldap_password: &str,
+    mysql_password: &str,
+    existing_secrets: Option<&cluster_state::ClusterSecrets>,
+) -> Result<()> {
     let outputs = az_json(&[
         "deployment",
         "sub",
         "show",
         "--name",
-        &deployment_name,
+        deployment_name,
         "--query",
         "properties.outputs",
         "-o",
@@ -631,12 +775,9 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     let state = ClusterState {
         name: args.name.clone(),
-        subscription_id: sub_id,
-        resource_group: args
-            .resource_group
-            .clone()
-            .unwrap_or_else(|| format!("rg-azcluster-{}", args.name)),
-        location: args.location,
+        subscription_id: sub_id.to_string(),
+        resource_group: resolved_rg.to_string(),
+        location: args.location.clone(),
         admin_username: "azureuser".into(),
         login_public_ip,
         scheduler_private_ip,
@@ -656,13 +797,11 @@ fn deploy(args: DeployArgs) -> Result<()> {
     eprintln!("==> saved cluster state -> {}", saved.display());
 
     let secrets = cluster_state::ClusterSecrets {
-        ldap_admin_password: ldap_password,
+        ldap_admin_password: ldap_password.to_string(),
         mysql_admin_password: if accounting_enabled {
-            Some(mysql_password.clone())
+            Some(mysql_password.to_string())
         } else {
-            existing_secrets
-                .as_ref()
-                .and_then(|s| s.mysql_admin_password.clone())
+            existing_secrets.and_then(|s| s.mysql_admin_password.clone())
         },
     };
     let secrets_path = secrets.save(&args.name)?;
@@ -670,7 +809,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     if let Err(e) = timings::capture(
         &args.name,
-        &deployment_name,
+        deployment_name,
         &state.resource_group,
         &args.shared_storage,
     ) {
@@ -686,6 +825,45 @@ fn deploy(args: DeployArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn poll_deployment_until_terminal(deployment_name: &str) -> Result<String> {
+    const POLL_INTERVAL_SECS: u64 = 30;
+    const MAX_WAIT_SECS: u64 = 90 * 60;
+    let started = std::time::Instant::now();
+    loop {
+        let v = az_json(&[
+            "deployment",
+            "sub",
+            "show",
+            "--name",
+            deployment_name,
+            "--query",
+            "properties.provisioningState",
+            "-o",
+            "json",
+        ])
+        .with_context(|| format!("poll {}", deployment_name))?;
+        let state = v.as_str().unwrap_or("").to_string();
+        let elapsed = started.elapsed().as_secs();
+        eprintln!(
+            "==> deployment {} state={} elapsed={}s",
+            deployment_name, state, elapsed
+        );
+        match state.as_str() {
+            "Succeeded" | "Failed" | "Canceled" => return Ok(state),
+            _ => {}
+        }
+        if elapsed > MAX_WAIT_SECS {
+            bail!(
+                "deployment {} still in state '{}' after {}s; aborting poll",
+                deployment_name,
+                state,
+                elapsed
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS));
+    }
 }
 
 fn current_principal() -> Result<(String, String)> {
@@ -840,6 +1018,22 @@ fn gen_mysql_password() -> Result<String> {
     Ok(out)
 }
 
+fn utc_iso8601() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days_since_epoch = (secs / 86400) as i64;
+    let (y, m, d) = civil_from_days(days_since_epoch);
+    let rem = secs % 86400;
+    let (hh, mm, ss) = (
+        (rem / 3600) as u32,
+        ((rem % 3600) / 60) as u32,
+        (rem % 60) as u32,
+    );
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -964,7 +1158,80 @@ fn scale(args: ScaleArgs) -> Result<()> {
 }
 
 fn status(args: StatusArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let pending = PendingDeploy::load_optional(&args.name)?;
+    let state_opt = ClusterState::load(&args.name).ok();
+
+    if state_opt.is_none() && pending.is_none() {
+        bail!(
+            "no state or pending deploy for cluster '{}'. Run `azcluster deploy --name {}` first.",
+            args.name,
+            args.name
+        );
+    }
+
+    if let Some(p) = pending.as_ref() {
+        println!("pending deploy:    {}", p.deployment_name);
+        println!("  started:         {}", p.started_at);
+        println!("  resource group:  {}", p.resource_group);
+        match az_json(&[
+            "deployment",
+            "sub",
+            "show",
+            "--name",
+            &p.deployment_name,
+            "--query",
+            "properties.provisioningState",
+            "-o",
+            "json",
+        ]) {
+            Ok(v) => println!("  ARM state:       {}", v.as_str().unwrap_or("?")),
+            Err(e) => println!("  ARM state:       ERR ({e:#})"),
+        }
+        match az_json(&[
+            "deployment",
+            "operation",
+            "sub",
+            "list",
+            "--name",
+            &p.deployment_name,
+            "--query",
+            "[].properties.provisioningState",
+            "-o",
+            "json",
+        ]) {
+            Ok(arr) => {
+                if let Some(list) = arr.as_array() {
+                    let mut succ = 0usize;
+                    let mut run = 0usize;
+                    let mut fail = 0usize;
+                    let mut other = 0usize;
+                    for v in list {
+                        match v.as_str().unwrap_or("") {
+                            "Succeeded" => succ += 1,
+                            "Running" => run += 1,
+                            "Failed" => fail += 1,
+                            _ => other += 1,
+                        }
+                    }
+                    println!(
+                        "  operations:      {} total ({} succeeded, {} running, {} failed, {} other)",
+                        list.len(), succ, run, fail, other
+                    );
+                }
+            }
+            Err(e) => println!("  operations:      ERR ({e:#})"),
+        }
+        println!();
+    }
+
+    let Some(state) = state_opt else {
+        println!(
+            "no cluster state yet. Once the ARM deployment succeeds, re-run `azcluster deploy --name {}` to finalize.",
+            args.name
+        );
+        return Ok(());
+    };
+
     println!("name:              {}", state.name);
     println!("resource group:    {}", state.resource_group);
     println!("location:          {}", state.location);
@@ -1007,34 +1274,93 @@ fn status(args: StatusArgs) -> Result<()> {
             }
         }
     }
+
+    if state.login_public_ip.is_some() {
+        println!("bootstrap probe:");
+        bootstrap_probe(&state);
+    }
+
     Ok(())
+}
+
+fn bootstrap_probe(state: &ClusterState) {
+    let Some(login_ip) = state.login_public_ip.as_deref() else {
+        return;
+    };
+    let login_target = format!("{}@{}", state.admin_username, login_ip);
+    let probe = |label: &str, host: &str| {
+        let target = format!("{}@{}", state.admin_username, host);
+        let mut cmd = Command::new("ssh");
+        cmd.args([
+            "-o",
+            "ConnectTimeout=8",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        ]);
+        if host != login_ip {
+            cmd.args(["-J", &login_target]);
+        }
+        cmd.args([
+            &target,
+            "tail -n1 /var/log/azcluster/install.log 2>/dev/null || echo '<no log yet>'",
+        ]);
+        match cmd.output() {
+            Ok(o) if o.status.success() => {
+                let line = String::from_utf8_lossy(&o.stdout);
+                println!("  {label}: {}", line.trim());
+            }
+            Ok(o) => println!(
+                "  {label}: ERR ({}: {})",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => println!("  {label}: ERR ({e})"),
+        }
+    };
+    probe("login    ", login_ip);
+    probe("scheduler", &state.scheduler_private_ip);
 }
 
 fn delete(args: DeleteArgs) -> Result<()> {
     ensure_az()?;
-    let state = ClusterState::load(&args.name)?;
+    let (cluster_name, resource_group) = match ClusterState::load(&args.name) {
+        Ok(s) => (s.name, s.resource_group),
+        Err(_) => match PendingDeploy::load_optional(&args.name)? {
+            Some(p) => (p.cluster, p.resource_group),
+            None => bail!(
+                "no state or pending deploy for cluster '{}'; nothing to delete",
+                args.name
+            ),
+        },
+    };
     if !args.yes {
         eprint!(
             "Delete resource group '{}' (cluster '{}')? Type cluster name to confirm: ",
-            state.resource_group, state.name
+            resource_group, cluster_name
         );
         std::io::Write::flush(&mut std::io::stderr()).ok();
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
-        if line.trim() != state.name {
+        if line.trim() != cluster_name {
             bail!("aborted");
         }
     }
     eprintln!(
         "==> az group delete --name {} --yes --no-wait",
-        state.resource_group
+        resource_group
     );
     let st = Command::new("az")
         .args([
             "group",
             "delete",
             "--name",
-            &state.resource_group,
+            &resource_group,
             "--yes",
             "--no-wait",
         ])
@@ -1042,11 +1368,12 @@ fn delete(args: DeleteArgs) -> Result<()> {
     if !st.success() {
         bail!("az group delete failed");
     }
-    let path = cluster_state::state_path(&state.name)?;
+    let path = cluster_state::state_path(&cluster_name)?;
     if path.exists() {
         std::fs::remove_file(&path).ok();
         eprintln!("==> removed local state {}", path.display());
     }
+    PendingDeploy::delete(&cluster_name).ok();
     Ok(())
 }
 

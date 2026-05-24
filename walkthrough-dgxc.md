@@ -11,7 +11,7 @@ The smoke test is the recommended first run after `azcluster deploy`. The full f
 
 ## Prereqs
 
-- A live azcluster cluster ≥ v0.13.5 with at least one `Standard_ND96isr_H100_v5` node available. Example:
+- A live azcluster cluster ≥ v0.18.3 with at least one `Standard_ND96isr_H100_v5` node available. Example:
   ```bash
   azcluster deploy \
     --name dgxc \

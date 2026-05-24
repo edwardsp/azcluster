@@ -8,7 +8,7 @@ This walks through the full happy path:
 4. Interpret the result.
 5. Tear the cluster down.
 
-It was validated end-to-end against azcluster v0.13.4 on 2026-05-22. Wall-clock for a fresh deploy: ~54 minutes (ANF + monitoring + accounting all on).
+It was validated end-to-end against azcluster v0.18.3 on 2026-05-24. Wall-clock for a fresh deploy: ~54 minutes (ANF + monitoring + accounting all on).
 
 ---
 
@@ -22,7 +22,7 @@ It was validated end-to-end against azcluster v0.13.4 on 2026-05-22. Wall-clock 
 ## 1. Install the CLI
 
 ```bash
-VERSION=v0.13.4
+VERSION=v0.18.3
 ARCH=x86_64-linux        # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -73,7 +73,7 @@ If `sinfo` shows nodes in state `INVAL` (invalid registration), see the troubles
 
 ## 4. Bare-metal NCCL all-reduce (HPC-X path)
 
-The marketplace image (`microsoft-dsvm:ubuntu-hpc:2404`) ships HPC-X 2.25.1 and prebuilt `nccl-tests` at `/opt/nccl-tests/build/`. Run them directly on the host (no container) — this is the fastest, most reliable path on Azure today.
+The marketplace image (`microsoft-dsvm:ubuntu-hpc:2404`) ships HPC-X 2.25.1 and prebuilt `nccl-tests` at `/opt/nccl-tests/build/`. Running them directly on the host (no container) is the simplest path; the Pyxis-container path in §5 is the production path and on NDv5 H100 reaches the same NCCL throughput.
 
 A ready-to-use sbatch is dropped at `/shared/examples/nccl-allreduce.sbatch` by every scheduler bootstrap. From the login VM:
 

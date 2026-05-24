@@ -21,6 +21,18 @@ If a PR touches code but skips any of these three, it is incomplete.
 5. Commit, tag `vX.Y.Z`, push tag — CI publishes the release.
 6. Live-validate on `paul-azcluster`/`southafricanorth` before declaring done.
 
+## v0.19.0 deploy UX (`--no-wait` + resume + enhanced status)
+
+- **`--no-wait`** is plumbed through `clap` on `DeployArgs` and appended verbatim to `az deployment sub create`. CLI exits after writing `~/.config/azcluster/clusters/<name>-pending.toml` (`PendingDeploy` schema: `cluster, deployment_name, resource_group, started_at (UTC iso8601), monitoring_enabled, accounting_enabled, shared_storage, grafana_location`). Secrets MUST be persisted **before** `az deployment sub create` returns — ARM secure parameters are not retrievable from `properties.outputs`, so the resume path needs them on local disk. v0.19.0 enforces this by calling `secrets.save(...)` before building the `az` argv.
+- **Resume**. Re-running `azcluster deploy --name <name> …` with the pending file present jumps into `resume_deploy()` (skips template/SSH-key resolution, skips `az group create`, skips a fresh ARM submission). Polls `az deployment sub show --query properties.provisioningState` every 30 s (cap 90 min). On `Succeeded` it loads the persisted `ClusterSecrets` and calls `finalize_deploy()` (state file, timings capture, dashboard import), then `PendingDeploy::delete`. On `Failed`/`Canceled` it aborts with a recovery hint pointing at `azcluster delete` + manual pending-file removal — does NOT auto-tear-down.
+- **`finalize_deploy()`** is the single post-ARM path. Same call signature for blocking and resume flows. Takes the resolved RG explicitly (computed once at deploy start) so resume doesn't have to redo the `unwrap_or_else(|| format!("rg-azcluster-{}", name))` dance.
+- **`azcluster status`** now tolerates the no-state-file case (pending-only) AND the pending-and-state-file case (post-finalize but pending marker not yet cleaned up). SSH probe uses `BatchMode=yes`, `ConnectTimeout=8`, `StrictHostKeyChecking=accept-new`, `UserKnownHostsFile=/dev/null`, `LogLevel=ERROR`. Scheduler probe goes via ProxyJump through login. Both probes are best-effort — any SSH error prints `ERR (...)` and the command continues.
+- **`azcluster delete`** now falls back from `ClusterState::load` to `PendingDeploy::load_optional`, so an aborted `--no-wait` deploy is still tearable down via the CLI. Both files are removed on success.
+- Pending file path: `~/.config/azcluster/clusters/<name>-pending.toml`. State path: `~/.config/azcluster/clusters/<name>.toml`. Secrets: `~/.config/azcluster/clusters/<name>-secrets.toml`. Do not rename without grepping all three across `main.rs` + `cluster_state.rs`.
+- **`Command::new("ssh").args(["host", "--", "bash", "-lc", "cmd"])` is BROKEN** (v0.19.0 fix). OpenSSH whitespace-joins all positional remote args before passing them to the remote login shell, so the remote sees `bash -lc cmd arg1 arg2` and bash parses it as `-c 'cmd'` (ignoring everything after). When you need to run a multi-token shell command via `ssh`, pass it as a single string positional arg: `cmd.args(["host", "tail -n1 /path 2>/dev/null || echo MISSING"])`. The login shell on the remote will then parse and exec it correctly. Live-bitten by `bootstrap_probe` in v0.19.0 before live-validation caught it.
+
+
+
 ## Hard Rules (carried from earlier sessions)
 
 - **No CycleCloud / Jetpack / CCWS references** in any public artifact (README, code, commits, tags, release notes). Past mentions were already scrubbed; don't reintroduce them.

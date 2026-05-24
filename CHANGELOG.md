@@ -6,6 +6,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 ## [Unreleased]
 
 
+## [0.19.0] - 2026-05-24
+
+### Added
+- **`azcluster deploy --no-wait`** submits the ARM deployment with `--no-wait` and exits ~immediately after persisting cluster secrets and a `PendingDeploy` marker at `~/.config/azcluster/clusters/<name>-pending.toml`. Removes the previous requirement that the operator keep their shell/CLI alive for 7-15 minutes during provisioning. Re-running `azcluster deploy --name <name>` (with the same args) detects the pending marker, polls `az deployment sub show` every 30 s (cap 90 min), and on `Succeeded` runs all post-deploy hooks (state file, timings capture, Grafana dashboard import) before deleting the pending marker. If the deployment ended in `Failed`/`Canceled`, the resume aborts with a one-line recovery hint pointing at `azcluster delete` + manual pending-file removal.
+- **`PendingDeploy` state file** (`{cluster, deployment_name, resource_group, started_at, monitoring_enabled, accounting_enabled, shared_storage, grafana_location}`) with `save/load_optional/delete`. Round-trip unit test in `cluster_state.rs`.
+- **`azcluster status <name>` now surfaces ARM phase + cloud-init progress.** If a `PendingDeploy` marker exists it prints the ARM provisioning state and operation roll-up (`N total: X succeeded, Y running, Z failed`). If the cluster state file already exists AND the login VM has a public IP, the command also runs a short SSH probe (`ConnectTimeout=8`, `BatchMode=yes`) against `login` and (via ProxyJump) `scheduler`, printing the last line of `/var/log/azcluster/install.log` from each. Both probes are best-effort — an SSH failure prints `ERR (...)` and the command continues. Status also now works against a `--no-wait` deploy that hasn't finalized yet (no state file required).
+- **`azcluster delete <name>` works without a state file** when only a pending marker exists, so an aborted `--no-wait` deploy can still be torn down via the CLI. Always removes both the state file and the pending marker if present.
+
+### Changed
+- `deploy()` refactored: `finalize_deploy()` helper extracts all post-ARM work (state save, secrets persist, timings, dashboard import); `resume_deploy()` handles the pending-marker path; `poll_deployment_until_terminal()` shared by resume. `ClusterSecrets` are now persisted BEFORE `az deployment sub create` returns so a `--no-wait` deploy can resume after operator logout or laptop loss (ARM secure parameters are not retrievable from `properties.outputs`).
+- Workspace version `0.18.3` → `0.19.0`. CLI default `--azcluster-version` bumped to `v0.19.0`.
+
+### Fixed
+- **`bootstrap_probe` in `azcluster status` was silently returning empty.** The probe invoked `ssh ... "--" "bash" "-lc" "tail -n1 /var/log/..."` via `Command::new("ssh").args(...)`. OpenSSH whitespace-joins all positional remote args before exec on the remote side, so the remote login shell received `bash -lc tail -n1 /var/log/...` — bash parsed that as `-c 'tail'` and ignored the rest (tail with no args reads stdin, returning nothing immediately). Live-validated on `v19uxtest`: both `login` and `scheduler` probes printed empty after a successful deploy. Fix: pass the remote command as a single string (`tail -n1 /var/log/azcluster/install.log 2>/dev/null || echo '<no log yet>'`); ssh's join-then-exec then yields the correct shell command. After the fix the probe correctly prints `Executing: /usr/lib/systemd/systemd-sysv-install enable sssd` (login) and `... enable slapd` (scheduler) — the cloud-init checkpoints.
+
+### Deferred
+- **Entra ID (`aad-login`) integration** deferred to v0.19.1 / v0.20. Plan is Momus-approved (`.sisyphus/plans/v0.19-aad-login.md`), blocked only by the interactive device-code flow being explicitly excluded from automated testing.
+
+
 ## [0.18.3] - 2026-05-24
 
 ### Added
@@ -585,7 +604,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.13.8...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.0
 [0.13.8]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.8
 [0.13.7]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.7
 [0.13.6]: https://github.com/edwardsp/azcluster/releases/tag/v0.13.6

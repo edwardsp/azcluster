@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.18.3)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. v0.14 drops the `azcluster tunnel` requirement from `azcluster scale`. v0.15 adds `azcluster validate --multi-node` for a 2-node Pyxis + (optional) NCCL smoke. v0.16 ships `azhealthcheck`, a small Rust binary on every compute node invoked by Slurm `HealthCheckProgram` every 5 min; 5 dep-free checks drain misbehaving nodes automatically. v0.16.1 fixes a v0.16 regression where a leftover legacy wrapper in `cloud-init/compute.yaml.tmpl` overwrote the v0.16 wrapper and self-drained every CPU node every 5 min. v0.17 wires `azhealthcheck` into Prometheus via the node_exporter textfile collector and ships a `Node Health Checks` Grafana dashboard. **v0.18 adds LDAP-backed user management.** The scheduler runs `slapd` (`dc=azcluster,dc=local`); login + compute nodes resolve users via `sssd`; sshd authenticates against `sshPublicKey` LDAP attribute via `sss_ssh_authorizedkeys`; home directories live under `/shared/home/<user>` on the cluster-wide NFS share. New `azcluster user {add,remove,list,sshkey {add,remove,list}}` CLI manages directory entries over SSH-jump. **v0.18.1** fixes four v0.18.0 regressions discovered in live-validation: (a) the `cn=uidNext` LDIF lacked a STRUCTURAL objectClass and aborted the scheduler bootstrap; (b) the openssh-lpk + base-LDIF idempotency guards were racy and gave no recovery path; (c) `/shared` came up `0770 nobody:nogroup` from ANF and blocked LDAP users from traversing to their home directories — bootstrap now `chmod 0755 /shared`; (d) the CLI sent the LDAP admin password over ssh-jump stdin, which is silently dropped by `bash -lc '$(cat)'` under OpenSSH ProxyJump + no-PTY — CLI now inlines a base64-encoded password directly in the remote command line (no stdin). **v0.18.3** ships two operator-UX wins: (1) `azcluster user add/remove` and `azcluster user sshkey add/remove` now push `sss_cache -u <user>` on the login VM after the LDAP write succeeds, so SSH-with-the-new-key works within a couple of seconds instead of the v0.18.2 60 s TTL bound (best-effort — falls back to the 60 s `entry_cache_timeout` on flush failure); (2) `azcluster deploy` is now idempotent — if `~/.config/azcluster/clusters/<name>-secrets.toml` already exists the CLI reuses the persisted `ldap_admin_password` (and `mysql_admin_password` when accounting is on) instead of generating fresh ones that ARM would reject on a second invocation. Entra ID (`aad-login`) integration still deferred to v0.19. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Status (v0.19.0)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. Llama 3.1 8B BF16 trains at **167,594 tok/s on 16 H100 (2 node)** and **83,737 tok/s on 8 H100 (1 node)** via `llmb-run submit` against the DGXC v25.11 toolchain — strong scaling 2.001×. Cross-node containerised NCCL all-reduce inside `nvcr.io/nvidia/nemo:25.07.02` (16-rank, 2 node × 8 H100, SHARP + GPUDirect RDMA) is live-validated end-to-end. **v0.19 ships deploy-UX**: `azcluster deploy --no-wait` returns ~immediately after submitting the ARM deployment; re-running `azcluster deploy --name <name>` (with the same args) resumes from the persisted pending marker, polls ARM, and runs all post-deploy hooks (state file, timings JSON, Grafana dashboard import). `azcluster status` now surfaces ARM phase + operation roll-up, and runs an 8 s SSH bootstrap probe against login + scheduler to print the last `cloud-init` install log line. `azcluster delete` works on pending-only clusters too. Entra ID (`aad-login`) integration still deferred to v0.19.1 / v0.20. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.18.3
+VERSION=v0.19.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -169,6 +169,20 @@ azcluster deploy \
 ```
 
 `nfs-scheduler` exports `/shared` from the scheduler VM. SPOF, test only.
+
+### Fire-and-forget deploy (`--no-wait`)
+
+Add `--no-wait` to any deploy command to submit the ARM deployment and return immediately. The CLI persists a pending marker at `~/.config/azcluster/clusters/<name>-pending.toml`; re-run the same `azcluster deploy --name <name> …` later (after laptop reboot, hours later, from a different shell — same args) to resume, poll ARM, and run post-deploy hooks (state file, timings JSON, Grafana dashboard import) once it succeeds. Track progress meanwhile with `azcluster status <name>`, which prints ARM provisioning state, operation roll-up, and an 8 s SSH probe of `/var/log/azcluster/install.log` on login + scheduler.
+
+```bash
+azcluster deploy --name demo --location southafricanorth --no-wait \
+  --resource-group my-rg \
+  --shared-storage nfs-scheduler --no-monitoring --no-accounting \
+  --pool name=cpu,sku=Standard_D8as_v5,count=1,default --login-public-ip
+# ... go for coffee ...
+azcluster status demo               # ARM phase + per-node cloud-init progress
+azcluster deploy --name demo ...    # same args → resume + finalize
+```
 
 ### Add Lustre (AMLFS) on top of ANF
 

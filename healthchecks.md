@@ -208,7 +208,7 @@ After fixing the underlying issue (e.g. rebooting to clear an Xid 79), the opera
 
 These were considered and deferred:
 
-- **DCGM-backed checks** (`gpu_dcgm`, `gpu_nvlink`): NVLink CRC errors, thermal throttle, ECC events. Needs either libdcgm bindings (Rust FFI) or a `nvidia-smi -q` parser. Deferred to v0.17. The current checks catch hard failures; DCGM would catch slow degradation.
+- **DCGM-backed checks** (`gpu_dcgm`, `gpu_nvlink`): NVLink CRC errors, thermal throttle, ECC events. Needs either libdcgm bindings (Rust FFI) or a `nvidia-smi -q` parser. Backlog (not pinned to a release). The current checks catch hard failures; DCGM would catch slow degradation.
 - **Intrusive diagnostics** (`gpu_diag`): NCCL p2p ring tests, IB loopback, etc. Too expensive to run every 5 min on an allocated node — would interfere with the user's job. Belongs to a separate `azcluster diag` operator command, not the periodic health check.
 - **Azure GHR (GPU Health Report) integration**: would let us call the Azure-side health API and surface platform-reported issues (e.g. node marked unhealthy by the Azure-side telemetry pipeline). Not implemented; could be added as a sixth check that polls IMDS or the Azure API via the node's UAI.
 - **Self-undrain on recovery**: see above; intentional.

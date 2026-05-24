@@ -36,6 +36,56 @@ pub fn secrets_path(name: &str) -> Result<PathBuf> {
         .join(format!("{name}-secrets.toml")))
 }
 
+pub fn pending_path(name: &str) -> Result<PathBuf> {
+    Ok(project_dirs()?
+        .config_dir()
+        .join("clusters")
+        .join(format!("{name}-pending.toml")))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingDeploy {
+    pub cluster: String,
+    pub deployment_name: String,
+    pub resource_group: String,
+    pub started_at: String,
+    pub monitoring_enabled: bool,
+    pub accounting_enabled: bool,
+    pub shared_storage: String,
+    #[serde(default)]
+    pub grafana_location: Option<String>,
+}
+
+impl PendingDeploy {
+    pub fn save(&self) -> Result<PathBuf> {
+        let path = pending_path(&self.cluster)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, toml::to_string_pretty(self)?)?;
+        Ok(path)
+    }
+
+    pub fn load_optional(name: &str) -> Result<Option<Self>> {
+        let path = pending_path(name)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let body =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let s: Self = toml::from_str(&body).with_context(|| format!("parse {}", path.display()))?;
+        Ok(Some(s))
+    }
+
+    pub fn delete(name: &str) -> Result<()> {
+        let path = pending_path(name)?;
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterSecrets {
     pub ldap_admin_password: String,
@@ -117,5 +167,25 @@ mod tests {
         let de: ClusterSecrets = toml::from_str(&ser).unwrap();
         assert_eq!(de.ldap_admin_password, "ldap-pw");
         assert_eq!(de.mysql_admin_password.as_deref(), Some("mysql-pw"));
+    }
+
+    #[test]
+    fn pending_deploy_round_trip() {
+        let p = PendingDeploy {
+            cluster: "demo".into(),
+            deployment_name: "azcluster-demo-20260524-072035".into(),
+            resource_group: "rg-azcluster-demo".into(),
+            started_at: "2026-05-24T07:20:35Z".into(),
+            monitoring_enabled: true,
+            accounting_enabled: false,
+            shared_storage: "anf".into(),
+            grafana_location: Some("uksouth".into()),
+        };
+        let ser = toml::to_string(&p).unwrap();
+        let de: PendingDeploy = toml::from_str(&ser).unwrap();
+        assert_eq!(de.deployment_name, p.deployment_name);
+        assert_eq!(de.resource_group, p.resource_group);
+        assert_eq!(de.grafana_location.as_deref(), Some("uksouth"));
+        assert!(!de.accounting_enabled);
     }
 }
