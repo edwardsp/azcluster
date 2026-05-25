@@ -122,6 +122,9 @@ param ldapAdminPassword string
 @description('Space-joined list of extra apt packages to install on every node (scheduler, login, compute). Each token validated CLI-side against ^[a-z0-9][a-z0-9.+-]*$.')
 param extraPackages string = ''
 
+@description('Provision an Azure Bastion (Standard SKU with native client tunneling) for SSH access without a public IP on login.')
+param enableBastion bool = false
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -171,6 +174,7 @@ module cluster 'cluster.bicep' = {
     mysqlAdminPassword: mysqlAdminPassword
     ldapAdminPassword: ldapAdminPassword
     extraPackages: extraPackages
+    enableBastion: enableBastion
     tags: commonTags
   }
 }
@@ -184,3 +188,6 @@ output amlfsMountCommand string = cluster.outputs.amlfsMountCommand
 output computeVmssNames array = cluster.outputs.computeVmssNames
 output grafanaEndpoint string = cluster.outputs.grafanaEndpoint
 output grafanaName string = cluster.outputs.grafanaName
+output bastionName string = cluster.outputs.bastionName
+output bastionDnsName string = cluster.outputs.bastionDnsName
+output bastionId string = cluster.outputs.bastionId

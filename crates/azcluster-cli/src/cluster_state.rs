@@ -19,6 +19,14 @@ pub struct ClusterState {
     pub extra_packages: Vec<String>,
     #[serde(default)]
     pub accounting_enabled: bool,
+    #[serde(default)]
+    pub bastion_enabled: bool,
+    #[serde(default)]
+    pub bastion_name: Option<String>,
+    #[serde(default)]
+    pub bastion_dns_name: Option<String>,
+    #[serde(default)]
+    pub bastion_resource_id: Option<String>,
 }
 
 fn project_dirs() -> Result<ProjectDirs> {
@@ -60,6 +68,8 @@ pub struct PendingDeploy {
     pub grafana_location: Option<String>,
     #[serde(default)]
     pub extra_packages: Vec<String>,
+    #[serde(default)]
+    pub bastion_enabled: bool,
 }
 
 impl PendingDeploy {
@@ -187,6 +197,7 @@ mod tests {
             shared_storage: "anf".into(),
             grafana_location: Some("uksouth".into()),
             extra_packages: vec!["git-lfs".into(), "python3.12-venv".into()],
+            bastion_enabled: true,
         };
         let ser = toml::to_string(&p).unwrap();
         let de: PendingDeploy = toml::from_str(&ser).unwrap();
@@ -195,6 +206,7 @@ mod tests {
         assert_eq!(de.grafana_location.as_deref(), Some("uksouth"));
         assert!(!de.accounting_enabled);
         assert_eq!(de.extra_packages, vec!["git-lfs", "python3.12-venv"]);
+        assert!(de.bastion_enabled);
     }
 
     #[test]

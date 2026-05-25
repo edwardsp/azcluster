@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.41.2.15936",
-      "templateHash": "7095494556143946297"
+      "templateHash": "4767594409521853019"
     }
   },
   "parameters": {
@@ -235,6 +235,13 @@
       "metadata": {
         "description": "Space-joined list of extra apt packages to install on every node (scheduler, login, compute). Each token validated CLI-side against ^[a-z0-9][a-z0-9.+-]*$."
       }
+    },
+    "enableBastion": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Provision an Azure Bastion (Standard SKU with native client tunneling) for SSH access without a public IP on login."
+      }
     }
   },
   "variables": {
@@ -348,6 +355,9 @@
           "extraPackages": {
             "value": "[parameters('extraPackages')]"
           },
+          "enableBastion": {
+            "value": "[parameters('enableBastion')]"
+          },
           "tags": {
             "value": "[variables('commonTags')]"
           }
@@ -359,7 +369,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.41.2.15936",
-              "templateHash": "15336051245824623971"
+              "templateHash": "11321023491643078184"
             }
           },
           "parameters": {
@@ -450,6 +460,10 @@
               "type": "string",
               "defaultValue": ""
             },
+            "enableBastion": {
+              "type": "bool",
+              "defaultValue": false
+            },
             "tags": {
               "type": "object"
             }
@@ -502,6 +516,9 @@
                   "allowedSshCidrs": {
                     "value": "[parameters('allowedSshCidrs')]"
                   },
+                  "enableBastion": {
+                    "value": "[parameters('enableBastion')]"
+                  },
                   "tags": {
                     "value": "[parameters('tags')]"
                   }
@@ -513,7 +530,7 @@
                     "_generator": {
                       "name": "bicep",
                       "version": "0.41.2.15936",
-                      "templateHash": "5837235101481616058"
+                      "templateHash": "8121719448525178875"
                     }
                   },
                   "parameters": {
@@ -529,11 +546,93 @@
                     "allowedSshCidrs": {
                       "type": "array"
                     },
+                    "enableBastion": {
+                      "type": "bool",
+                      "defaultValue": false
+                    },
                     "tags": {
                       "type": "object"
                     }
                   },
                   "variables": {
+                    "baseSubnets": [
+                      {
+                        "name": "scheduler",
+                        "properties": {
+                          "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 1)]",
+                          "networkSecurityGroup": {
+                            "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]"
+                          },
+                          "natGateway": {
+                            "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                          }
+                        }
+                      },
+                      {
+                        "name": "login",
+                        "properties": {
+                          "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 2)]",
+                          "networkSecurityGroup": {
+                            "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-login', parameters('clusterName')))]"
+                          },
+                          "natGateway": {
+                            "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                          }
+                        }
+                      },
+                      {
+                        "name": "compute",
+                        "properties": {
+                          "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 22, 1)]",
+                          "networkSecurityGroup": {
+                            "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]"
+                          },
+                          "natGateway": {
+                            "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                          }
+                        }
+                      },
+                      {
+                        "name": "anf",
+                        "properties": {
+                          "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 26, 0)]",
+                          "delegations": [
+                            {
+                              "name": "netapp",
+                              "properties": {
+                                "serviceName": "Microsoft.Netapp/volumes"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "name": "amlfs",
+                        "properties": {
+                          "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 3)]"
+                        }
+                      },
+                      {
+                        "name": "database",
+                        "properties": {
+                          "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 29, 256)]",
+                          "delegations": [
+                            {
+                              "name": "mysql-flex",
+                              "properties": {
+                                "serviceName": "Microsoft.DBforMySQL/flexibleServers"
+                              }
+                            }
+                          ],
+                          "serviceEndpoints": [
+                            {
+                              "service": "Microsoft.Storage"
+                            }
+                          ]
+                        }
+                      }
+                    ],
+                    "bastionSubnets": "[if(parameters('enableBastion'), createArray(createObject('name', 'AzureBastionSubnet', 'properties', createObject('addressPrefix', cidrSubnet(parameters('vnetAddressPrefix'), 26, 1)))), createArray())]",
                     "effectiveSshCidrs": "[if(empty(parameters('allowedSshCidrs')), createArray('Internet'), parameters('allowedSshCidrs'))]"
                   },
                   "resources": [
@@ -635,83 +734,7 @@
                             "[parameters('vnetAddressPrefix')]"
                           ]
                         },
-                        "subnets": [
-                          {
-                            "name": "scheduler",
-                            "properties": {
-                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 1)]",
-                              "networkSecurityGroup": {
-                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]"
-                              },
-                              "natGateway": {
-                                "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
-                              }
-                            }
-                          },
-                          {
-                            "name": "login",
-                            "properties": {
-                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 2)]",
-                              "networkSecurityGroup": {
-                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-login', parameters('clusterName')))]"
-                              },
-                              "natGateway": {
-                                "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
-                              }
-                            }
-                          },
-                          {
-                            "name": "compute",
-                            "properties": {
-                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 22, 1)]",
-                              "networkSecurityGroup": {
-                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]"
-                              },
-                              "natGateway": {
-                                "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
-                              }
-                            }
-                          },
-                          {
-                            "name": "anf",
-                            "properties": {
-                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 26, 0)]",
-                              "delegations": [
-                                {
-                                  "name": "netapp",
-                                  "properties": {
-                                    "serviceName": "Microsoft.Netapp/volumes"
-                                  }
-                                }
-                              ]
-                            }
-                          },
-                          {
-                            "name": "amlfs",
-                            "properties": {
-                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 3)]"
-                            }
-                          },
-                          {
-                            "name": "database",
-                            "properties": {
-                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 29, 256)]",
-                              "delegations": [
-                                {
-                                  "name": "mysql-flex",
-                                  "properties": {
-                                    "serviceName": "Microsoft.DBforMySQL/flexibleServers"
-                                  }
-                                }
-                              ],
-                              "serviceEndpoints": [
-                                {
-                                  "service": "Microsoft.Storage"
-                                }
-                              ]
-                            }
-                          }
-                        ]
+                        "subnets": "[concat(variables('baseSubnets'), variables('bastionSubnets'))]"
                       },
                       "dependsOn": [
                         "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]",
@@ -745,6 +768,10 @@
                       "type": "string",
                       "value": "[format('{0}/subnets/database', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
                     },
+                    "bastionSubnetId": {
+                      "type": "string",
+                      "value": "[if(parameters('enableBastion'), format('{0}/subnets/AzureBastionSubnet', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName')))), '')]"
+                    },
                     "vnetId": {
                       "type": "string",
                       "value": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName')))]"
@@ -752,6 +779,118 @@
                   }
                 }
               }
+            },
+            {
+              "condition": "[parameters('enableBastion')]",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "bastion",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "subnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.bastionSubnetId.value]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "6982818419046992043"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "subnetId": {
+                      "type": "string"
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Network/publicIPAddresses",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('pip-{0}-bastion', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "Standard"
+                      },
+                      "properties": {
+                        "publicIPAllocationMethod": "Static"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Network/bastionHosts",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('bastion-{0}', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "Standard"
+                      },
+                      "properties": {
+                        "enableTunneling": true,
+                        "ipConfigurations": [
+                          {
+                            "name": "bastion-ipconfig",
+                            "properties": {
+                              "subnet": {
+                                "id": "[parameters('subnetId')]"
+                              },
+                              "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-bastion', parameters('clusterName')))]"
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-bastion', parameters('clusterName')))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "bastionId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.Network/bastionHosts', format('bastion-{0}', parameters('clusterName')))]"
+                    },
+                    "bastionDnsName": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.Network/bastionHosts', format('bastion-{0}', parameters('clusterName'))), '2024-01-01').dnsName]"
+                    },
+                    "bastionName": {
+                      "type": "string",
+                      "value": "[format('bastion-{0}', parameters('clusterName'))]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'network')]"
+              ]
             },
             {
               "condition": "[equals(parameters('sharedStorageMode'), 'anf')]",
@@ -2306,6 +2445,18 @@
             "grafanaName": {
               "type": "string",
               "value": "[if(parameters('enableMonitoring'), reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.grafanaName.value, '')]"
+            },
+            "bastionName": {
+              "type": "string",
+              "value": "[if(parameters('enableBastion'), reference(resourceId('Microsoft.Resources/deployments', 'bastion'), '2025-04-01').outputs.bastionName.value, '')]"
+            },
+            "bastionDnsName": {
+              "type": "string",
+              "value": "[if(parameters('enableBastion'), reference(resourceId('Microsoft.Resources/deployments', 'bastion'), '2025-04-01').outputs.bastionDnsName.value, '')]"
+            },
+            "bastionId": {
+              "type": "string",
+              "value": "[if(parameters('enableBastion'), reference(resourceId('Microsoft.Resources/deployments', 'bastion'), '2025-04-01').outputs.bastionId.value, '')]"
             }
           }
         }
@@ -2351,6 +2502,18 @@
     "grafanaName": {
       "type": "string",
       "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.grafanaName.value]"
+    },
+    "bastionName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.bastionName.value]"
+    },
+    "bastionDnsName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.bastionDnsName.value]"
+    },
+    "bastionId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.bastionId.value]"
     }
   }
 }

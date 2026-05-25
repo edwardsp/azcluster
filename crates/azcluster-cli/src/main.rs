@@ -37,6 +37,20 @@ enum CliCommand {
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
     User(UserArgs),
+    /// Internal: stdio bridge through Azure Bastion (used as ssh ProxyCommand).
+    #[command(hide = true)]
+    BastionProxy(BastionProxyArgs),
+}
+
+#[derive(Args)]
+struct BastionProxyArgs {
+    #[arg(long)]
+    cluster: String,
+    /// login | scheduler
+    #[arg(long, default_value = "login")]
+    target: String,
+    #[arg(long, default_value_t = 22)]
+    port: u16,
 }
 
 #[derive(Args)]
@@ -66,7 +80,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.20.0")]
+    #[arg(long, default_value = "v0.21.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -116,6 +130,9 @@ struct DeployArgs {
     /// Extra apt packages to install on every node (scheduler, login, compute). Repeatable. Validated against a Debian package name grammar subset (`^[a-z0-9][a-z0-9.+-]*$`). Example: --extra-package git-lfs --extra-package python3.12-venv
     #[arg(long = "extra-package", action = clap::ArgAction::Append, value_parser = parse_pkg_name)]
     extra_packages: Vec<String>,
+    /// Provision an Azure Bastion (Standard SKU with native client tunneling) for SSH access without a public IP on login. Opt-in (~$140/month). Enables `azcluster ssh/exec/tunnel` to auto-route via Bastion when login has no public IP.
+    #[arg(long, default_value_t = false)]
+    bastion: bool,
 }
 
 #[derive(Args)]
@@ -265,6 +282,9 @@ struct ConnectArgs {
     /// Hop through login to the scheduler VM.
     #[arg(long, default_value_t = false)]
     scheduler: bool,
+    /// Disable auto-routing through Azure Bastion when no login public IP is set.
+    #[arg(long, default_value_t = false)]
+    no_bastion: bool,
 }
 
 #[derive(Args)]
@@ -275,6 +295,9 @@ struct ExecArgs {
     /// Hop through login to the scheduler VM.
     #[arg(long, default_value_t = false)]
     scheduler: bool,
+    /// Disable auto-routing through Azure Bastion when no login public IP is set.
+    #[arg(long, default_value_t = false)]
+    no_bastion: bool,
     #[arg(trailing_var_arg = true, required = true)]
     cmd: Vec<String>,
 }
@@ -452,6 +475,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         CliCommand::User(args) => user_dispatch(args),
+        CliCommand::BastionProxy(args) => bastion_proxy(args),
     }
 }
 
@@ -702,6 +726,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
                 .unwrap_or_else(|| args.location.clone())),
         ),
         ("extraPackages", json!(args.extra_packages.join(" "))),
+        ("enableBastion", json!(args.bastion)),
     ];
 
     if monitoring_enabled {
@@ -739,6 +764,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
         shared_storage: args.shared_storage.clone(),
         grafana_location: args.grafana_location.clone(),
         extra_packages: args.extra_packages.clone(),
+        bastion_enabled: args.bastion,
     };
     let pending_path = pending.save()?;
     eprintln!("==> saved pending deploy -> {}", pending_path.display());
@@ -857,6 +883,7 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 what_if: false,
                 no_wait: false,
                 extra_packages: pending.extra_packages.clone(),
+                bastion: pending.bastion_enabled,
             };
             finalize_deploy(
                 &synthetic_args,
@@ -934,6 +961,10 @@ fn finalize_deploy(
             .unwrap_or_default(),
         extra_packages: args.extra_packages.clone(),
         accounting_enabled,
+        bastion_enabled: args.bastion,
+        bastion_name: pick("bastionName").filter(|s| !s.is_empty()),
+        bastion_dns_name: pick("bastionDnsName").filter(|s| !s.is_empty()),
+        bastion_resource_id: pick("bastionId").filter(|s| !s.is_empty()),
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());
@@ -1158,28 +1189,93 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
+fn should_use_bastion(state: &ClusterState, no_bastion_flag: bool) -> bool {
+    !no_bastion_flag && state.bastion_enabled && state.login_public_ip.is_none()
+}
+
+fn target_vm_resource_id(state: &ClusterState, target: &str) -> Result<String> {
+    let suffix = match target {
+        "login" => "login",
+        "scheduler" => "scheduler",
+        other => bail!("unknown bastion target '{other}' (login|scheduler)"),
+    };
+    Ok(format!(
+        "/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachines/vm-{}-{}",
+        state.subscription_id, state.resource_group, state.name, suffix
+    ))
+}
+
+fn self_exe_path() -> Result<String> {
+    let p = std::env::current_exe().context("locate current azcluster binary")?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
+fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
+    let state = ClusterState::load(&args.cluster)?;
+    if !state.bastion_enabled {
+        bail!("cluster '{}' was not deployed with --bastion", args.cluster);
+    }
+    let bastion_dns = state
+        .bastion_dns_name
+        .as_deref()
+        .ok_or_else(|| anyhow!("bastion DNS name missing from cluster state"))?
+        .to_string();
+    let resource_id = target_vm_resource_id(&state, &args.target)?;
+    let port = args.port;
+
+    let access_token = get_access_token()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for bastion proxy")?;
+    rt.block_on(async move {
+        let client = std::sync::Arc::new(bastion::BastionClient::new(access_token));
+        bastion::run_stdio_bridge(client, bastion_dns, resource_id, port).await
+    })
+}
+
 fn ssh(args: ConnectArgs) -> Result<()> {
     let state = ClusterState::load(&args.name)?;
-    let host = state.login_public_ip.as_deref().ok_or_else(|| {
-        anyhow!(
-            "cluster '{}' has no login public IP. Redeploy with --login-public-ip or use a jumpbox.",
-            args.name
-        )
-    })?;
-    let login_target = format!("{}@{}", state.admin_username, host);
+    let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
     cmd.args(["-A", "-L", &forward]);
     if let Some(id) = &args.identity {
         cmd.args(["-i", &id.display().to_string()]);
     }
-    if args.scheduler {
-        let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
-        cmd.args(["-J", &login_target, &sched_target]);
-        eprintln!("==> ssh -J {login_target} {sched_target}");
+    if use_bastion {
+        let exe = self_exe_path()?;
+        let target_name = if args.scheduler { "scheduler" } else { "login" };
+        let host_ip = if args.scheduler {
+            state.scheduler_private_ip.clone()
+        } else {
+            "127.0.0.1".to_string()
+        };
+        let target = format!("{}@{}", state.admin_username, host_ip);
+        let proxy = format!(
+            "{} bastion-proxy --cluster {} --target {}",
+            exe, args.name, target_name
+        );
+        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        cmd.arg(&target);
+        eprintln!("==> ssh via Bastion -> {target_name}");
     } else {
-        cmd.arg(&login_target);
-        eprintln!("==> ssh -L {forward} {login_target}");
+        let host = state.login_public_ip.as_deref().ok_or_else(|| {
+            anyhow!(
+                "cluster '{}' has no login public IP and bastion is not enabled. \
+                 Redeploy with --login-public-ip or --bastion.",
+                args.name
+            )
+        })?;
+        let login_target = format!("{}@{}", state.admin_username, host);
+        if args.scheduler {
+            let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
+            cmd.args(["-J", &login_target, &sched_target]);
+            eprintln!("==> ssh -J {login_target} {sched_target}");
+        } else {
+            cmd.arg(&login_target);
+            eprintln!("==> ssh -L {forward} {login_target}");
+        }
     }
     let status = cmd.status().context("spawn ssh")?;
     std::process::exit(status.code().unwrap_or(1));
@@ -1187,13 +1283,7 @@ fn ssh(args: ConnectArgs) -> Result<()> {
 
 fn tunnel(args: ConnectArgs) -> Result<()> {
     let state = ClusterState::load(&args.name)?;
-    let host = state.login_public_ip.as_deref().ok_or_else(|| {
-        anyhow!(
-            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
-            args.name
-        )
-    })?;
-    let target = format!("{}@{}", state.admin_username, host);
+    let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
     cmd.args([
@@ -1208,11 +1298,34 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
     if let Some(id) = &args.identity {
         cmd.args(["-i", &id.display().to_string()]);
     }
-    cmd.arg(&target);
-    eprintln!(
-        "==> tunnel localhost:{} -> {}:8443 (Ctrl-C to stop)",
-        args.local_port, state.scheduler_private_ip
-    );
+    if use_bastion {
+        let exe = self_exe_path()?;
+        let target = format!("{}@127.0.0.1", state.admin_username);
+        let proxy = format!(
+            "{} bastion-proxy --cluster {} --target login",
+            exe, args.name
+        );
+        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        cmd.arg(&target);
+        eprintln!(
+            "==> tunnel localhost:{} -> {}:8443 via Bastion (Ctrl-C to stop)",
+            args.local_port, state.scheduler_private_ip
+        );
+    } else {
+        let host = state.login_public_ip.as_deref().ok_or_else(|| {
+            anyhow!(
+                "cluster '{}' has no login public IP and bastion is not enabled. \
+                 Redeploy with --login-public-ip or --bastion.",
+                args.name
+            )
+        })?;
+        let target = format!("{}@{}", state.admin_username, host);
+        cmd.arg(&target);
+        eprintln!(
+            "==> tunnel localhost:{} -> {}:8443 (Ctrl-C to stop)",
+            args.local_port, state.scheduler_private_ip
+        );
+    }
     let status = cmd.status().context("spawn ssh")?;
     std::process::exit(status.code().unwrap_or(1));
 }
@@ -1458,22 +1571,41 @@ fn delete(args: DeleteArgs) -> Result<()> {
 
 fn exec(args: ExecArgs) -> Result<()> {
     let state = ClusterState::load(&args.name)?;
-    let host = state.login_public_ip.as_deref().ok_or_else(|| {
-        anyhow!(
-            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
-            args.name
-        )
-    })?;
-    let login_target = format!("{}@{}", state.admin_username, host);
+    let use_bastion = should_use_bastion(&state, args.no_bastion);
     let mut cmd = Command::new("ssh");
     if let Some(id) = &args.identity {
         cmd.args(["-i", &id.display().to_string()]);
     }
-    if args.scheduler {
-        let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
-        cmd.args(["-J", &login_target, &sched_target]);
+    if use_bastion {
+        let exe = self_exe_path()?;
+        let target_name = if args.scheduler { "scheduler" } else { "login" };
+        let host_ip = if args.scheduler {
+            state.scheduler_private_ip.clone()
+        } else {
+            "127.0.0.1".to_string()
+        };
+        let target = format!("{}@{}", state.admin_username, host_ip);
+        let proxy = format!(
+            "{} bastion-proxy --cluster {} --target {}",
+            exe, args.name, target_name
+        );
+        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        cmd.arg(&target);
     } else {
-        cmd.arg(&login_target);
+        let host = state.login_public_ip.as_deref().ok_or_else(|| {
+            anyhow!(
+                "cluster '{}' has no login public IP and bastion is not enabled. \
+                 Redeploy with --login-public-ip or --bastion.",
+                args.name
+            )
+        })?;
+        let login_target = format!("{}@{}", state.admin_username, host);
+        if args.scheduler {
+            let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
+            cmd.args(["-J", &login_target, &sched_target]);
+        } else {
+            cmd.arg(&login_target);
+        }
     }
     cmd.arg("--");
     for part in &args.cmd {

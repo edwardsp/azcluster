@@ -30,6 +30,7 @@ param mysqlAdminPassword string = ''
 @secure()
 param ldapAdminPassword string
 param extraPackages string = ''
+param enableBastion bool = false
 param tags object
 
 module network 'modules/network.bicep' = {
@@ -39,6 +40,17 @@ module network 'modules/network.bicep' = {
     location: location
     vnetAddressPrefix: vnetAddressPrefix
     allowedSshCidrs: allowedSshCidrs
+    enableBastion: enableBastion
+    tags: tags
+  }
+}
+
+module bastion 'modules/bastion.bicep' = if (enableBastion) {
+  name: 'bastion'
+  params: {
+    clusterName: clusterName
+    location: location
+    subnetId: network.outputs.bastionSubnetId
     tags: tags
   }
 }
@@ -210,4 +222,7 @@ output amlfsMountCommand string = amlfsSizeTiB > 0 ? amlfs.outputs.mountCommand 
 output computeVmssNames array = [for (pool, i) in pools: compute[i].outputs.vmssName]
 output grafanaEndpoint string = enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
 output grafanaName string = enableMonitoring ? monitoring!.outputs.grafanaName : ''
+output bastionName string = enableBastion ? bastion!.outputs.bastionName : ''
+output bastionDnsName string = enableBastion ? bastion!.outputs.bastionDnsName : ''
+output bastionId string = enableBastion ? bastion!.outputs.bastionId : ''
 

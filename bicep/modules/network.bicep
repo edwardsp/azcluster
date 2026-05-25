@@ -2,7 +2,98 @@ param clusterName string
 param location string
 param vnetAddressPrefix string
 param allowedSshCidrs array
+param enableBastion bool = false
 param tags object
+
+var baseSubnets = [
+  {
+    name: 'scheduler'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 1)
+      networkSecurityGroup: {
+        id: internalNsg.id
+      }
+      natGateway: {
+        id: natGw.id
+      }
+    }
+  }
+  {
+    name: 'login'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 2)
+      networkSecurityGroup: {
+        id: loginNsg.id
+      }
+      natGateway: {
+        id: natGw.id
+      }
+    }
+  }
+  {
+    name: 'compute'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 22, 1)
+      networkSecurityGroup: {
+        id: internalNsg.id
+      }
+      natGateway: {
+        id: natGw.id
+      }
+    }
+  }
+  {
+    name: 'anf'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 26, 0)
+      delegations: [
+        {
+          name: 'netapp'
+          properties: {
+            serviceName: 'Microsoft.Netapp/volumes'
+          }
+        }
+      ]
+    }
+  }
+  {
+    name: 'amlfs'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 3)
+    }
+  }
+  {
+    name: 'database'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 29, 256)
+      delegations: [
+        {
+          name: 'mysql-flex'
+          properties: {
+            serviceName: 'Microsoft.DBforMySQL/flexibleServers'
+          }
+        }
+      ]
+      serviceEndpoints: [
+        {
+          service: 'Microsoft.Storage'
+        }
+      ]
+    }
+  }
+]
+
+// AzureBastionSubnet name is MANDATORY (Azure rejects any other name for Bastion).
+// /26 minimum required by Azure Bastion. cidrSubnet(prefix, 26, 1) lands at 10.42.0.64/26
+// for the default 10.42.0.0/16 VNet (just above the /26 anf subnet at 10.42.0.0/26).
+var bastionSubnets = enableBastion ? [
+  {
+    name: 'AzureBastionSubnet'
+    properties: {
+      addressPrefix: cidrSubnet(vnetAddressPrefix, 26, 1)
+    }
+  }
+] : []
 
 var effectiveSshCidrs = empty(allowedSshCidrs) ? [ 'Internet' ] : allowedSshCidrs
 
@@ -89,83 +180,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         vnetAddressPrefix
       ]
     }
-    subnets: [
-      {
-        name: 'scheduler'
-        properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 1)
-          networkSecurityGroup: {
-            id: internalNsg.id
-          }
-          natGateway: {
-            id: natGw.id
-          }
-        }
-      }
-      {
-        name: 'login'
-        properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 2)
-          networkSecurityGroup: {
-            id: loginNsg.id
-          }
-          natGateway: {
-            id: natGw.id
-          }
-        }
-      }
-      {
-        name: 'compute'
-        properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 22, 1)
-          networkSecurityGroup: {
-            id: internalNsg.id
-          }
-          natGateway: {
-            id: natGw.id
-          }
-        }
-      }
-      {
-        name: 'anf'
-        properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 26, 0)
-          delegations: [
-            {
-              name: 'netapp'
-              properties: {
-                serviceName: 'Microsoft.Netapp/volumes'
-              }
-            }
-          ]
-        }
-      }
-      {
-        name: 'amlfs'
-        properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 24, 3)
-        }
-      }
-      {
-        name: 'database'
-        properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 29, 256)
-          delegations: [
-            {
-              name: 'mysql-flex'
-              properties: {
-                serviceName: 'Microsoft.DBforMySQL/flexibleServers'
-              }
-            }
-          ]
-          serviceEndpoints: [
-            {
-              service: 'Microsoft.Storage'
-            }
-          ]
-        }
-      }
-    ]
+    subnets: concat(baseSubnets, bastionSubnets)
   }
 }
 
@@ -175,4 +190,5 @@ output computeSubnetId string = '${vnet.id}/subnets/compute'
 output anfSubnetId string = '${vnet.id}/subnets/anf'
 output amlfsSubnetId string = '${vnet.id}/subnets/amlfs'
 output databaseSubnetId string = '${vnet.id}/subnets/database'
+output bastionSubnetId string = enableBastion ? '${vnet.id}/subnets/AzureBastionSubnet' : ''
 output vnetId string = vnet.id

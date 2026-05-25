@@ -1,171 +1,81 @@
-//! Azure Bastion native client.
-//!
-//! Provides WebSocket-based tunneling to Azure resources via Bastion.
-//! Replaces the need for SSH ProxyCommand through Bastion.
-
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Deserialize;
 
-/// Bastion SKU types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BastionSku {
-    Basic,
-    Standard,
-    Premium,
-    Developer,
-    QuickConnect,
-}
-
-impl BastionSku {
-    /// Parse SKU from string.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "basic" => Some(BastionSku::Basic),
-            "standard" => Some(BastionSku::Standard),
-            "premium" => Some(BastionSku::Premium),
-            "developer" => Some(BastionSku::Developer),
-            "quickconnect" => Some(BastionSku::QuickConnect),
-            _ => None,
-        }
-    }
-
-    /// Check if this SKU supports native client.
-    pub fn supports_native_client(&self) -> bool {
-        matches!(
-            self,
-            BastionSku::Standard
-                | BastionSku::Premium
-                | BastionSku::Developer
-                | BastionSku::QuickConnect
-        )
-    }
-}
-
-/// Token response from Bastion API.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct BastionTokenResponse {
+    #[serde(rename = "authToken")]
     pub auth_token: String,
-    pub websocket_token: String,
-    pub node_id: String,
+    #[serde(rename = "nodeId", default)]
+    pub node_id: Option<String>,
 }
 
-/// Bastion host information.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BastionHost {
-    pub id: String,
-    pub name: String,
-    pub location: String,
-    pub sku: Option<BastionHostSku>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BastionHostSku {
-    pub name: String,
-}
-
-/// Bastion client for native WebSocket tunneling.
 pub struct BastionClient {
-    subscription_id: String,
-    access_token: String,
+    aad_access_token: String,
+    http: reqwest::Client,
 }
 
 impl BastionClient {
-    /// Create a new Bastion client.
-    pub fn new(access_token: String, subscription_id: String) -> Self {
+    pub fn new(aad_access_token: String) -> Self {
         Self {
-            subscription_id,
-            access_token,
+            aad_access_token,
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("build reqwest client"),
         }
     }
 
-    /// Get a Bastion host.
-    pub fn get_bastion_host(
+    pub async fn get_tunnel_token(
         &self,
-        resource_group: &str,
-        bastion_name: &str,
-    ) -> Result<BastionHost> {
-        let url = format!(
-            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/bastionHosts/{}?api-version=2024-01-01",
-            self.subscription_id, resource_group, bastion_name
-        );
-
-        let client = reqwest::blocking::Client::new();
-        let response = client
-            .get(&url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .context("Failed to get Bastion host")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            bail!("Get Bastion host failed ({status}): {body}");
-        }
-
-        response
-            .json()
-            .context("Failed to parse Bastion host response")
-    }
-
-    /// Get a tunnel token for a resource.
-    /// This is a placeholder; full implementation requires async WebSocket handling.
-    pub fn get_tunnel_token(
-        &self,
-        bastion_endpoint: &str,
-        resource_id: &str,
-        resource_port: u16,
+        bastion_dns: &str,
+        target_resource_id: &str,
+        target_port: u16,
+        last_token: Option<&str>,
+        node_id: Option<&str>,
     ) -> Result<BastionTokenResponse> {
-        let url = format!("https://{}/api/tokens", bastion_endpoint);
-
-        let body = json!({
-            "resourceId": resource_id,
-            "resourcePort": resource_port,
-        });
-
-        let client = reqwest::blocking::Client::new();
-        let response = client
-            .post(&url)
-            .bearer_auth(&self.access_token)
-            .json(&body)
-            .send()
-            .context("Failed to get tunnel token")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            bail!("Get tunnel token failed ({status}): {body}");
+        let url = format!("https://{}/api/tokens", bastion_dns);
+        let mut form: Vec<(String, String)> = vec![
+            ("resourceId".into(), target_resource_id.into()),
+            ("protocol".into(), "tcptunnel".into()),
+            ("workloadHostPort".into(), target_port.to_string()),
+            ("aztoken".into(), self.aad_access_token.clone()),
+        ];
+        if let Some(t) = last_token {
+            form.push(("token".into(), t.into()));
         }
-
-        response
-            .json()
-            .context("Failed to parse tunnel token response")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bastion_sku_from_str() {
-        assert_eq!(BastionSku::from_str("standard"), Some(BastionSku::Standard));
-        assert_eq!(BastionSku::from_str("PREMIUM"), Some(BastionSku::Premium));
-        assert_eq!(BastionSku::from_str("invalid"), None);
+        let mut req = self.http.post(&url).form(&form);
+        if let Some(nid) = node_id {
+            req = req.header("X-Node-Id", nid);
+        }
+        let resp = req.send().await.context("POST /api/tokens")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("Bastion get_tunnel_token failed ({status}): {body}");
+        }
+        resp.json()
+            .await
+            .context("parse Bastion token response JSON")
     }
 
-    #[test]
-    fn test_bastion_sku_supports_native_client() {
-        assert!(BastionSku::Standard.supports_native_client());
-        assert!(BastionSku::Premium.supports_native_client());
-        assert!(BastionSku::Developer.supports_native_client());
-        assert!(BastionSku::QuickConnect.supports_native_client());
-        assert!(!BastionSku::Basic.supports_native_client());
-    }
-
-    #[test]
-    fn test_bastion_client_new() {
-        let client = BastionClient::new("token".to_string(), "sub-123".to_string());
-        assert_eq!(client.subscription_id, "sub-123");
+    pub async fn delete_tunnel_token(
+        &self,
+        bastion_dns: &str,
+        token: &str,
+        node_id: Option<&str>,
+    ) -> Result<()> {
+        let url = format!("https://{}/api/tokens/{}", bastion_dns, token);
+        let mut req = self.http.delete(&url);
+        if let Some(nid) = node_id {
+            req = req.header("X-Node-Id", nid);
+        }
+        let resp = req.send().await.context("DELETE /api/tokens")?;
+        match resp.status().as_u16() {
+            200 | 204 | 404 => Ok(()),
+            code => {
+                let body = resp.text().await.unwrap_or_default();
+                bail!("Bastion delete_tunnel_token failed ({code}): {body}");
+            }
+        }
     }
 }

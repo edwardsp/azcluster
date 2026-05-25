@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-05-25
+
+### Added
+- **`--bastion` deploy flag**. Provisions Azure Bastion (Standard SKU + Standard Static public IP + `enableTunneling: true`) into a new `AzureBastionSubnet` (`10.42.0.64/26`) carved out of the cluster VNet. Adds ~3-5 min to deploy time. Use when the cluster is deployed without `--login-public-ip` (the recommended secure default) so the operator can still `ssh`/`exec`/`tunnel` into login + scheduler via Azure-native tunneling.
+- **`azcluster ssh`/`exec`/`tunnel` auto-route through Bastion** when `state.bastion_enabled && state.login_public_ip.is_none()`. The CLI sets `ProxyCommand="azcluster bastion-proxy --cluster <name> --target {login|scheduler}"` on the spawned `ssh`. With `--scheduler`, the proxy connects straight to the scheduler VM's resource ID (Bastion can tunnel to any VM in the VNet) — no `-J` jump needed. Opt-out via `--no-bastion` on any of the three commands to surface the legacy "no public IP" error.
+- **Hidden `azcluster bastion-proxy` subcommand** (`--cluster <name> --target {login|scheduler} [--port N]`). stdio bridge: fetches a Bastion tunnel token (`POST https://<bastion-fqdn>/api/tokens` form-encoded with the operator's AAD bearer), opens `wss://<endpoint>/webtunnelv2/<token>?X-Node-Id=<node>` via hand-rolled rustls + manual WS framing (Azure Bastion's WS upgrade response is non-RFC-strict — `tokio-tungstenite` rejects it), and pipes the binary WS frames to/from stdio. Designed exclusively as an `ssh ProxyCommand` consumer; `--hide`d from `--help`. Deletes the tunnel token on shutdown.
+- New `crates/azcluster-cli/src/bastion/` module: `client.rs` (Bastion token API, async `reqwest`), `tunnel.rs` (manual WS framing — opcodes 0x01/0x02/0x08/0x09/0x0A, client→server masking, 2/8-byte extended payload length, `tokio-rustls` 0.26 TLS).
+- `ClusterState` gains `bastion_enabled`, `bastion_name`, `bastion_dns_name`, `bastion_resource_id` (all `#[serde(default)]` for backward compat). `PendingDeploy` gains `bastion_enabled` for `--no-wait` → `azcluster resume` round-trips.
+
+### Changed
+- `bicep/modules/network.bicep` now accepts `enableBastion bool=false`; when true, appends `AzureBastionSubnet = cidrSubnet(vnetAddressPrefix, 26, 1)` (10.42.0.64/26) to `subnets` and exposes `bastionSubnetId`.
+- `bicep/cluster.bicep` + `bicep/main.bicep` thread `enableBastion`; cluster.bicep conditionally instantiates `module bastion 'modules/bastion.bicep' = if (enableBastion)` and surfaces `bastionId`/`bastionDnsName`/`bastionName` outputs (BCP318 warning on conditional output access matches the existing `monitoring!.outputs.*` pattern).
+- `bicep/main.json` regenerated (185306 bytes, up from 177730).
+- Workspace `Cargo.toml` adds `rustls = "0.23"`, `tokio-rustls = "0.26"`, `webpki-roots = "0.26"`, plus extra `tokio` features (`io-util`, `io-std`, `net`, `sync`, `time`); `crates/azcluster-cli/Cargo.toml` consumes them.
+
 ## [0.20.0] - 2026-05-25
 
 ### Removed

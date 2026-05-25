@@ -22,7 +22,8 @@ Legend: ✅ implemented & live-validated · 🟡 implemented, not live-tested th
 | Area | Status | Default | Options | Notes |
 |---|---|---|---|---|
 | Control plane (scheduler VM + `azcluster-server:8443`) | ✅ | on | — | Co-located `slurmctld` + control daemon |
-| Login VM | ✅ | no public IP | `--login-public-ip`, `--allowed-ssh-cidrs` | Egress via NAT Gateway |
+| Login VM | ✅ | no public IP | `--login-public-ip`, `--allowed-ssh-cidrs`, `--bastion` | Egress via NAT Gateway; `--bastion` enables Azure-native SSH tunneling without a public IP |
+| Azure Bastion (no plugin) | ✅ | off | `--bastion` (deploy), `--no-bastion` (ssh/exec/tunnel opt-out) | Standard SKU + `enableTunneling`. `azcluster ssh/exec/tunnel` auto-route through Bastion when login has no public IP. Hidden `azcluster bastion-proxy` is used as ssh `ProxyCommand` (stdio WS bridge). Hand-rolled WS framing on `tokio-rustls` — Bastion's non-RFC WS upgrade breaks `tokio-tungstenite`. |
 | Compute pools (`--pool` repeatable) | ✅ | none | any VM SKU, count, optional `default` | One VMSS Flex per pool |
 | Multi-pool partitions (CPU + GPU side by side) | ✅ | — | — | Dynamic `NodeSet+Feature` mapping in `slurm.conf` |
 | Pyxis + Enroot containers | ✅ | on | — | `srun --container-image=docker://…` validated end-to-end |
@@ -167,6 +168,22 @@ azcluster deploy \
 ```
 
 `--grafana-location` defaults to `--location`. Override when the cluster region does not host Azure Managed Grafana (e.g. `southafricanorth` → `uksouth`).
+
+### Deploy without a public IP (Azure Bastion)
+
+Drop `--login-public-ip` and add `--bastion` to provision Azure Bastion (Standard SKU + `enableTunneling`) alongside the cluster. `azcluster ssh/exec/tunnel` will auto-route through Bastion via a hidden `bastion-proxy` stdio bridge (used as ssh `ProxyCommand`). No browser, no Python plugin, no `az network bastion`.
+
+```bash
+azcluster deploy --name demo --location southafricanorth --resource-group my-rg \
+  --pool name=cpu,sku=Standard_D8as_v5,count=1,default \
+  --bastion              # adds ~3-5 min to deploy
+
+azcluster ssh demo                  # auto-routes through Bastion
+azcluster ssh demo --scheduler      # tunnels directly to scheduler VM (no -J)
+azcluster exec demo -- hostname     # one-shot exec via Bastion
+azcluster tunnel demo               # local 8443 -> scheduler:8443 via Bastion
+# add --no-bastion to any of the above to force the legacy "no public IP" error.
+```
 
 ### Rapid-test deploy (~7 min)
 
