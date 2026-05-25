@@ -168,7 +168,12 @@ impl ArmClient {
     }
 
     /// Create or update a resource group.
-    pub fn create_resource_group(&self, name: &str, location: &str, tags: Option<Value>) -> Result<Value> {
+    pub fn create_resource_group(
+        &self,
+        name: &str,
+        location: &str,
+        tags: Option<Value>,
+    ) -> Result<Value> {
         let url = format!(
             "https://management.azure.com/subscriptions/{}/resourcegroups/{}?api-version={}",
             self.subscription_id, name, self.api_versions.resource_group
@@ -250,7 +255,7 @@ impl ArmClient {
         deployment_name: &str,
     ) -> Result<Vec<Value>> {
         let operations = self.list_deployment_operations(deployment_name)?;
-        
+
         // Filter and extract timing information from operations.
         let mut results = Vec::new();
         for op in operations {
@@ -272,7 +277,7 @@ impl ArmClient {
                 let duration = props
                     .get("duration")
                     .and_then(|v| v.as_str())
-                    .and_then(|d| parse_iso8601_duration(d))
+                    .and_then(parse_iso8601_duration)
                     .unwrap_or(0.0);
 
                 results.push(json!({
@@ -327,10 +332,7 @@ mod tests {
 
     #[test]
     fn test_arm_client_new() {
-        let client = ArmClient::new(
-            "token".to_string(),
-            "sub-123".to_string(),
-        ).unwrap();
+        let client = ArmClient::new("token".to_string(), "sub-123".to_string()).unwrap();
         assert_eq!(client.subscription_id(), "sub-123");
     }
 

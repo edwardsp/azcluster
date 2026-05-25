@@ -3,6 +3,8 @@
 //! Stores tokens in JSON format at `~/.azure/azcli_tokens.json` (mode 0o600).
 //! NOT compatible with Python `az` CLI's MSAL binary cache.
 
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,10 +58,9 @@ impl TokenCache {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let content = fs::read_to_string(&path)
-            .context("Failed to read token cache")?;
-        let cache: TokenCache = serde_json::from_str(&content)
-            .context("Failed to parse token cache JSON")?;
+        let content = fs::read_to_string(&path).context("Failed to read token cache")?;
+        let cache: TokenCache =
+            serde_json::from_str(&content).context("Failed to parse token cache JSON")?;
         Ok(cache)
     }
 
@@ -69,8 +70,7 @@ impl TokenCache {
         let dir = path.parent().ok_or_else(|| anyhow!("Invalid cache path"))?;
         fs::create_dir_all(dir).context("Failed to create cache directory")?;
 
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize token cache")?;
+        let json = serde_json::to_string_pretty(self).context("Failed to serialize token cache")?;
         fs::write(&path, json).context("Failed to write token cache")?;
 
         // Set permissions to 0o600 (owner read/write only).
@@ -78,8 +78,7 @@ impl TokenCache {
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&path, perms)
-                .context("Failed to set cache file permissions")?;
+            fs::set_permissions(&path, perms).context("Failed to set cache file permissions")?;
         }
 
         Ok(())
@@ -87,8 +86,7 @@ impl TokenCache {
 
     /// Get the cache file path: `~/.azure/azcli_tokens.json`.
     fn cache_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow!("Could not determine home directory"))?;
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
         Ok(home.join(".azure").join("azcli_tokens.json"))
     }
 

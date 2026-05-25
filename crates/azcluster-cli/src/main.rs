@@ -1,9 +1,9 @@
+mod arm;
+mod auth;
+mod bastion;
 mod cluster_state;
 mod timings;
 mod user;
-mod auth;
-mod arm;
-mod bastion;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -22,7 +22,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum CliCommand {
     Version,
-    Login,
+    Login(LoginArgs),
     Deploy(Box<DeployArgs>),
     Ssh(ConnectArgs),
     Tunnel(ConnectArgs),
@@ -37,6 +37,19 @@ enum CliCommand {
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
     User(UserArgs),
+}
+
+#[derive(Args)]
+struct LoginArgs {
+    /// Use device code flow instead of opening a browser (for headless / ssh sessions).
+    #[arg(long)]
+    device_code: bool,
+    /// Entra ID tenant ID or domain to log in to. Defaults to the user's home tenant.
+    #[arg(long)]
+    tenant: Option<String>,
+    /// Subscription ID to bind to this session. Defaults to the first visible subscription.
+    #[arg(long)]
+    subscription: Option<String>,
 }
 
 #[derive(Args)]
@@ -415,7 +428,7 @@ fn main() -> Result<()> {
             println!("azcluster {}", azcluster_core::VERSION);
             Ok(())
         }
-        CliCommand::Login => login(),
+        CliCommand::Login(args) => login(args),
         CliCommand::Deploy(args) => deploy(*args),
         CliCommand::Ssh(args) => ssh(args),
         CliCommand::Tunnel(args) => tunnel(args),
@@ -472,21 +485,29 @@ fn resolve_ssh_key(explicit: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 /// Get a valid Azure access token, using native auth with fallback to az CLI.
+#[allow(dead_code)]
 fn get_access_token() -> Result<String> {
-    // First, try to get subscription and tenant info from az CLI (fast path).
-    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("subscription id not a string"))?
-        .to_string();
-
-    let tenant_id = az_json(&["account", "show", "--query", "tenantId", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("tenant id not a string"))?
-        .to_string();
-
-    // Try native token provider (with cache + refresh).
-    let mut provider = auth::TokenProvider::new(sub_id, tenant_id)?;
+    let cache = auth::TokenCache::load()?;
+    let account = cache
+        .accounts
+        .values()
+        .max_by_key(|a| a.expires_at)
+        .ok_or_else(|| anyhow!("not logged in to Azure. Run: azcluster login"))?;
+    let mut provider =
+        auth::TokenProvider::new(account.subscription_id.clone(), account.tenant_id.clone())?;
     provider.get_token()
+}
+
+#[allow(dead_code)]
+fn current_subscription_id() -> Result<String> {
+    let cache = auth::TokenCache::load()?;
+    let account = cache
+        .accounts
+        .values()
+        .filter(|a| !a.subscription_id.is_empty())
+        .max_by_key(|a| a.expires_at)
+        .ok_or_else(|| anyhow!("no active subscription. Run: azcluster login"))?;
+    Ok(account.subscription_id.clone())
 }
 
 fn ensure_az() -> Result<()> {
@@ -528,38 +549,58 @@ fn az_json(args: &[&str]) -> Result<serde_json::Value> {
     serde_json::from_slice(&out.stdout).context("parse az JSON output")
 }
 
-fn login() -> Result<()> {
-    // Get subscription and tenant info from az CLI.
-    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("subscription id not a string"))?
-        .to_string();
+fn login(args: LoginArgs) -> Result<()> {
+    let tenant = args.tenant.as_deref();
+    let account = if args.device_code {
+        auth::token_provider::run_device_code_login(tenant)?
+    } else {
+        auth::token_provider::run_interactive_login(tenant)?
+    };
 
-    let tenant_id = az_json(&["account", "show", "--query", "tenantId", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("tenant id not a string"))?
-        .to_string();
+    println!("Authenticated as: {}", account.username);
 
-    let username = az_json(&["account", "show", "--query", "user.name", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("username not a string"))?
-        .to_string();
-
-    // Try to get a token using the native provider.
-    let mut provider = auth::TokenProvider::new(sub_id.clone(), tenant_id)?;
-    let token = provider.get_token()?;
-
-    // Verify the token is valid by checking its length (JWT tokens are typically 1000+ chars).
-    if token.len() < 100 {
-        bail!("Token appears invalid (too short)");
+    let subs = auth::list_subscriptions(&account.access_token)?;
+    if subs.is_empty() {
+        bail!("Login succeeded but no subscriptions are visible to this account");
     }
 
-    println!("✓ Logged in as: {}", username);
-    println!("✓ Subscription: {}", sub_id);
-    println!("✓ Token cached at: ~/.azure/azcli_tokens.json");
+    let chosen = if let Some(want) = args.subscription.as_deref() {
+        subs.iter()
+            .find(|s| s.subscription_id == want)
+            .ok_or_else(|| anyhow!("subscription {want} not visible to this account"))?
+            .clone()
+    } else {
+        subs[0].clone()
+    };
+
+    let bound =
+        auth::token_provider::bind_subscription(&account.tenant_id, &chosen.subscription_id)?;
+
+    println!(
+        "Active subscription: {} ({})",
+        chosen.subscription_id,
+        chosen.display_name.as_deref().unwrap_or("?")
+    );
+    println!("Tenant: {}", bound.tenant_id);
+    println!("Token cached at: ~/.azure/azcli_tokens.json");
+
+    if subs.len() > 1 && args.subscription.is_none() {
+        println!();
+        println!(
+            "{} subscriptions visible. Pass --subscription <id> to pick a different one:",
+            subs.len()
+        );
+        for s in &subs {
+            println!(
+                "  {}  {}",
+                s.subscription_id,
+                s.display_name.as_deref().unwrap_or("?")
+            );
+        }
+    }
+
     Ok(())
 }
-
 
 fn deploy(args: DeployArgs) -> Result<()> {
     ensure_az()?;

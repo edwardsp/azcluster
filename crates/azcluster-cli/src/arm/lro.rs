@@ -24,11 +24,11 @@ pub struct LroConfig {
 impl Default for LroConfig {
     fn default() -> Self {
         Self {
-            initial_delay_ms: 1000,      // Start with 1 second
-            max_delay_ms: 30000,         // Cap at 30 seconds
-            backoff_multiplier: 1.5,     // 1.5x exponential backoff
-            max_total_seconds: 5400,     // 90 minutes max
-            warn_after_seconds: 300,     // Warn after 5 minutes
+            initial_delay_ms: 1000,  // Start with 1 second
+            max_delay_ms: 30000,     // Cap at 30 seconds
+            backoff_multiplier: 1.5, // 1.5x exponential backoff
+            max_total_seconds: 5400, // 90 minutes max
+            warn_after_seconds: 300, // Warn after 5 minutes
         }
     }
 }
@@ -69,7 +69,7 @@ impl LroPoller {
         // Calculate exponential backoff delay.
         let delay_ms = (self.config.initial_delay_ms as f64
             * self.config.backoff_multiplier.powi(poll_count as i32))
-            .min(self.config.max_delay_ms as f64) as u64;
+        .min(self.config.max_delay_ms as f64) as u64;
 
         Ok(Duration::from_millis(delay_ms))
     }

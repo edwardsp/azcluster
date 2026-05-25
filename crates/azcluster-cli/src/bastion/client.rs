@@ -34,7 +34,10 @@ impl BastionSku {
     pub fn supports_native_client(&self) -> bool {
         matches!(
             self,
-            BastionSku::Standard | BastionSku::Premium | BastionSku::Developer | BastionSku::QuickConnect
+            BastionSku::Standard
+                | BastionSku::Premium
+                | BastionSku::Developer
+                | BastionSku::QuickConnect
         )
     }
 }
@@ -77,7 +80,11 @@ impl BastionClient {
     }
 
     /// Get a Bastion host.
-    pub fn get_bastion_host(&self, resource_group: &str, bastion_name: &str) -> Result<BastionHost> {
+    pub fn get_bastion_host(
+        &self,
+        resource_group: &str,
+        bastion_name: &str,
+    ) -> Result<BastionHost> {
         let url = format!(
             "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Network/bastionHosts/{}?api-version=2024-01-01",
             self.subscription_id, resource_group, bastion_name
@@ -96,7 +103,9 @@ impl BastionClient {
             bail!("Get Bastion host failed ({status}): {body}");
         }
 
-        response.json().context("Failed to parse Bastion host response")
+        response
+            .json()
+            .context("Failed to parse Bastion host response")
     }
 
     /// Get a tunnel token for a resource.
@@ -107,10 +116,7 @@ impl BastionClient {
         resource_id: &str,
         resource_port: u16,
     ) -> Result<BastionTokenResponse> {
-        let url = format!(
-            "https://{}/api/tokens",
-            bastion_endpoint
-        );
+        let url = format!("https://{}/api/tokens", bastion_endpoint);
 
         let body = json!({
             "resourceId": resource_id,
@@ -131,7 +137,9 @@ impl BastionClient {
             bail!("Get tunnel token failed ({status}): {body}");
         }
 
-        response.json().context("Failed to parse tunnel token response")
+        response
+            .json()
+            .context("Failed to parse tunnel token response")
     }
 }
 
@@ -157,10 +165,7 @@ mod tests {
 
     #[test]
     fn test_bastion_client_new() {
-        let client = BastionClient::new(
-            "token".to_string(),
-            "sub-123".to_string(),
-        );
+        let client = BastionClient::new("token".to_string(), "sub-123".to_string());
         assert_eq!(client.subscription_id, "sub-123");
     }
 }

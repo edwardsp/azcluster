@@ -33,6 +33,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 webbrowser = "1"
 tokio-tungstenite = "0.21"
 toml = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+url = "2"
+rand = "0.8"
 
 [profile.release]
 strip = true
