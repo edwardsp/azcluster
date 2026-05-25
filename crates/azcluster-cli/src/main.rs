@@ -508,6 +508,12 @@ fn current_subscription_id() -> Result<String> {
     Ok(account.subscription_id.clone())
 }
 
+fn arm_client() -> Result<arm::client::ArmClient> {
+    let token = get_access_token()?;
+    let sub_id = current_subscription_id()?;
+    arm::client::ArmClient::new(token, sub_id)
+}
+
 fn ensure_az() -> Result<()> {
     let ok = Command::new("az")
         .arg("--version")
@@ -623,24 +629,14 @@ fn deploy(args: DeployArgs) -> Result<()> {
         .unwrap_or_else(|| format!("rg-azcluster-{}", args.name));
 
     if args.resource_group.is_some() {
-        let status = Command::new("az")
-            .args([
-                "group",
-                "create",
-                "--name",
-                &resolved_rg,
-                "--location",
-                &args.location,
-                "--tags",
-                "azcluster=true",
-                &format!("azcluster-name={}", args.name),
-                "-o",
-                "none",
-            ])
-            .status()?;
-        if !status.success() {
-            bail!("az group create failed");
-        }
+        let client = arm_client()?;
+        let tags = serde_json::json!({
+            "azcluster": "true",
+            "azcluster-name": args.name,
+        });
+        client
+            .create_resource_group(&resolved_rg, &args.location, Some(tags))
+            .with_context(|| format!("create resource group {}", resolved_rg))?;
     }
 
     let deployment_name = format!("azcluster-{}-{}", args.name, utc_stamp());
@@ -854,19 +850,15 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 })?;
             let ldap_password = secrets.ldap_admin_password.clone();
             let mysql_password = secrets.mysql_admin_password.clone().unwrap_or_default();
-            let location = az_json(&[
-                "group",
-                "show",
-                "--name",
-                &pending.resource_group,
-                "--query",
-                "location",
-                "-o",
-                "json",
-            ])?
-            .as_str()
-            .ok_or_else(|| anyhow!("could not resolve location for {}", pending.resource_group))?
-            .to_string();
+            let location = arm_client()?
+                .get_resource_group(&pending.resource_group)
+                .with_context(|| format!("get resource group {}", pending.resource_group))?
+                .get("location")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow!("could not resolve location for {}", pending.resource_group)
+                })?
+                .to_string();
             let synthetic_args = DeployArgs {
                 name: args.name.clone(),
                 location,
@@ -1509,22 +1501,12 @@ fn delete(args: DeleteArgs) -> Result<()> {
         }
     }
     eprintln!(
-        "==> az group delete --name {} --yes --no-wait",
+        "==> deleting resource group {} (async, no-wait)",
         resource_group
     );
-    let st = Command::new("az")
-        .args([
-            "group",
-            "delete",
-            "--name",
-            &resource_group,
-            "--yes",
-            "--no-wait",
-        ])
-        .status()?;
-    if !st.success() {
-        bail!("az group delete failed");
-    }
+    arm_client()?
+        .delete_resource_group(&resource_group)
+        .with_context(|| format!("delete resource group {}", resource_group))?;
     let path = cluster_state::state_path(&cluster_name)?;
     if path.exists() {
         std::fs::remove_file(&path).ok();
