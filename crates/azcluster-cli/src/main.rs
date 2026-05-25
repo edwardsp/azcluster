@@ -49,7 +49,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.19.2")]
+    #[arg(long, default_value = "v0.19.3")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -885,6 +885,7 @@ fn finalize_deploy(
             })
             .unwrap_or_default(),
         extra_packages: args.extra_packages.clone(),
+        accounting_enabled,
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());

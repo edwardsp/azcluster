@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-05-25
+
+### Added
+- **`azcluster user add` now auto-registers with Slurm accounting** when the cluster was deployed with `--accounting` (the default). Creates a per-user Slurm account (`sacctmgr -i add account <user> Organization=azcluster`) and adds the user with `DefaultAccount=<user>`, so `sreport user top` can break down compute usage per LDAP user. Closes the v0.19.2 footgun where `azcluster user add paul` would create the POSIX identity but `sbatch` from `paul` returned `Invalid account or account/partition combination specified` until the operator manually ran `sudo sacctmgr -i add user paul DefaultAccount=default` on the scheduler.
+- **`azcluster user remove` symmetrically deregisters** the user + per-user account from `slurm_acct_db`, in user-then-account order to respect the FK constraint. Both registration and deregistration are best-effort (non-fatal warnings on failure) so a transient `slurmdbd`/MySQL hiccup never blocks LDAP changes; the warning includes the exact copy-paste recovery command.
+- **`ClusterState` now persists `accounting_enabled: bool`** (with `#[serde(default)]` for backward compat) so the CLI can tell, after deploy, whether to run `sacctmgr` from `user add/remove`. Existing `<cluster>.toml` state files load with `accounting_enabled = false`; existing clusters keep working but won't get sacctmgr auto-registration until next deploy.
+
+### Changed
+- **`azcluster user list` now prints a formatted table** (`USERNAME`, `UID`, `GID`, `SHELL`, `GECOS`) sorted by uidNumber, instead of dumping raw LDIF. Removes the v0.19.2 "env-dump" UX where operators had to grep through `dn:` / `uidNumber:` / `gecos:` lines themselves. LDIF parser is pure-Rust (~30 LOC), no `ldap3` crate dep added.
+- `Cargo.toml` workspace version `0.19.2` → `0.19.3`. CLI default `--azcluster-version` bumped to `v0.19.3`.
+
+### Live-validated
+- Deploy on `southafricanorth` / `rg-azcluster-v193a`, 2× ND96isr_H100_v5, `--shared-storage nfs-scheduler --login-public-ip` (accounting on, monitoring off). ARM Succeeded in 1672 s; 24 resources; cluster operational with `h100*` UP idle on `v193a-h100-[0001-0002]`; `accounting_enabled=true` persisted in `~/.config/azcluster/clusters/v193a.toml`. `azcluster user list v193a` renders formatted table (USERNAME/UID/GID/SHELL/GECOS, sorted by uid) ✓. End-to-end round-trip `user remove paul && user add paul && sbatch as paul` reaches `COMPLETED` with `Account=paul` after a SINGLE CLI invocation, no manual `systemctl restart slurmctld` needed. Verified via `scontrol show assoc_mgr account=paul`: cache reflects the new uid (e.g. 20009) immediately after `user add` returns, matching `getent passwd paul` on the scheduler.
+
+### Fixed
+- **`azcluster user add/remove` left the scheduler's `slurmctld` assoc_mgr cache holding the previous uid for the same username**, so the freshly-added user couldn't `sbatch` (`Invalid account or account/partition combination`) and required an out-of-band `sudo systemctl restart slurmctld` on the scheduler. Two-layer cache caused this: (1) scheduler-side SSSD (added in v0.19.2) cached the old username→uid mapping; (2) `slurmctld`'s `assoc_mgr` resolved username→uid once via `getpwnam` at startup or first reference and held it for process lifetime — `scontrol reconfigure` does NOT invalidate the assoc_mgr cache. Fix in `user.rs`: after `sacctmgr` add/remove on the scheduler, the CLI now runs `sudo -n sss_cache -u '<user>' && sudo -n sss_cache -E` (clears scheduler SSSD) THEN `sudo -n systemctl restart slurmctld` (forces assoc_mgr to re-resolve via getpwnam against the now-fresh SSSD). 3 s post-restart sleep so the CLI returns only once slurmctld has finished loading. Live-validated: uid 20007 → 20009 in a single CLI call, immediate `sbatch` success.
+- **`sacctmgr` add/delete commands were swallowing real failures via blanket `|| true`** in the v0.19.3 first cut. Replaced with an in-shell `sacctmgr_run` retry helper that (a) preserves exit codes via `set +e`/`set -e` framing, (b) treats both `"already exists"` and Slurm's actual `"Already existing"` (capital A) duplicate-account stderr as idempotent, (c) retries up to 12 × 5 s on transient `"Connection refused"` / `"cluster has not been added"` / `"is not registered"` strings (slurmdbd bootstrap windows), (d) surfaces every other non-zero as a fatal error with the stderr captured. The trailing `sss_cache -u`, `sss_cache -E`, and `systemctl restart slurmctld` calls are intentionally `|| true` (best-effort) — these are cache-invalidation conveniences, not state-changing operations.
+
 ## [0.19.2] - 2026-05-24
 
 ### Added
@@ -642,6 +660,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
 [Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.19.1...HEAD
+[0.19.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.3
 [0.19.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.2
 [0.19.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.1
 [0.19.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.0

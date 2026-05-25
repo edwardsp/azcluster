@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.19.2)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. **v0.19.2 adds**: `--extra-package <name>` deploy flag (repeatable; installs apt packages on every scheduler/login/compute node before bootstrap completes — `--extra-package git-lfs --extra-package python3.12-venv` validated live on `southafricanorth`); per-user enroot cache path (`/var/lib/enroot-data/cache/user-$(id -u)`) so each LDAP user's container imports land on `/mnt/nvme` without colliding with others; scheduler SSSD wired against the local `slapd` via `ldap://127.0.0.1` so `getent passwd <ldap-user>` resolves on the scheduler too (previously only login + compute); idempotent `azcluster deploy` (re-running with a stale pending file or after a crash now reuses persisted secrets instead of crashing). Llama 3.1 8B BF16 throughput baselines from v0.13.9 still hold: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node), 2.001× strong scaling. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Status (v0.19.3)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 live-validated. **v0.19.3 adds**: `azcluster user add` / `user remove` now auto-register/deregister the user in Slurm accounting (per-user account, `DefaultAccount=<user>`) when the cluster was deployed with `--accounting` — no more "user exists but `sbatch` returns `Invalid account or account/partition combination`" footgun; `azcluster user list` prints a formatted table (`USERNAME UID GID SHELL GECOS`, sorted by uid) instead of dumping raw LDIF; `ClusterState` now persists `accounting_enabled` so the CLI knows whether to call sacctmgr. **v0.19.2 carryover**: `--extra-package <name>` deploy flag (repeatable; installs apt packages on every scheduler/login/compute node before bootstrap completes); per-user enroot cache path (`/var/lib/enroot-data/cache/user-$(id -u)`) so each LDAP user's container imports land on `/mnt/nvme` without colliding with others; scheduler SSSD wired against the local `slapd` via `ldap://127.0.0.1`; idempotent `azcluster deploy`. Llama 3.1 8B BF16 throughput baselines from v0.13.9 still hold: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node), 2.001× strong scaling. Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Health-check internals: [healthchecks.md](healthchecks.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
@@ -127,7 +127,7 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.19.2
+VERSION=v0.19.3
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

@@ -202,6 +202,104 @@ fn flush_login_sssd_cache(state: &ClusterState, username: &str) {
     }
 }
 
+// Wraps sacctmgr in a retry+classify shell helper.
+// Retries on transient errors ("Connection refused", "cluster has not been
+// added") because slurmdbd can take a few minutes to come up after
+// `azcluster deploy` reports success. Idempotent on "Already existing",
+// "Nothing new added", "Nothing deleted". Surfaces any other failure with
+// a non-zero exit so ssh_run propagates an Err.
+//
+// `systemctl restart slurmctld` (not `scontrol reconfigure`): slurmctld's
+// assoc_mgr caches the username->uid mapping for the process lifetime.
+// `scontrol reconfigure` re-reads slurm.conf only; it does not re-resolve
+// cached uids. Without the restart, a remove+re-add of the same username
+// with a fresh uid leaves slurmctld dispatching against the stale uid and
+// sbatch fails with "Invalid account or account/partition combination".
+// Restart cost: ~3 s, zero running-job impact (slurmd retains workload).
+const SACCTMGR_RETRY_HELPER: &str = r#"
+set -e
+sacctmgr_run() {
+  local label="$1"; shift
+  local out rc i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    set +e
+    out=$(sudo -n sacctmgr -i "$@" 2>&1)
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    case "$out" in
+      *"already exists"*|*"Already existing"*|*"Nothing new added"*|*"Nothing deleted"*) return 0 ;;
+      *"Connection refused"*|*"Unable to contact slurmdbd"*|*"slurmdbd"*[Dd]"own"*|*"cluster has not been added"*|*"is not registered"*)
+        sleep 5; continue ;;
+    esac
+    echo "sacctmgr $label FAILED rc=$rc: $out" >&2
+    return $rc
+  done
+  echo "sacctmgr $label transient after 60s, last: $out" >&2
+  return 1
+}
+"#;
+
+fn build_sacctmgr_add_cmd(username: &str) -> String {
+    format!(
+        "{helper}\n\
+         sacctmgr_run 'add account {u}' add account '{u}' \
+           Description='azcluster user {u}' Organization=azcluster\n\
+         sacctmgr_run 'add user {u}' add user '{u}' DefaultAccount='{u}'\n\
+         sudo -n sss_cache -u '{u}' >/dev/null 2>&1 || true\n\
+         sudo -n sss_cache -E >/dev/null 2>&1 || true\n\
+         sudo -n systemctl restart slurmctld >/dev/null 2>&1 || true\n\
+         sleep 3\n",
+        helper = SACCTMGR_RETRY_HELPER,
+        u = username,
+    )
+}
+
+fn build_sacctmgr_remove_cmd(username: &str) -> String {
+    format!(
+        "{helper}\n\
+         sacctmgr_run 'delete user {u}' delete user name='{u}'\n\
+         sacctmgr_run 'delete account {u}' delete account name='{u}'\n\
+         sudo -n sss_cache -u '{u}' >/dev/null 2>&1 || true\n\
+         sudo -n sss_cache -E >/dev/null 2>&1 || true\n\
+         sudo -n systemctl restart slurmctld >/dev/null 2>&1 || true\n\
+         sleep 3\n",
+        helper = SACCTMGR_RETRY_HELPER,
+        u = username,
+    )
+}
+
+fn register_slurm_account(state: &ClusterState, username: &str) {
+    let cmd = build_sacctmgr_add_cmd(username);
+    match ssh_run(state, &cmd) {
+        Ok(_) => eprintln!(
+            "==> registered '{}' with Slurm accounting (account='{}', DefaultAccount='{}')",
+            username, username, username
+        ),
+        Err(e) => {
+            eprintln!("==> warn: sacctmgr add for '{}' failed: {}", username, e);
+            eprintln!(
+                "         run on scheduler: sudo sacctmgr -i add account {u} && sudo sacctmgr -i add user {u} DefaultAccount={u}",
+                u = username
+            );
+        }
+    }
+}
+
+fn deregister_slurm_account(state: &ClusterState, username: &str) {
+    let cmd = build_sacctmgr_remove_cmd(username);
+    match ssh_run(state, &cmd) {
+        Ok(_) => eprintln!("==> deregistered '{}' from Slurm accounting", username),
+        Err(e) => {
+            eprintln!("==> warn: sacctmgr delete for '{}' failed: {}", username, e);
+            eprintln!(
+                "         run on scheduler: sudo sacctmgr -i delete user name={u} && sudo sacctmgr -i delete account name={u}",
+                u = username
+            );
+        }
+    }
+}
+
 fn build_ldap_write_cmd(password: &str, ldif: &str, tool: &str, extra_args: &str) -> String {
     let pw_b64 = b64_encode(password.as_bytes());
     let ldif_b64 = b64_encode(ldif.as_bytes());
@@ -307,6 +405,9 @@ pub fn user_add(
     ssh_run(state, &cmd)?;
     eprintln!("==> added user '{}' (uid={}, gid={})", username, uid, gid);
     flush_login_sssd_cache(state, username);
+    if state.accounting_enabled {
+        register_slurm_account(state, username);
+    }
     Ok(())
 }
 
@@ -318,7 +419,105 @@ pub fn user_remove(state: &ClusterState, username: &str) -> Result<()> {
     ssh_run(state, &cmd)?;
     eprintln!("==> removed user '{}'", username);
     flush_login_sssd_cache(state, username);
+    if state.accounting_enabled {
+        deregister_slurm_account(state, username);
+    }
     Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+struct LdapUserRow {
+    uid: String,
+    uid_number: String,
+    gid_number: String,
+    shell: String,
+    gecos: String,
+}
+
+fn parse_ldif_user_rows(ldif: &str) -> Vec<LdapUserRow> {
+    let mut rows: Vec<LdapUserRow> = Vec::new();
+    let mut cur = LdapUserRow::default();
+    let mut started = false;
+    let flush = |cur: &mut LdapUserRow, started: &mut bool, rows: &mut Vec<LdapUserRow>| {
+        if *started && !cur.uid.is_empty() {
+            rows.push(std::mem::take(cur));
+        } else {
+            *cur = LdapUserRow::default();
+        }
+        *started = false;
+    };
+    for raw in ldif.lines() {
+        let line = raw.trim_end_matches(['\r']);
+        if line.is_empty() {
+            flush(&mut cur, &mut started, &mut rows);
+            continue;
+        }
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim_start_matches(' ').to_string();
+        started = true;
+        match key {
+            "uid" => cur.uid = value,
+            "uidNumber" => cur.uid_number = value,
+            "gidNumber" => cur.gid_number = value,
+            "loginShell" => cur.shell = value,
+            "gecos" => cur.gecos = value,
+            _ => {}
+        }
+    }
+    flush(&mut cur, &mut started, &mut rows);
+    rows.sort_by(|a, b| {
+        a.uid_number
+            .parse::<u64>()
+            .unwrap_or(u64::MAX)
+            .cmp(&b.uid_number.parse::<u64>().unwrap_or(u64::MAX))
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    rows
+}
+
+fn render_user_table(rows: &[LdapUserRow]) -> String {
+    let headers = ["USERNAME", "UID", "GID", "SHELL", "GECOS"];
+    let mut widths = headers.map(|h| h.len());
+    for r in rows {
+        for (i, v) in [&r.uid, &r.uid_number, &r.gid_number, &r.shell, &r.gecos]
+            .iter()
+            .enumerate()
+        {
+            widths[i] = widths[i].max(v.len());
+        }
+    }
+    let mut out = String::new();
+    for (i, h) in headers.iter().enumerate() {
+        if i > 0 {
+            out.push_str("  ");
+        }
+        if i == headers.len() - 1 {
+            out.push_str(h);
+        } else {
+            out.push_str(&format!("{:<width$}", h, width = widths[i]));
+        }
+    }
+    out.push('\n');
+    for r in rows {
+        let cells = [&r.uid, &r.uid_number, &r.gid_number, &r.shell, &r.gecos];
+        for (i, v) in cells.iter().enumerate() {
+            if i > 0 {
+                out.push_str("  ");
+            }
+            if i == cells.len() - 1 {
+                out.push_str(v);
+            } else {
+                out.push_str(&format!("{:<width$}", v, width = widths[i]));
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 pub fn user_list(state: &ClusterState) -> Result<()> {
@@ -331,7 +530,12 @@ pub fn user_list(state: &ClusterState) -> Result<()> {
         "uid uidNumber gidNumber loginShell gecos",
     );
     let out = ssh_run(state, &cmd)?;
-    print!("{}", out);
+    let rows = parse_ldif_user_rows(&out);
+    if rows.is_empty() {
+        eprintln!("(no users)");
+        return Ok(());
+    }
+    print!("{}", render_user_table(&rows));
     Ok(())
 }
 
@@ -530,5 +734,145 @@ mod tests {
     fn flush_cmd_quotes_username() {
         let cmd = build_sssd_flush_cmd("bob_user-1");
         assert!(cmd.contains("'bob_user-1'"));
+    }
+
+    #[test]
+    fn sacctmgr_add_creates_account_then_user_with_self_default() {
+        let cmd = build_sacctmgr_add_cmd("alice");
+        assert!(cmd.contains("add account 'alice'"));
+        assert!(cmd.contains("Organization=azcluster"));
+        assert!(cmd.contains("add user 'alice' DefaultAccount='alice'"));
+        let account_pos = cmd.find("add account 'alice'").expect("account present");
+        let user_pos = cmd.find("add user 'alice'").expect("user present");
+        assert!(
+            account_pos < user_pos,
+            "account creation must precede user creation: {cmd}"
+        );
+        assert!(cmd.contains("sacctmgr_run"));
+        assert!(cmd.contains("sudo -n sacctmgr -i"));
+        assert_eq!(
+            cmd.matches("|| true").count(),
+            3,
+            "should only swallow scheduler-side sss_cache + slurmctld restart, never sacctmgr exit codes: {cmd}"
+        );
+        assert!(
+            cmd.contains("already exists") && cmd.contains("Already existing"),
+            "must treat duplicate as idempotent for both Slurm casings: {cmd}"
+        );
+        assert!(
+            cmd.contains("Connection refused") && cmd.contains("cluster has not been added"),
+            "must retry on transient slurmdbd errors: {cmd}"
+        );
+        assert!(
+            cmd.contains("sudo -n sss_cache -u 'alice'") && cmd.contains("sudo -n sss_cache -E"),
+            "must flush scheduler-side SSSD cache before slurmctld restart so getpwnam returns the new uid: {cmd}"
+        );
+        assert!(
+            cmd.contains("systemctl restart slurmctld"),
+            "must restart slurmctld to invalidate cached uid mapping after sacctmgr add: {cmd}"
+        );
+        let sss_pos = cmd
+            .find("sudo -n sss_cache -u 'alice'")
+            .expect("sss flush present");
+        let restart_pos = cmd
+            .find("systemctl restart slurmctld")
+            .expect("restart present");
+        assert!(
+            sss_pos < restart_pos,
+            "scheduler SSSD flush must precede slurmctld restart: {cmd}"
+        );
+    }
+
+    #[test]
+    fn sacctmgr_remove_drops_user_then_account() {
+        let cmd = build_sacctmgr_remove_cmd("alice");
+        assert!(cmd.contains("delete user name='alice'"));
+        assert!(cmd.contains("delete account name='alice'"));
+        let user_pos = cmd.find("delete user").expect("user present");
+        let account_pos = cmd.find("delete account").expect("account present");
+        assert!(
+            user_pos < account_pos,
+            "user deletion must precede account deletion (FK): {cmd}"
+        );
+        assert!(cmd.contains("sacctmgr_run"));
+        assert_eq!(
+            cmd.matches("|| true").count(),
+            3,
+            "should only swallow scheduler-side sss_cache + slurmctld restart, never sacctmgr exit codes: {cmd}"
+        );
+        assert!(
+            cmd.contains("sudo -n sss_cache -u 'alice'") && cmd.contains("sudo -n sss_cache -E"),
+            "must flush scheduler-side SSSD cache before slurmctld restart: {cmd}"
+        );
+        assert!(
+            cmd.contains("systemctl restart slurmctld"),
+            "must restart slurmctld to invalidate cached uid mapping after sacctmgr delete: {cmd}"
+        );
+    }
+
+    #[test]
+    fn ldif_user_rows_parse_two_users_sorted_by_uid() {
+        let ldif = "\
+dn: uid=bob,ou=people,dc=azcluster,dc=local
+uid: bob
+uidNumber: 20005
+gidNumber: 20000
+loginShell: /bin/bash
+gecos: Bob B
+
+dn: uid=alice,ou=people,dc=azcluster,dc=local
+uid: alice
+uidNumber: 20001
+gidNumber: 20000
+loginShell: /bin/zsh
+gecos: Alice A
+";
+        let rows = parse_ldif_user_rows(ldif);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].uid, "alice");
+        assert_eq!(rows[0].uid_number, "20001");
+        assert_eq!(rows[0].shell, "/bin/zsh");
+        assert_eq!(rows[1].uid, "bob");
+        assert_eq!(rows[1].uid_number, "20005");
+    }
+
+    #[test]
+    fn ldif_user_rows_empty_when_no_records() {
+        assert!(parse_ldif_user_rows("").is_empty());
+        assert!(parse_ldif_user_rows("\n\n").is_empty());
+    }
+
+    #[test]
+    fn user_table_pads_columns_and_includes_header() {
+        let rows = vec![
+            LdapUserRow {
+                uid: "alice".into(),
+                uid_number: "20001".into(),
+                gid_number: "20000".into(),
+                shell: "/bin/bash".into(),
+                gecos: "Alice".into(),
+            },
+            LdapUserRow {
+                uid: "bobbington".into(),
+                uid_number: "20002".into(),
+                gid_number: "20000".into(),
+                shell: "/bin/zsh".into(),
+                gecos: "Bob".into(),
+            },
+        ];
+        let table = render_user_table(&rows);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("USERNAME"));
+        assert!(lines[0].contains("UID"));
+        assert!(lines[0].contains("GID"));
+        assert!(lines[0].contains("SHELL"));
+        assert!(lines[0].contains("GECOS"));
+        let user_col = lines[1].split_whitespace().next().unwrap();
+        assert_eq!(user_col, "alice");
+        let user_col_2 = lines[2].split_whitespace().next().unwrap();
+        assert_eq!(user_col_2, "bobbington");
+        assert!(lines[1].contains("20001"));
+        assert!(lines[2].contains("20002"));
     }
 }

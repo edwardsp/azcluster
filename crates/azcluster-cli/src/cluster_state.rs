@@ -17,6 +17,8 @@ pub struct ClusterState {
     pub compute_vmss_names: Vec<String>,
     #[serde(default)]
     pub extra_packages: Vec<String>,
+    #[serde(default)]
+    pub accounting_enabled: bool,
 }
 
 fn project_dirs() -> Result<ProjectDirs> {
