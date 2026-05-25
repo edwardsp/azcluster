@@ -922,17 +922,12 @@ fn finalize_deploy(
     mysql_password: &str,
     existing_secrets: Option<&cluster_state::ClusterSecrets>,
 ) -> Result<()> {
-    let outputs = az_json(&[
-        "deployment",
-        "sub",
-        "show",
-        "--name",
-        deployment_name,
-        "--query",
-        "properties.outputs",
-        "-o",
-        "json",
-    ])?;
+    let deployment = arm_client()?.get_deployment(deployment_name)?;
+    let outputs = deployment
+        .get("properties")
+        .and_then(|p| p.get("outputs"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let pick = |k: &str| {
         outputs
@@ -1005,21 +1000,18 @@ fn finalize_deploy(
 fn poll_deployment_until_terminal(deployment_name: &str) -> Result<String> {
     const POLL_INTERVAL_SECS: u64 = 30;
     const MAX_WAIT_SECS: u64 = 90 * 60;
+    let client = arm_client()?;
     let started = std::time::Instant::now();
     loop {
-        let v = az_json(&[
-            "deployment",
-            "sub",
-            "show",
-            "--name",
-            deployment_name,
-            "--query",
-            "properties.provisioningState",
-            "-o",
-            "json",
-        ])
-        .with_context(|| format!("poll {}", deployment_name))?;
-        let state = v.as_str().unwrap_or("").to_string();
+        let v = client
+            .get_deployment(deployment_name)
+            .with_context(|| format!("poll {}", deployment_name))?;
+        let state = v
+            .get("properties")
+            .and_then(|p| p.get("provisioningState"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
         let elapsed = started.elapsed().as_secs();
         eprintln!(
             "==> deployment {} state={} elapsed={}s",
