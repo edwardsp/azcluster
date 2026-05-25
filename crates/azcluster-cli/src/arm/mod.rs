@@ -1,7 +1,9 @@
-//! Azure Resource Manager (ARM) REST client module.
+//! Azure Resource Manager (ARM) integration.
 //!
-//! Provides direct REST API access to Azure resources, replacing shell-out calls to `az` CLI.
+//! Provides ARM REST client, LRO polling, and related utilities.
 
 pub mod client;
+pub mod lro;
 
-pub use client::{ArmClient, ApiVersions};
+pub use client::ArmClient;
+pub use lro::{LroConfig, LroPoller};
