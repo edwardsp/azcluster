@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 webbrowser = "1"
 tokio-tungstenite = "0.21"
+toml = "0.8"
 
 [profile.release]
 strip = true
