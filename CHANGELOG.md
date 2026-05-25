@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-05-25
+
+### Fixed
+- **`/etc/slurm/*.conf` permissions regression** — when `install-scheduler.sh` (or login/compute equivalents) aborts mid-bootstrap (e.g. transient `curl 404` fetching a not-yet-published release tarball during a deploy that races CI), cloud-init's `runcmd` 0077 umask leaves slurm.conf / plugstack.conf at 0600. Non-root `srun`/`sinfo` then fails with `Permission denied`. Defense-in-depth: install scripts now `trap 'chmod 0644 /etc/slurm/*.conf' EXIT` immediately after `set -euo pipefail`, so the chmod always runs regardless of where the script aborts. Live-reproduced on `v211b` scheduler.
+- **`azcluster timings` no longer reports only the root deployment.** `timings::az_op_to_timing` now falls back to parsing `targetResource.id` for `resourceGroup`/`resourceType`/`resourceName` when ARM REST omits the explicit fields (the v0.20.0 native-ARM-REST switch surfaced this — sub-scope nested `Microsoft.Resources/deployments` entries have an `id` but no top-level `resourceGroup`, breaking the recursion gate). `collect_sub_operations` now recurses into sub-scope nested deployments via `list_subscription_deployment_operations` when the parsed rg is empty. v211b previously captured 1 op + `total -0s`; now captures all ~18 module ops + a non-negative total. Float-normalization on the sum prevents `-0.0` display.
+- **`azcluster status` bootstrap probe** — (a) prefers the `/var/log/azcluster/ready` marker over the raw `install.log` tail (now prints `READY` instead of a misleading curl 404 left in the log buffer); (b) honors bastion routing via `should_use_bastion` + the existing `bastion-proxy` ssh `ProxyCommand`, so the probe works for clusters deployed with `--bastion` and no public IP; (c) probe enabled whenever login is reachable (public IP OR bastion).
+
+### Changed
+- `cloud-init/{scheduler,login,compute}.yaml.tmpl` install scripts gain an `EXIT` trap as defense-in-depth for the chmod 0644 step.
+- `crates/azcluster-cli/src/timings.rs` adds `parse_target_id` helper + 3 unit tests covering rg-scoped, sub-scope nested deployment, and the id-fallback path.
+
 ## [0.21.1] - 2026-05-25
 
 ### Added

@@ -108,6 +108,12 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      # Defense-in-depth: cloud-init runcmd inherits a 0077 umask so heredocs
+      # produce 0600 files. The chmod block near the end of this script fixes
+      # that, but a mid-script abort (e.g. transient curl 404 fetching the
+      # release tarball) would leave /etc/slurm/*.conf at 0600 - breaks every
+      # non-root srun/sinfo. Trap on EXIT to guarantee chmod runs regardless.
+      trap 'chmod 0644 /etc/slurm/slurm.conf /etc/slurm/plugstack.conf /etc/slurm/cgroup.conf /etc/slurm/gres.conf 2>/dev/null || true' EXIT
       . /etc/azcluster/install.env
 
       if [ -n "${EXTRA_PACKAGES:-}" ]; then

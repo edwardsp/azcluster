@@ -57,6 +57,35 @@ fn parse_iso8601_duration(s: &str) -> Option<f64> {
     Some(total)
 }
 
+fn parse_target_id(id: &str) -> (Option<String>, Option<String>, Option<String>) {
+    // Two shapes we care about:
+    //   /subscriptions/<sub>/resourceGroups/<rg>/providers/<ns>/<type>/<name>[...]
+    //   /subscriptions/<sub>/providers/<ns>/<type>/<name>[...]   (sub-scope, no rg)
+    let parts: Vec<&str> = id.split('/').filter(|s| !s.is_empty()).collect();
+    let mut rg = None;
+    if let Some(pos) = parts
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case("resourceGroups"))
+    {
+        if let Some(v) = parts.get(pos + 1) {
+            rg = Some((*v).to_string());
+        }
+    }
+    let prov = parts
+        .iter()
+        .position(|s| s.eq_ignore_ascii_case("providers"));
+    let (rtype, rname) = match prov {
+        Some(p) if parts.len() >= p + 4 => {
+            let ns = parts[p + 1];
+            let typ = parts[p + 2];
+            let name = parts[p + 3];
+            (Some(format!("{ns}/{typ}")), Some(name.to_string()))
+        }
+        _ => (None, None),
+    };
+    (rg, rtype, rname)
+}
+
 fn az_op_to_timing(
     op: &Value,
     deployment: &str,
@@ -68,28 +97,41 @@ fn az_op_to_timing(
         .and_then(parse_iso8601_duration)
         .unwrap_or(0.0);
     let target = props.get("targetResource");
+    let id_str = target
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let (id_rg, id_rtype, id_rname) = if id_str.is_empty() {
+        (None, None, None)
+    } else {
+        parse_target_id(id_str)
+    };
     let rtype = target
         .and_then(|t| t.get("resourceType"))
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .map(|s| s.to_string())
+        .or(id_rtype)
+        .unwrap_or_default();
     let rname = target
         .and_then(|t| t.get("resourceName"))
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .map(|s| s.to_string())
+        .or(id_rname)
+        .unwrap_or_default();
     let rg = target
         .and_then(|t| t.get("resourceGroup"))
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+        .map(|s| s.to_string())
+        .or(id_rg)
+        .unwrap_or_default();
     let state = props
         .get("provisioningState")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let nested = if rtype == "Microsoft.Resources/deployments" && !rg.is_empty() {
-        Some((rg, rname.clone()))
+    let nested = if rtype == "Microsoft.Resources/deployments" && !rname.is_empty() {
+        // rg may be empty for sub-scope nested deployments; caller handles that.
+        Some((rg.clone(), rname.clone()))
     } else {
         None
     };
@@ -118,8 +160,13 @@ fn collect_sub_operations(client: &ArmClient, deployment: &str) -> Result<Vec<Op
         }
     }
     for (rg, module) in nested_modules {
-        if let Ok(child) = collect_group_operations(client, &rg, &module) {
-            out.extend(child);
+        let child = if rg.is_empty() {
+            collect_sub_operations(client, &module)
+        } else {
+            collect_group_operations(client, &rg, &module)
+        };
+        if let Ok(c) = child {
+            out.extend(c);
         }
     }
     Ok(out)
@@ -172,11 +219,12 @@ pub fn capture(
             && a.resource_name == b.resource_name
             && a.deployment == b.deployment
     });
-    let total = operations
+    let total: f64 = operations
         .iter()
         .filter(|o| o.resource_type != "Microsoft.Resources/deployments")
         .map(|o| o.duration_seconds)
         .sum();
+    let total = if total == 0.0 { 0.0 } else { total };
     let stamp = current_utc_stamp();
     let timing = DeploymentTiming {
         cluster: cluster.to_string(),
@@ -332,5 +380,51 @@ fn truncate(s: &str, n: usize) -> String {
         let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_target_id_rg_scoped() {
+        let (rg, t, n) = parse_target_id(
+            "/subscriptions/abc/resourceGroups/rg1/providers/Microsoft.Network/virtualNetworks/vnet0",
+        );
+        assert_eq!(rg.as_deref(), Some("rg1"));
+        assert_eq!(t.as_deref(), Some("Microsoft.Network/virtualNetworks"));
+        assert_eq!(n.as_deref(), Some("vnet0"));
+    }
+
+    #[test]
+    fn parse_target_id_sub_scoped_nested_deployment() {
+        let (rg, t, n) = parse_target_id(
+            "/subscriptions/abc/providers/Microsoft.Resources/deployments/cluster-v211b",
+        );
+        assert!(rg.is_none());
+        assert_eq!(t.as_deref(), Some("Microsoft.Resources/deployments"));
+        assert_eq!(n.as_deref(), Some("cluster-v211b"));
+    }
+
+    #[test]
+    fn az_op_to_timing_falls_back_to_id_when_fields_missing() {
+        let op = json!({
+            "properties": {
+                "duration": "PT8M58.6536497S",
+                "provisioningState": "Succeeded",
+                "targetResource": {
+                    "id": "/subscriptions/abc/providers/Microsoft.Resources/deployments/cluster-v211b"
+                }
+            }
+        });
+        let (t, nested) = az_op_to_timing(&op, "outer").unwrap();
+        assert_eq!(t.resource_type, "Microsoft.Resources/deployments");
+        assert_eq!(t.resource_name, "cluster-v211b");
+        assert!((t.duration_seconds - 538.65).abs() < 0.1);
+        let (rg, name) = nested.unwrap();
+        assert!(rg.is_empty());
+        assert_eq!(name, "cluster-v211b");
     }
 }

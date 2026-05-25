@@ -81,7 +81,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.21.1")]
+    #[arg(long, default_value = "v0.21.2")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -1640,7 +1640,9 @@ fn status(args: StatusArgs) -> Result<()> {
         }
     }
 
-    if state.login_public_ip.is_some() {
+    if state.login_public_ip.is_some()
+        || (state.bastion_enabled && state.bastion_dns_name.is_some())
+    {
         println!("bootstrap probe:");
         bootstrap_probe(&state);
     }
@@ -1649,11 +1651,28 @@ fn status(args: StatusArgs) -> Result<()> {
 }
 
 fn bootstrap_probe(state: &ClusterState) {
-    let Some(login_ip) = state.login_public_ip.as_deref() else {
+    let use_bastion = should_use_bastion(state, false);
+    let login_ip = state.login_public_ip.as_deref();
+    if !use_bastion && login_ip.is_none() {
         return;
+    }
+    let exe = if use_bastion {
+        self_exe_path().ok()
+    } else {
+        None
     };
-    let login_target = format!("{}@{}", state.admin_username, login_ip);
-    let probe = |label: &str, host: &str| {
+    let login_host = if use_bastion {
+        "127.0.0.1".to_string()
+    } else {
+        login_ip.unwrap().to_string()
+    };
+    let login_target = format!("{}@{}", state.admin_username, login_host);
+    let probe = |label: &str, is_scheduler: bool| {
+        let host = if is_scheduler {
+            state.scheduler_private_ip.clone()
+        } else {
+            login_host.clone()
+        };
         let target = format!("{}@{}", state.admin_username, host);
         let mut cmd = Command::new("ssh");
         cmd.args([
@@ -1668,17 +1687,31 @@ fn bootstrap_probe(state: &ClusterState) {
             "-o",
             "LogLevel=ERROR",
         ]);
-        if host != login_ip {
+        if use_bastion {
+            let proxy_target = if is_scheduler { "scheduler" } else { "login" };
+            let proxy_cmd = format!(
+                "{} bastion-proxy --cluster {} --target {}",
+                exe.as_deref().unwrap_or("azcluster"),
+                state.name,
+                proxy_target
+            );
+            cmd.args(["-o", &format!("ProxyCommand={proxy_cmd}")]);
+        } else if is_scheduler {
             cmd.args(["-J", &login_target]);
         }
         cmd.args([
             &target,
-            "tail -n1 /var/log/azcluster/install.log 2>/dev/null || echo '<no log yet>'",
+            "if [ -f /var/log/azcluster/ready ]; then echo READY; else tail -n1 /var/log/azcluster/install.log 2>/dev/null || echo '<no log yet>'; fi",
         ]);
         match cmd.output() {
             Ok(o) if o.status.success() => {
                 let line = String::from_utf8_lossy(&o.stdout);
-                println!("  {label}: {}", line.trim());
+                let trimmed = line.trim();
+                if trimmed == "READY" {
+                    println!("  {label}: READY");
+                } else {
+                    println!("  {label}: in-progress | last log: {trimmed}");
+                }
             }
             Ok(o) => println!(
                 "  {label}: ERR ({}: {})",
@@ -1688,8 +1721,8 @@ fn bootstrap_probe(state: &ClusterState) {
             Err(e) => println!("  {label}: ERR ({e})"),
         }
     };
-    probe("login    ", login_ip);
-    probe("scheduler", &state.scheduler_private_ip);
+    probe("login    ", false);
+    probe("scheduler", true);
 }
 
 fn delete(args: DeleteArgs) -> Result<()> {

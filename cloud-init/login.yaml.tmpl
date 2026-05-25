@@ -43,6 +43,10 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      # Defense-in-depth chmod (see scheduler.yaml.tmpl for rationale): if this
+      # script aborts before the chmod block, plugstack.conf would stay 0600
+      # and break Pyxis-using srun submissions from non-root users.
+      trap 'chmod 0644 /etc/slurm/plugstack.conf 2>/dev/null || true' EXIT
       . /etc/azcluster/cluster.env
 
       if [ -n "${EXTRA_PACKAGES:-}" ]; then
