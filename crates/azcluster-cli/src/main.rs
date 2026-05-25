@@ -3,6 +3,7 @@ mod timings;
 mod user;
 mod auth;
 mod arm;
+mod bastion;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
