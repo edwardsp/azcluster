@@ -2,6 +2,7 @@ mod cluster_state;
 mod timings;
 mod user;
 mod auth;
+mod arm;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
