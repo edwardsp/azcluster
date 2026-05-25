@@ -31,6 +31,7 @@ enum CliCommand {
     Resume(ResumeArgs),
     Delete(DeleteArgs),
     Exec(ExecArgs),
+    Scp(ScpArgs),
     Logs(LogsArgs),
     Validate(ValidateArgs),
     Monitor(MonitorArgs),
@@ -80,7 +81,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.21.0")]
+    #[arg(long, default_value = "v0.21.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -270,6 +271,135 @@ mod tests {
         let err = parse_pool("name=g,sku=X,whatever").unwrap_err().to_string();
         assert!(err.contains("expected key=value"), "{err}");
     }
+
+    #[test]
+    fn parse_scp_path_local_no_colon() {
+        assert_eq!(parse_scp_path("./file"), ScpPath::Local("./file".into()));
+        assert_eq!(parse_scp_path("/tmp/x"), ScpPath::Local("/tmp/x".into()));
+        assert_eq!(parse_scp_path("file"), ScpPath::Local("file".into()));
+    }
+
+    #[test]
+    fn parse_scp_path_local_colon_after_slash() {
+        assert_eq!(
+            parse_scp_path("./a:b"),
+            ScpPath::Local("./a:b".into()),
+            "colon after slash is local"
+        );
+        assert_eq!(
+            parse_scp_path("/tmp/x:y"),
+            ScpPath::Local("/tmp/x:y".into())
+        );
+    }
+
+    #[test]
+    fn parse_scp_path_remote_defaults_to_login() {
+        assert_eq!(
+            parse_scp_path(":/shared/foo"),
+            ScpPath::Remote {
+                node: "login".into(),
+                path: "/shared/foo".into()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_scp_path_remote_named_node() {
+        assert_eq!(
+            parse_scp_path("scheduler:/etc/slurm/slurm.conf"),
+            ScpPath::Remote {
+                node: "scheduler".into(),
+                path: "/etc/slurm/slurm.conf".into()
+            }
+        );
+        assert_eq!(
+            parse_scp_path("vmss-v21a-cpu000000:/tmp/x"),
+            ScpPath::Remote {
+                node: "vmss-v21a-cpu000000".into(),
+                path: "/tmp/x".into()
+            }
+        );
+    }
+
+    fn fixture_state(public_ip: Option<&str>) -> ClusterState {
+        ClusterState {
+            name: "t".into(),
+            subscription_id: "s".into(),
+            resource_group: "rg".into(),
+            location: "loc".into(),
+            admin_username: "azureuser".into(),
+            scheduler_private_ip: "10.42.1.4".into(),
+            login_public_ip: public_ip.map(String::from),
+            anf_mount_ip: Some("10.42.1.4".into()),
+            compute_vmss_names: vec![],
+            extra_packages: vec![],
+            accounting_enabled: false,
+            bastion_enabled: public_ip.is_none(),
+            bastion_name: None,
+            bastion_dns_name: None,
+            bastion_resource_id: None,
+        }
+    }
+
+    #[test]
+    fn resolve_scp_route_login_bastion() {
+        let s = fixture_state(None);
+        let (proxy, jump, host) = resolve_scp_route(&s, "login", true).unwrap();
+        assert_eq!(proxy.as_deref(), Some("login"));
+        assert_eq!(jump, None);
+        assert_eq!(host, "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_scp_route_login_public_ip() {
+        let s = fixture_state(Some("1.2.3.4"));
+        let (proxy, jump, host) = resolve_scp_route(&s, "login", false).unwrap();
+        assert_eq!(proxy, None);
+        assert_eq!(jump, None);
+        assert_eq!(host, "1.2.3.4");
+    }
+
+    #[test]
+    fn resolve_scp_route_scheduler_bastion_direct() {
+        let s = fixture_state(None);
+        let (proxy, jump, host) = resolve_scp_route(&s, "scheduler", true).unwrap();
+        assert_eq!(proxy.as_deref(), Some("scheduler"));
+        assert_eq!(jump, None);
+        assert_eq!(host, "10.42.1.4");
+    }
+
+    #[test]
+    fn resolve_scp_route_scheduler_via_jump() {
+        let s = fixture_state(Some("1.2.3.4"));
+        let (proxy, jump, host) = resolve_scp_route(&s, "scheduler", false).unwrap();
+        assert_eq!(proxy, None);
+        assert_eq!(jump.as_deref(), Some("1.2.3.4"));
+        assert_eq!(host, "10.42.1.4");
+    }
+
+    #[test]
+    fn resolve_scp_route_compute_via_bastion_jump() {
+        let s = fixture_state(None);
+        let (proxy, jump, host) = resolve_scp_route(&s, "vmss-t-cpu000000", true).unwrap();
+        assert_eq!(proxy.as_deref(), Some("login"));
+        assert_eq!(jump.as_deref(), Some("127.0.0.1"));
+        assert_eq!(host, "vmss-t-cpu000000");
+    }
+
+    #[test]
+    fn resolve_scp_route_compute_via_public_jump() {
+        let s = fixture_state(Some("1.2.3.4"));
+        let (proxy, jump, host) = resolve_scp_route(&s, "vmss-t-cpu000000", false).unwrap();
+        assert_eq!(proxy, None);
+        assert_eq!(jump.as_deref(), Some("1.2.3.4"));
+        assert_eq!(host, "vmss-t-cpu000000");
+    }
+
+    #[test]
+    fn resolve_scp_route_no_route_errors() {
+        let s = fixture_state(None);
+        assert!(resolve_scp_route(&s, "login", false).is_err());
+    }
 }
 
 #[derive(Args)]
@@ -300,6 +430,26 @@ struct ExecArgs {
     no_bastion: bool,
     #[arg(trailing_var_arg = true, required = true)]
     cmd: Vec<String>,
+}
+
+#[derive(Args)]
+struct ScpArgs {
+    name: String,
+    /// Recursively copy directories.
+    #[arg(short = 'r', long)]
+    recursive: bool,
+    /// Preserve modification times, access times, and modes.
+    #[arg(short = 'p', long)]
+    preserve: bool,
+    #[arg(short = 'i', long)]
+    identity: Option<PathBuf>,
+    /// Disable auto-routing through Azure Bastion when no login public IP is set.
+    #[arg(long, default_value_t = false)]
+    no_bastion: bool,
+    /// Source(s) and destination, scp-style. Use `[node]:path` for remote
+    /// (node = login (default), scheduler, or compute hostname).
+    #[arg(required = true, num_args = 2..)]
+    paths: Vec<String>,
 }
 
 #[derive(Args)]
@@ -460,6 +610,7 @@ fn main() -> Result<()> {
         CliCommand::Resume(args) => resume(args),
         CliCommand::Delete(args) => delete(args),
         CliCommand::Exec(args) => exec(args),
+        CliCommand::Scp(args) => scp(args),
         CliCommand::Logs(args) => logs(args),
         CliCommand::Validate(args) => validate(args),
         CliCommand::Monitor(args) => monitor(args),
@@ -550,6 +701,17 @@ fn arm_client() -> Result<arm::client::ArmClient> {
 
 fn login(args: LoginArgs) -> Result<()> {
     let tenant = args.tenant.as_deref();
+
+    if let Some(want) = args.subscription.as_deref() {
+        if let Some(account) = auth::token_provider::try_rebind_cached(want, tenant)? {
+            println!("Reused cached credentials for {}", account.username);
+            println!("Active subscription: {want}");
+            println!("Tenant: {}", account.tenant_id);
+            println!("Token cached at: ~/.azure/azcli_tokens.json");
+            return Ok(());
+        }
+    }
+
     let account = if args.device_code {
         auth::token_provider::run_device_code_login(tenant)?
     } else {
@@ -1613,6 +1775,151 @@ fn exec(args: ExecArgs) -> Result<()> {
     }
     let status = cmd.status().context("spawn ssh exec")?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ScpPath {
+    Local(String),
+    Remote { node: String, path: String },
+}
+
+fn parse_scp_path(raw: &str) -> ScpPath {
+    let Some(colon) = raw.find(':') else {
+        return ScpPath::Local(raw.to_string());
+    };
+    let head = &raw[..colon];
+    if head.contains('/') {
+        return ScpPath::Local(raw.to_string());
+    }
+    let node = if head.is_empty() { "login" } else { head };
+    ScpPath::Remote {
+        node: node.to_string(),
+        path: raw[colon + 1..].to_string(),
+    }
+}
+
+fn scp(args: ScpArgs) -> Result<()> {
+    if args.paths.len() < 2 {
+        bail!("scp requires at least one source and one destination");
+    }
+    let state = ClusterState::load(&args.name)?;
+    let use_bastion = should_use_bastion(&state, args.no_bastion);
+
+    let parsed: Vec<ScpPath> = args.paths.iter().map(|s| parse_scp_path(s)).collect();
+
+    let mut remote_node: Option<String> = None;
+    let mut any_remote = false;
+    let mut any_local = false;
+    for p in &parsed {
+        match p {
+            ScpPath::Local(_) => any_local = true,
+            ScpPath::Remote { node, .. } => {
+                any_remote = true;
+                match &remote_node {
+                    None => remote_node = Some(node.clone()),
+                    Some(existing) if existing == node => {}
+                    Some(existing) => bail!(
+                        "all remote paths must reference the same node (saw '{existing}' and '{node}'); split into multiple scp invocations"
+                    ),
+                }
+            }
+        }
+    }
+    if !any_remote {
+        bail!(
+            "at least one path must be remote ([node]:path); use plain `cp` for local-only copies"
+        );
+    }
+    if !any_local {
+        bail!("at least one path must be local; remote-to-remote scp is not supported (run scp on a remote node directly)");
+    }
+    let node = remote_node.expect("any_remote implies remote_node");
+
+    let (proxy_target, jump_login_host, dest_host) = resolve_scp_route(&state, &node, use_bastion)?;
+
+    let mut cmd = Command::new("scp");
+    if args.recursive {
+        cmd.arg("-r");
+    }
+    if args.preserve {
+        cmd.arg("-p");
+    }
+    if let Some(id) = &args.identity {
+        cmd.args(["-i", &id.display().to_string()]);
+    }
+    if let Some(target) = proxy_target.as_deref() {
+        let exe = self_exe_path()?;
+        let proxy = format!(
+            "{} bastion-proxy --cluster {} --target {}",
+            exe, args.name, target
+        );
+        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+    }
+    if let Some(login) = jump_login_host.as_deref() {
+        let jump = format!("{}@{}", state.admin_username, login);
+        cmd.args(["-o", &format!("ProxyJump={}", jump)]);
+    }
+
+    let user_at_host = format!("{}@{}", state.admin_username, dest_host);
+    for p in &parsed {
+        match p {
+            ScpPath::Local(s) => cmd.arg(s),
+            ScpPath::Remote { path, .. } => cmd.arg(format!("{user_at_host}:{path}")),
+        };
+    }
+
+    eprintln!(
+        "==> scp {} (node={node}{})",
+        args.paths.join(" "),
+        if use_bastion { ", via Bastion" } else { "" }
+    );
+    let status = cmd.status().context("spawn scp")?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn resolve_scp_route(
+    state: &ClusterState,
+    node: &str,
+    use_bastion: bool,
+) -> Result<(Option<String>, Option<String>, String)> {
+    let login_public = || -> Result<String> {
+        state
+            .login_public_ip
+            .as_deref()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                anyhow!(
+                    "cluster '{}' has no login public IP and bastion is not enabled. \
+                     Redeploy with --login-public-ip or --bastion.",
+                    state.name
+                )
+            })
+    };
+    match (node, use_bastion) {
+        ("login", true) => Ok((Some("login".into()), None, "127.0.0.1".into())),
+        ("login", false) => {
+            let h = login_public()?;
+            Ok((None, None, h))
+        }
+        ("scheduler", true) => Ok((
+            Some("scheduler".into()),
+            None,
+            state.scheduler_private_ip.clone(),
+        )),
+        ("scheduler", false) => {
+            let h = login_public()?;
+            Ok((None, Some(h), state.scheduler_private_ip.clone()))
+        }
+        (compute, true) => Ok((
+            Some("login".into()),
+            Some("127.0.0.1".into()),
+            compute.to_string(),
+        )),
+        (compute, false) => {
+            let h = login_public()?;
+            Ok((None, Some(h), compute.to_string()))
+        }
+    }
 }
 
 fn logs(args: LogsArgs) -> Result<()> {

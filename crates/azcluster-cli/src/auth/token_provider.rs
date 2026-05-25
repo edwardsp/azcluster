@@ -151,6 +151,75 @@ pub fn bind_subscription(tenant_id: &str, subscription_id: &str) -> Result<Cache
     Ok(account)
 }
 
+/// Try to reuse an existing cached account (valid or refreshable) and rebind
+/// it under `target_sub_id` without re-running the OAuth flow. The Azure
+/// management-scope access token is principal-scoped, not subscription-scoped,
+/// so the same token works against any subscription the user has access to.
+///
+/// Returns `Ok(Some(account))` on success, `Ok(None)` if no usable cached
+/// account was found (caller should fall through to the full login flow),
+/// or `Err` on a non-recoverable failure (e.g. token refresh rejected).
+///
+/// When `tenant_filter` is provided, only cached accounts matching that tenant
+/// are considered.
+pub fn try_rebind_cached(
+    target_sub_id: &str,
+    tenant_filter: Option<&str>,
+) -> Result<Option<CachedAccount>> {
+    let mut cache = TokenCache::load()?;
+
+    let candidate_key = cache
+        .accounts
+        .iter()
+        .filter(|(_, acc)| match tenant_filter {
+            None => true,
+            Some(t) => acc.tenant_id == t || t == "common" || t == "organizations",
+        })
+        .filter(|(_, acc)| acc.is_valid() || acc.refresh_token.is_some())
+        .max_by_key(|(_, acc)| acc.expires_at)
+        .map(|(k, _)| k.clone());
+
+    let Some(key) = candidate_key else {
+        return Ok(None);
+    };
+
+    let mut account = cache
+        .accounts
+        .get(&key)
+        .cloned()
+        .ok_or_else(|| anyhow!("cache race: candidate {key} vanished"))?;
+
+    if !account.is_valid() {
+        let refresh_token = account
+            .refresh_token
+            .clone()
+            .ok_or_else(|| anyhow!("cached account {key} has no refresh token"))?;
+        let mut provider = TokenProvider::new(key.clone(), account.tenant_id.clone())?;
+        let new_access = provider.refresh_with_token(&refresh_token)?;
+        let refreshed = TokenCache::load()?;
+        if let Some(acc) = refreshed.get(&key) {
+            account = acc.clone();
+        } else {
+            account.access_token = new_access;
+        }
+    }
+
+    if key != target_sub_id {
+        cache = TokenCache::load()?;
+        cache.remove(&key);
+        account.subscription_id = target_sub_id.to_string();
+        account.auth_method = format!("{} (rebound)", account.auth_method);
+        cache.insert(target_sub_id.to_string(), account.clone());
+        cache.save()?;
+    } else if account.subscription_id != target_sub_id {
+        account.subscription_id = target_sub_id.to_string();
+        cache.insert(target_sub_id.to_string(), account.clone());
+        cache.save()?;
+    }
+
+    Ok(Some(account))
+}
+
 /// Decode the `upn` or `preferred_username` claim from an Azure JWT for display.
 pub fn extract_username(token: &str) -> Result<String> {
     let claims = decode_jwt_claims(token)?;

@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.20.0)**: native ARM REST + OAuth2 — `az` CLI dependency removed. The CLI now authenticates via Azure OAuth2 (PKCE in browser, or `--device-code` for headless) and talks to ARM, Compute, Network, Grafana, and the deployment LRO API directly over HTTPS. All 17 prior `az` shell-out call sites replaced across 8 vertical slices on `refactor/native-azure-sdk`. `bicep/main.json` is now prebuilt (CI-enforced drift check; release ships it as a standalone artifact) and embedded into the binary via `include_str!`; end users no longer need `az bicep`. `--what-if` is native (LRO polling). Token cache: `~/.azure/azcli_tokens.json` (mode 0600, NOT compatible with Python az MSAL cache). NOT live-validated against a real deployment; previous v0.19.4 functional baseline carries forward (container `_mpi` NCCL on 2× ND96isr_H100_v5 = avg 277 GB/s busbw).
+> **Status (v0.21.1)**: adds `azcluster scp` (bastion-aware scp wrapper with first-class node selection — `login` default, `scheduler`, or any compute hostname) and a fast-path on `azcluster login --subscription <id>` that rebinds the cached principal to a new subscription in ~6 ms without re-auth (workaround for Microsoft tenants where Conditional Access blocks device-code flow). Carries forward v0.21.0 Azure Bastion no-plugin support live-validated on `paul-azcluster` / `southafricanorth` (auto-route through Bastion for `ssh`/`exec`/`tunnel` + new `scp`; hidden `bastion-proxy` stdio bridge as ssh `ProxyCommand`; hand-rolled WS framing on `tokio-rustls` because Azure Bastion's non-RFC WS upgrade breaks `tokio-tungstenite`). Carries forward v0.20.0 native ARM REST + OAuth2.
+
+> **Previous status (v0.21.0)**: native Azure Bastion (no plugin). Provisions Bastion Standard SKU + `enableTunneling: true` into `AzureBastionSubnet = 10.42.0.64/26` when `--bastion` is passed. CLI auto-routes `azcluster ssh/exec/tunnel` through Bastion when login has no public IP. Live-validated on `paul-azcluster`/`southafricanorth` (`v21a`): login + scheduler reachable via Bastion, `--no-bastion` cleanly surfaces the legacy error.
 
 > **Previous status (v0.19.4)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 + container `_mpi` NCCL live-validated. v0.19.4 fixed a latent showstopper for containerised MPI (removed `UCX_TLS=tcp` from `/etc/enroot/environ.d/50-nccl.env` and `/etc/profile.d/nccl-azcluster.sh`). Llama 3.1 8B BF16 baselines: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: bastion SSH tunneling (vgamayunov-style, no plugin), DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
@@ -141,7 +143,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.20.0
+VERSION=v0.21.1
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
@@ -236,6 +238,7 @@ Mounted on login + compute at `/amlfs`.
 | `azcluster status <name>` | Show pool capacities and resource summary. Nags about pending markers if any. |
 | `azcluster scale <name> <pool> <current/target>` | Resize a pool: e.g. `azcluster scale demo gpu 0/2`. |
 | `azcluster ssh <name> [--scheduler]` | Interactive shell on login; `--scheduler` proxy-jumps to scheduler. |
+| `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp wrapper. Remote paths use `[node]:path` (e.g. `:/shared/x`, `scheduler:/etc/x`, `vmss-<cluster>-<pool>NNNNNN:/x`); empty node = `login`. Flags: `-r`, `-p`, `-i <key>`, `--no-bastion`. |
 | `azcluster exec <name> [--scheduler] -- <cmd>` | One-shot command. |
 | `azcluster tunnel <name> <local:remote>` | Forward a local port through login. |
 | `azcluster validate <name> [--gpu] [--no-container] [--multi-node] [--partition <p>]` | sinfo + `srun hostname` + Pyxis `srun --container-image=docker://alpine` (+ optional `nvidia-smi`). With `--multi-node`: cross-node `srun -N2`, cross-node Pyxis launch, and (with `--gpu`) a bounded 2-node NCCL all-reduce via HPC-X (NDv5-tuned). |

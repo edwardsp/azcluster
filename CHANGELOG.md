@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-05-25
+
+### Added
+- **`azcluster scp <name> <SRC>... <DST>`** — `scp` wrapper that mirrors real scp syntax: paths with `<node>:<path>` are remote, bare paths are local. `<node>` defaults to `login` when empty (`:/shared/foo`); other accepted values are `scheduler` and any compute hostname (e.g. `vmss-<cluster>-<pool>NNNNNN`). Flags: `-r` recursive, `-p` preserve mtime/mode, `-i <key>`, `--no-bastion` opt-out. Bastion-aware: auto-injects `-o ProxyCommand="azcluster bastion-proxy ..."` when the cluster has no public IP, and `-o ProxyJump=azureuser@<login>` for scheduler/compute targets without bastion. A single invocation can only touch one remote node (no remote-to-remote); enforced at parse time. Compute paths always traverse login (bastion-proxy targets login + ProxyJump to compute hostname); scheduler paths under bastion go direct to the scheduler VM (no jump).
+
+### Changed
+- **`azcluster login --subscription <id>` fast-path.** When the operator's token cache already contains a valid (or refreshable) account for the requesting principal, `login` now rebinds the cache entry under the target subscription id in ~6 ms instead of triggering a fresh interactive OAuth2 flow. Management-scope access tokens are principal-scoped (audience `https://management.azure.com/`), not subscription-scoped, so rebinding is safe. Workaround for Microsoft tenants that block device-code flow (Conditional Access error AADSTS53003): `azcluster login` once interactively (PKCE in browser), then re-run with `--subscription <id>` from any shell to switch the bound subscription with zero re-auth. `try_rebind_cached(target_sub_id, tenant_filter)` in `auth/token_provider.rs` is the new helper; calls `TokenProvider::refresh_with_token` only when the access token is within 5 min of expiry, otherwise reuses verbatim.
+
+### Fixed
+- Replace `Option::is_none_or` with explicit `match` in `auth/token_provider::try_rebind_cached` to satisfy workspace MSRV clippy gate (`clippy::incompatible_msrv`).
+
 ## [0.21.0] - 2026-05-25
 
 ### Added
@@ -709,7 +720,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.1
+[0.21.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.0
 [0.19.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.3
 [0.19.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.2
 [0.19.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.1
