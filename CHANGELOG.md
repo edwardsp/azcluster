@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-05-25
+
+### Removed
+- **`az` CLI dependency**. The CLI is now a fully self-contained Rust binary that authenticates to Azure via OAuth2 directly and calls ARM REST natively. All 17 prior `az` shell-out call sites have been replaced across 8 vertical slices on `refactor/native-azure-sdk`. End users no longer need `az`, `az login`, or `az bicep` on their workstation. `ensure_az()` and every `Command::new("az")` invocation have been deleted from `crates/azcluster-cli/src/main.rs`.
+
+### Added
+- **`azcluster login`** — native Azure OAuth2. Interactive PKCE flow in a browser by default; `--device-code` for headless / SSH sessions; `--tenant <id>` / `--subscription <id>` flags for non-interactive selection. Uses the well-known Azure CLI public client ID `04b07795-8ddb-461a-bbee-02f9e1bf7b46` and the `https://management.azure.com/.default offline_access` scope. Tokens (access + refresh) cache to `~/.azure/azcli_tokens.json` (mode `0600`). Token refresh is automatic on every ARM call when the access token is within 5 minutes of expiry. **NOT compatible with the Python `az` CLI's MSAL token cache** — this is intentional (different cache schema, no shared lock contract).
+- **`ArmClient`** (`crates/azcluster-cli/src/arm/client.rs`) — a typed, retrying ARM REST client. Surface: subscription enumeration, resource-group CRUD, subscription-scope deployment LRO (`PUT`/`POST what-if`/`GET` poll until terminal), deployment operation listing (subscription + RG), VMSS get/scale + async-operation polling, Grafana endpoint resolution + dashboard import (`POST /api/dashboards/db` with ARM bearer; 10×30s retry on 401/403/NoRoleAssignedException). All endpoints version-pinned in `ApiVersions` (rg=2024-03-01, deployment=2024-03-01, compute=2024-07-01, network=2023-11-01, storage=2023-05-01, grafana=2023-09-01).
+- **`bicep/main.json` is now committed and embedded into the binary** via `include_str!("../../../bicep/main.json")`. End users never need bicep tooling. Contributors editing `bicep/*.bicep` MUST regenerate `bicep/main.json` (`az bicep build --file bicep/main.bicep --outfile bicep/main.json`); CI's new `bicep` drift-check job (`.github/workflows/ci.yml`) fails the build if the committed JSON drifts from a fresh transpile.
+- **Release pipeline** (`.github/workflows/release.yml`) now installs the standalone `bicep` v0.30.23 binary, rebuilds `bicep/main.json` on every tag, ships it in the versioned tarball, AND uploads `azcluster-main-${VERSION}.json` as a separate release asset for operators who want to inspect the ARM template.
+- **`--what-if` native LRO**. `azcluster deploy --what-if` now hits `POST /providers/Microsoft.Resources/deployments/{}/whatIf` (202 + `Location` header), polls the async-operation URL until 200, and prints the result JSON. No longer deferred to `az deployment sub what-if`.
+
+### Changed
+- **Deployment parameters are now typed `serde_json::Value`** (bool / int / array preserved), not coerced to strings. Each value is wrapped `{"value": v}` per ARM REST contract. Previously the `az deployment sub create --parameters key=value` path stringified everything; this caused subtle Bicep `bool('true')` coercion failures in edge cases.
+- **`resolve_template()`** now returns `serde_json::Value`. Default (no `--template`) returns the embedded `main.json`. `--template <path>` must point to a `.json` file; passing `.bicep` returns a clear error directing the user to run `az bicep build` (intentional — the CLI deliberately does not bundle a bicep transpiler).
+- `Cargo.toml` workspace version `0.19.4` → `0.20.0`. CLI default `--azcluster-version` bumped to `v0.20.0`.
+- `README.md` Prerequisites no longer lists `az` CLI; documents `azcluster login` instead. Status block rewritten for the v0.20.0 refactor.
+
+### Fixed
+- Slice-4 commit log notes the previously-broken `create_deployment()` helper in `arm/client.rs` (wrong ARM body shape: missing `location` at body root, `properties` flattened) — replaced with `create_subscription_deployment()` which sends the correct shape (`{ location, properties: { template, parameters, mode } }`).
+
+### Live-validated
+- **NOT live-validated against a real Azure deployment.** Tests: 86/86 passing; `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo fmt --all` clean; release build green; CLI `--help` renders for every subcommand. The v0.19.4 functional baseline (container `_mpi` NCCL on 2× ND96isr_H100_v5 = avg 277 GB/s busbw) carries forward; this release does not change cluster runtime behaviour. Operator-AFK rollout: live-validate `azcluster login` → `azcluster deploy` → `azcluster scale` → `azcluster status` → `azcluster delete` on the next deploy cycle and document results in the v0.20.1 CHANGELOG.
+
 ## [0.19.4] - 2026-05-25
 
 ### Fixed

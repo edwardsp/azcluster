@@ -2,11 +2,13 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.19.4)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 + container `_mpi` NCCL live-validated. **v0.19.4 fixes a latent showstopper for containerised MPI**: `cloud-init/compute.yaml.tmpl` no longer writes `UCX_TLS=tcp` into `/etc/enroot/environ.d/50-nccl.env` and `/etc/profile.d/nccl-azcluster.sh`. The flag was harmless for bare NCCL (which uses its own IBext plugin) but broke every HPC-X/UCX-based MPI workload inside Pyxis containers — `/usr/local/bin/all_reduce_perf_mpi`, `mpirun`-launched NeMo/PyTorch jobs, etc. — because UCX interpreted "use tcp transport on mlx5_ib0..7" as "no usable transports/devices" and OMPI hung in its TCP-BTL fallback. Live-validated on 2× ND96isr_H100_v5: 16-rank `all_reduce_perf_mpi` via `srun --mpi=pmix` inside `nvcr.io/nvidia/nemo:25.07.02` reaches **avg busbw 277 GB/s / peak 439.38 GB/s at 1 GiB**, matching the v0.13.8 bare-metal HPC-X baseline (zero container overhead). **v0.19.3 carryover**: `azcluster user add` / `user remove` auto-register/deregister with Slurm accounting (per-user account, `DefaultAccount=<user>`) and properly flush both SSSD + slurmctld assoc_mgr caches so `sbatch` works immediately. **v0.19.2 carryover**: `--extra-package <name>` deploy flag; per-user enroot cache path; scheduler SSSD via `ldap://127.0.0.1`; idempotent `azcluster deploy`. Llama 3.1 8B BF16 baselines from v0.13.9 still hold: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: `aad-login` Entra integration, DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Status (v0.20.0)**: native ARM REST + OAuth2 — `az` CLI dependency removed. The CLI now authenticates via Azure OAuth2 (PKCE in browser, or `--device-code` for headless) and talks to ARM, Compute, Network, Grafana, and the deployment LRO API directly over HTTPS. All 17 prior `az` shell-out call sites replaced across 8 vertical slices on `refactor/native-azure-sdk`. `bicep/main.json` is now prebuilt (CI-enforced drift check; release ships it as a standalone artifact) and embedded into the binary via `include_str!`; end users no longer need `az bicep`. `--what-if` is native (LRO polling). Token cache: `~/.azure/azcli_tokens.json` (mode 0600, NOT compatible with Python az MSAL cache). NOT live-validated against a real deployment; previous v0.19.4 functional baseline carries forward (container `_mpi` NCCL on 2× ND96isr_H100_v5 = avg 277 GB/s busbw).
+
+> **Previous status (v0.19.4)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 + container `_mpi` NCCL live-validated. v0.19.4 fixed a latent showstopper for containerised MPI (removed `UCX_TLS=tcp` from `/etc/enroot/environ.d/50-nccl.env` and `/etc/profile.d/nccl-azcluster.sh`). Llama 3.1 8B BF16 baselines: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: bastion SSH tunneling (vgamayunov-style, no plugin), DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
-- **Single binary.** Rust CLI shells out to `az` and Bicep. No Python venv, no agent, no laptop-side controller.
+- **Single binary.** Pure-Rust CLI. Authenticates to Azure directly via OAuth2 (PKCE / device code); calls ARM REST natively. No `az` CLI, no Python venv, no agent, no laptop-side controller.
 - **AI-first defaults.** Default GPU pool is `Standard_ND96isr_H100_v5` with IB + NCCL tunings preconfigured. Pyxis + Enroot wired from boot: `srun --container-image=docker://...` works the moment a node registers.
 - **Multi-pool, dynamic Slurm.** One VMSS Flex per pool. Nodes register via `slurmd --conf-server` and self-tag with `Feature=pool_<name>`; `slurm.conf` `NodeSet+PartitionName` maps them into partitions.
 - **Managed observability out of the box.** Azure Monitor Workspace (Managed Prometheus) + Azure Managed Grafana, per-VM `prometheus` remote-writing via `azuread.managed_identity`. Four dashboards (node health, Slurm, GPU+IB, healthcheck) auto-imported post-deploy.
@@ -117,17 +119,28 @@ The most recent end-to-end run (`mon6` on `southafricanorth`, `paul-azcluster-v6
 
 ## Prerequisites
 
-- `az` CLI logged in (`az login`)
-- `jq`
+- Azure account with permissions to create resource groups, role assignments, and Monitor/Grafana resources in the target subscription
 - SSH key (`~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub`)
-- Permissions to create resource groups, role assignments, and Monitor/Grafana resources in the target subscription
+- `jq`
+
+The CLI authenticates against Azure directly via OAuth2 (PKCE in a browser, or `--device-code` for headless). No `az` CLI install required.
+
+```bash
+azcluster login                              # interactive browser PKCE
+azcluster login --device-code                # headless / SSH session
+azcluster login --tenant <id> --subscription <id>
+```
+
+Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerated via ARM REST; selected one persists alongside the token cache.
+
+> Contributors editing `bicep/*.bicep` MUST regenerate `bicep/main.json` (`az bicep build --file bicep/main.bicep --outfile bicep/main.json`) before committing — CI fails the build on drift. The CLI embeds `main.json` at compile time; end users never need bicep.
 
 ## Install
 
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.19.4
+VERSION=v0.20.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
