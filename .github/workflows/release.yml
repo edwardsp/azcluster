@@ -62,8 +62,25 @@ jobs:
   assets:
     name: Package static assets
     runs-on: ubuntu-24.04
+    env:
+      BICEP_VERSION: 'v0.30.23'
     steps:
       - uses: actions/checkout@v4
+      - name: Install bicep CLI (standalone, no az)
+        run: |
+          set -e
+          curl -fsSL -o /tmp/bicep \
+            "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x /tmp/bicep
+          sudo mv /tmp/bicep /usr/local/bin/bicep
+          bicep --version
+      - name: Transpile bicep -> ARM JSON
+        run: |
+          set -e
+          mkdir -p bicep
+          bicep build bicep/main.bicep --outfile bicep/main.json
+          test -s bicep/main.json
+          echo "==> main.json: $(wc -c < bicep/main.json) bytes"
       - name: Package assets tarball
         run: |
           set -e
@@ -75,6 +92,7 @@ jobs:
             fi
           done
           tar -czf "dist/azcluster-assets-${VERSION}.tar.gz" -C staging assets
+          cp bicep/main.json "dist/azcluster-main-${VERSION}.json"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-assets

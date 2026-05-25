@@ -1,0 +1,2356 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.41.2.15936",
+      "templateHash": "7095494556143946297"
+    }
+  },
+  "parameters": {
+    "clusterName": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 20,
+      "metadata": {
+        "description": "Cluster name. Used as resource-group suffix and tag."
+      }
+    },
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region."
+      }
+    },
+    "existingResourceGroup": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing resource group name to use. If empty, a new RG named rg-azcluster-<clusterName> is created."
+      }
+    },
+    "sshPublicKey": {
+      "type": "securestring",
+      "metadata": {
+        "description": "SSH public key for admin user on all VMs."
+      }
+    },
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "azureuser",
+      "metadata": {
+        "description": "Admin username on VMs."
+      }
+    },
+    "schedulerSku": {
+      "type": "string",
+      "defaultValue": "Standard_D8as_v5",
+      "metadata": {
+        "description": "Scheduler VM SKU."
+      }
+    },
+    "loginSku": {
+      "type": "string",
+      "defaultValue": "Standard_D4as_v5",
+      "metadata": {
+        "description": "Login VM SKU."
+      }
+    },
+    "ubuntuSku": {
+      "type": "string",
+      "defaultValue": "2404",
+      "allowedValues": [
+        "2204",
+        "2404"
+      ],
+      "metadata": {
+        "description": "Ubuntu HPC marketplace SKU."
+      }
+    },
+    "loginPublicIp": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Give login VM a public IP. Default false. Opt-in for testing."
+      }
+    },
+    "allowedSshCidrs": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional NSG narrowing for SSH when login VM has a public IP. Empty means SSH allowed from Internet."
+      }
+    },
+    "azclusterVersion": {
+      "type": "string",
+      "defaultValue": "v0.0.1",
+      "metadata": {
+        "description": "azcluster release tag to fetch binaries/assets from GitHub Releases."
+      }
+    },
+    "azclusterRepo": {
+      "type": "string",
+      "defaultValue": "edwardsp/azcluster",
+      "metadata": {
+        "description": "GitHub org/repo to fetch releases from. Phase 0 default is the upstream repo."
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.42.0.0/16",
+      "metadata": {
+        "description": "VNet address space."
+      }
+    },
+    "anfSizeTiB": {
+      "type": "int",
+      "defaultValue": 2,
+      "minValue": 1,
+      "metadata": {
+        "description": "ANF capacity pool size in TiB. Minimum 1 (Premium/Ultra) or 2 (Standard)."
+      }
+    },
+    "anfServiceLevel": {
+      "type": "string",
+      "defaultValue": "Standard",
+      "allowedValues": [
+        "Standard",
+        "Premium",
+        "Ultra"
+      ],
+      "metadata": {
+        "description": "ANF service level."
+      }
+    },
+    "amlfsSizeTiB": {
+      "type": "int",
+      "defaultValue": 0,
+      "minValue": 0,
+      "metadata": {
+        "description": "AMLFS (Azure Managed Lustre) capacity in TiB. 0 disables AMLFS."
+      }
+    },
+    "amlfsSkuName": {
+      "type": "string",
+      "defaultValue": "AMLFS-Durable-Premium-250",
+      "allowedValues": [
+        "AMLFS-Durable-Premium-40",
+        "AMLFS-Durable-Premium-125",
+        "AMLFS-Durable-Premium-250",
+        "AMLFS-Durable-Premium-500"
+      ],
+      "metadata": {
+        "description": "AMLFS SKU. Throughput is MB/s per TiB."
+      }
+    },
+    "amlfsZone": {
+      "type": "string",
+      "defaultValue": "1",
+      "metadata": {
+        "description": "Availability zone for AMLFS."
+      }
+    },
+    "pools": {
+      "type": "array",
+      "defaultValue": [
+        {
+          "name": "gpu",
+          "sku": "Standard_ND96isr_H100_v5",
+          "count": 0,
+          "default": true
+        }
+      ],
+      "metadata": {
+        "description": "Compute pools. Each: { name: string, sku: string, count: int, default: bool }. Default: one gpu pool, H100, 0."
+      }
+    },
+    "enableMonitoring": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Provision Azure Managed Prometheus (AMW + DCR + AMA) and Azure Managed Grafana for the cluster. Off by default."
+      }
+    },
+    "grafanaLocation": {
+      "type": "string",
+      "defaultValue": "[parameters('location')]",
+      "metadata": {
+        "description": "Azure region for Managed Grafana. Defaults to the cluster location. Override when the cluster region does not host Managed Grafana (e.g. southafricanorth -> uksouth)."
+      }
+    },
+    "deployerPrincipalId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "AAD object id of the deployer (user or service principal). Granted Grafana Admin on the AMG instance so the CLI can import dashboards post-deploy. Required when --monitoring is set."
+      }
+    },
+    "deployerPrincipalType": {
+      "type": "string",
+      "defaultValue": "User",
+      "allowedValues": [
+        "User",
+        "ServicePrincipal",
+        "Group"
+      ],
+      "metadata": {
+        "description": "Principal type of deployerPrincipalId."
+      }
+    },
+    "sharedStorageMode": {
+      "type": "string",
+      "defaultValue": "anf",
+      "allowedValues": [
+        "anf",
+        "nfs-scheduler"
+      ],
+      "metadata": {
+        "description": "Shared filesystem backing /shared. `anf` provisions Azure NetApp Files; `nfs-scheduler` exports /shared from the scheduler VM (test-only, no HA)."
+      }
+    },
+    "enableAccounting": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Provision Slurm accounting (Azure Database for MySQL Flexible Server + slurmdbd on the scheduler)."
+      }
+    },
+    "mysqlAdminPassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "MySQL Flexible Server admin password for the Slurm accounting database. Generated by the CLI when enableAccounting is true; ignored otherwise."
+      }
+    },
+    "ldapAdminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "LDAP admin password for cn=admin,dc=azcluster,dc=local. Generated by the CLI on every deploy."
+      }
+    },
+    "extraPackages": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Space-joined list of extra apt packages to install on every node (scheduler, login, compute). Each token validated CLI-side against ^[a-z0-9][a-z0-9.+-]*$."
+      }
+    }
+  },
+  "variables": {
+    "rgName": "[if(empty(parameters('existingResourceGroup')), format('rg-azcluster-{0}', parameters('clusterName')), parameters('existingResourceGroup'))]",
+    "commonTags": {
+      "azcluster": "true",
+      "azcluster-name": "[parameters('clusterName')]",
+      "azcluster-version": "[parameters('azclusterVersion')]",
+      "azcluster-shared-storage": "[parameters('sharedStorageMode')]",
+      "azcluster-accounting": "[if(parameters('enableAccounting'), 'enabled', 'disabled')]"
+    }
+  },
+  "resources": [
+    {
+      "condition": "[empty(parameters('existingResourceGroup'))]",
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('rgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('commonTags')]"
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('cluster-{0}', parameters('clusterName'))]",
+      "resourceGroup": "[variables('rgName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "clusterName": {
+            "value": "[parameters('clusterName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "sshPublicKey": {
+            "value": "[parameters('sshPublicKey')]"
+          },
+          "adminUsername": {
+            "value": "[parameters('adminUsername')]"
+          },
+          "schedulerSku": {
+            "value": "[parameters('schedulerSku')]"
+          },
+          "loginSku": {
+            "value": "[parameters('loginSku')]"
+          },
+          "ubuntuSku": {
+            "value": "[parameters('ubuntuSku')]"
+          },
+          "loginPublicIp": {
+            "value": "[parameters('loginPublicIp')]"
+          },
+          "allowedSshCidrs": {
+            "value": "[parameters('allowedSshCidrs')]"
+          },
+          "azclusterVersion": {
+            "value": "[parameters('azclusterVersion')]"
+          },
+          "azclusterRepo": {
+            "value": "[parameters('azclusterRepo')]"
+          },
+          "vnetAddressPrefix": {
+            "value": "[parameters('vnetAddressPrefix')]"
+          },
+          "anfSizeTiB": {
+            "value": "[parameters('anfSizeTiB')]"
+          },
+          "anfServiceLevel": {
+            "value": "[parameters('anfServiceLevel')]"
+          },
+          "amlfsSizeTiB": {
+            "value": "[parameters('amlfsSizeTiB')]"
+          },
+          "amlfsSkuName": {
+            "value": "[parameters('amlfsSkuName')]"
+          },
+          "amlfsZone": {
+            "value": "[parameters('amlfsZone')]"
+          },
+          "pools": {
+            "value": "[parameters('pools')]"
+          },
+          "enableMonitoring": {
+            "value": "[parameters('enableMonitoring')]"
+          },
+          "grafanaLocation": {
+            "value": "[parameters('grafanaLocation')]"
+          },
+          "deployerPrincipalId": {
+            "value": "[parameters('deployerPrincipalId')]"
+          },
+          "deployerPrincipalType": {
+            "value": "[parameters('deployerPrincipalType')]"
+          },
+          "sharedStorageMode": {
+            "value": "[parameters('sharedStorageMode')]"
+          },
+          "enableAccounting": {
+            "value": "[parameters('enableAccounting')]"
+          },
+          "mysqlAdminPassword": {
+            "value": "[parameters('mysqlAdminPassword')]"
+          },
+          "ldapAdminPassword": {
+            "value": "[parameters('ldapAdminPassword')]"
+          },
+          "extraPackages": {
+            "value": "[parameters('extraPackages')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.41.2.15936",
+              "templateHash": "15336051245824623971"
+            }
+          },
+          "parameters": {
+            "clusterName": {
+              "type": "string"
+            },
+            "location": {
+              "type": "string"
+            },
+            "sshPublicKey": {
+              "type": "securestring"
+            },
+            "adminUsername": {
+              "type": "string"
+            },
+            "schedulerSku": {
+              "type": "string"
+            },
+            "loginSku": {
+              "type": "string"
+            },
+            "ubuntuSku": {
+              "type": "string"
+            },
+            "loginPublicIp": {
+              "type": "bool"
+            },
+            "allowedSshCidrs": {
+              "type": "array"
+            },
+            "azclusterVersion": {
+              "type": "string"
+            },
+            "azclusterRepo": {
+              "type": "string"
+            },
+            "vnetAddressPrefix": {
+              "type": "string"
+            },
+            "anfSizeTiB": {
+              "type": "int"
+            },
+            "anfServiceLevel": {
+              "type": "string"
+            },
+            "amlfsSizeTiB": {
+              "type": "int"
+            },
+            "amlfsSkuName": {
+              "type": "string"
+            },
+            "amlfsZone": {
+              "type": "string"
+            },
+            "pools": {
+              "type": "array"
+            },
+            "enableMonitoring": {
+              "type": "bool"
+            },
+            "grafanaLocation": {
+              "type": "string"
+            },
+            "deployerPrincipalId": {
+              "type": "string",
+              "defaultValue": ""
+            },
+            "deployerPrincipalType": {
+              "type": "string",
+              "defaultValue": "User"
+            },
+            "sharedStorageMode": {
+              "type": "string",
+              "defaultValue": "anf"
+            },
+            "enableAccounting": {
+              "type": "bool",
+              "defaultValue": false
+            },
+            "mysqlAdminPassword": {
+              "type": "securestring",
+              "defaultValue": ""
+            },
+            "ldapAdminPassword": {
+              "type": "securestring"
+            },
+            "extraPackages": {
+              "type": "string",
+              "defaultValue": ""
+            },
+            "tags": {
+              "type": "object"
+            }
+          },
+          "variables": {
+            "contributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b24988ac-6180-42a0-ab88-20f7382dd24c')]",
+            "runNfsServerOnScheduler": "[equals(parameters('sharedStorageMode'), 'nfs-scheduler')]",
+            "partitionsConf": "[join(map(parameters('pools'), lambda('p', format('NodeSet={0}set Feature=pool_{1}\n      PartitionName={2} Nodes={3}set State=UP MaxTime=INFINITE{4}', lambdaVariables('p').name, lambdaVariables('p').name, lambdaVariables('p').name, lambdaVariables('p').name, if(equals(tryGet(lambdaVariables('p'), 'default'), true()), ' Default=YES', '')))), '\n      ')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[format('uai-{0}-scheduler', parameters('clusterName'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[guid(resourceGroup().id, resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName'))), variables('contributorRoleId'))]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName'))), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[variables('contributorRoleId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "network",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "vnetAddressPrefix": {
+                    "value": "[parameters('vnetAddressPrefix')]"
+                  },
+                  "allowedSshCidrs": {
+                    "value": "[parameters('allowedSshCidrs')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "5837235101481616058"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "vnetAddressPrefix": {
+                      "type": "string"
+                    },
+                    "allowedSshCidrs": {
+                      "type": "array"
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "variables": {
+                    "effectiveSshCidrs": "[if(empty(parameters('allowedSshCidrs')), createArray('Internet'), parameters('allowedSshCidrs'))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Network/networkSecurityGroups",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('nsg-{0}-login', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "copy": [
+                          {
+                            "name": "securityRules",
+                            "count": "[length(variables('effectiveSshCidrs'))]",
+                            "input": {
+                              "name": "[format('allow-ssh-{0}', copyIndex('securityRules'))]",
+                              "properties": {
+                                "priority": "[add(1000, copyIndex('securityRules'))]",
+                                "access": "Allow",
+                                "direction": "Inbound",
+                                "protocol": "Tcp",
+                                "sourceAddressPrefix": "[variables('effectiveSshCidrs')[copyIndex('securityRules')]]",
+                                "sourcePortRange": "*",
+                                "destinationAddressPrefix": "*",
+                                "destinationPortRange": "22"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Network/networkSecurityGroups",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('nsg-{0}-internal', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "securityRules": [
+                          {
+                            "name": "allow-vnet-inbound",
+                            "properties": {
+                              "priority": 1000,
+                              "access": "Allow",
+                              "direction": "Inbound",
+                              "protocol": "*",
+                              "sourceAddressPrefix": "VirtualNetwork",
+                              "sourcePortRange": "*",
+                              "destinationAddressPrefix": "VirtualNetwork",
+                              "destinationPortRange": "*"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Network/publicIPAddresses",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('pip-{0}-nat', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "Standard"
+                      },
+                      "properties": {
+                        "publicIPAllocationMethod": "Static"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Network/natGateways",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('natgw-{0}', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "Standard"
+                      },
+                      "properties": {
+                        "idleTimeoutInMinutes": 10,
+                        "publicIpAddresses": [
+                          {
+                            "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-nat', parameters('clusterName')))]"
+                          }
+                        ]
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-nat', parameters('clusterName')))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.Network/virtualNetworks",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('vnet-{0}', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "addressSpace": {
+                          "addressPrefixes": [
+                            "[parameters('vnetAddressPrefix')]"
+                          ]
+                        },
+                        "subnets": [
+                          {
+                            "name": "scheduler",
+                            "properties": {
+                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 1)]",
+                              "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]"
+                              },
+                              "natGateway": {
+                                "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                              }
+                            }
+                          },
+                          {
+                            "name": "login",
+                            "properties": {
+                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 2)]",
+                              "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-login', parameters('clusterName')))]"
+                              },
+                              "natGateway": {
+                                "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                              }
+                            }
+                          },
+                          {
+                            "name": "compute",
+                            "properties": {
+                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 22, 1)]",
+                              "networkSecurityGroup": {
+                                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]"
+                              },
+                              "natGateway": {
+                                "id": "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                              }
+                            }
+                          },
+                          {
+                            "name": "anf",
+                            "properties": {
+                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 26, 0)]",
+                              "delegations": [
+                                {
+                                  "name": "netapp",
+                                  "properties": {
+                                    "serviceName": "Microsoft.Netapp/volumes"
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "name": "amlfs",
+                            "properties": {
+                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 24, 3)]"
+                            }
+                          },
+                          {
+                            "name": "database",
+                            "properties": {
+                              "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 29, 256)]",
+                              "delegations": [
+                                {
+                                  "name": "mysql-flex",
+                                  "properties": {
+                                    "serviceName": "Microsoft.DBforMySQL/flexibleServers"
+                                  }
+                                }
+                              ],
+                              "serviceEndpoints": [
+                                {
+                                  "service": "Microsoft.Storage"
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-internal', parameters('clusterName')))]",
+                        "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-{0}-login', parameters('clusterName')))]",
+                        "[resourceId('Microsoft.Network/natGateways', format('natgw-{0}', parameters('clusterName')))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "schedulerSubnetId": {
+                      "type": "string",
+                      "value": "[format('{0}/subnets/scheduler', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
+                    },
+                    "loginSubnetId": {
+                      "type": "string",
+                      "value": "[format('{0}/subnets/login', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
+                    },
+                    "computeSubnetId": {
+                      "type": "string",
+                      "value": "[format('{0}/subnets/compute', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
+                    },
+                    "anfSubnetId": {
+                      "type": "string",
+                      "value": "[format('{0}/subnets/anf', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
+                    },
+                    "amlfsSubnetId": {
+                      "type": "string",
+                      "value": "[format('{0}/subnets/amlfs', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
+                    },
+                    "databaseSubnetId": {
+                      "type": "string",
+                      "value": "[format('{0}/subnets/database', resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName'))))]"
+                    },
+                    "vnetId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-{0}', parameters('clusterName')))]"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "condition": "[equals(parameters('sharedStorageMode'), 'anf')]",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "anf",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "subnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.anfSubnetId.value]"
+                  },
+                  "sizeTiB": {
+                    "value": "[parameters('anfSizeTiB')]"
+                  },
+                  "serviceLevel": {
+                    "value": "[parameters('anfServiceLevel')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "16564599400247155173"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "subnetId": {
+                      "type": "string"
+                    },
+                    "sizeTiB": {
+                      "type": "int"
+                    },
+                    "serviceLevel": {
+                      "type": "string",
+                      "allowedValues": [
+                        "Standard",
+                        "Premium",
+                        "Ultra"
+                      ]
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "variables": {
+                    "sizeBytes": "[mul(mul(mul(mul(parameters('sizeTiB'), 1024), 1024), 1024), 1024)]",
+                    "accountName": "[format('anf{0}', uniqueString(resourceGroup().id, parameters('clusterName')))]",
+                    "poolName": "pool1",
+                    "volumeName": "shared"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.NetApp/netAppAccounts",
+                      "apiVersion": "2024-03-01",
+                      "name": "[variables('accountName')]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {}
+                    },
+                    {
+                      "type": "Microsoft.NetApp/netAppAccounts/capacityPools",
+                      "apiVersion": "2024-03-01",
+                      "name": "[format('{0}/{1}', variables('accountName'), variables('poolName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "serviceLevel": "[parameters('serviceLevel')]",
+                        "size": "[variables('sizeBytes')]",
+                        "qosType": "Auto"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.NetApp/netAppAccounts', variables('accountName'))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.NetApp/netAppAccounts/capacityPools/volumes",
+                      "apiVersion": "2024-03-01",
+                      "name": "[format('{0}/{1}/{2}', variables('accountName'), variables('poolName'), variables('volumeName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "serviceLevel": "[parameters('serviceLevel')]",
+                        "creationToken": "[format('{0}-shared', parameters('clusterName'))]",
+                        "usageThreshold": "[variables('sizeBytes')]",
+                        "subnetId": "[parameters('subnetId')]",
+                        "protocolTypes": [
+                          "NFSv4.1"
+                        ],
+                        "exportPolicy": {
+                          "rules": [
+                            {
+                              "ruleIndex": 1,
+                              "unixReadOnly": false,
+                              "unixReadWrite": true,
+                              "cifs": false,
+                              "nfsv3": false,
+                              "nfsv41": true,
+                              "allowedClients": "0.0.0.0/0",
+                              "hasRootAccess": true,
+                              "kerberos5ReadOnly": false,
+                              "kerberos5ReadWrite": false,
+                              "kerberos5iReadOnly": false,
+                              "kerberos5iReadWrite": false,
+                              "kerberos5pReadOnly": false,
+                              "kerberos5pReadWrite": false
+                            }
+                          ]
+                        },
+                        "securityStyle": "unix",
+                        "snapshotDirectoryVisible": true
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.NetApp/netAppAccounts/capacityPools', variables('accountName'), variables('poolName'))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "mountIp": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.NetApp/netAppAccounts/capacityPools/volumes', variables('accountName'), variables('poolName'), variables('volumeName')), '2024-03-01').mountTargets[0].ipAddress]"
+                    },
+                    "mountPath": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.NetApp/netAppAccounts/capacityPools/volumes', variables('accountName'), variables('poolName'), variables('volumeName')), '2024-03-01').creationToken]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'network')]"
+              ]
+            },
+            {
+              "condition": "[greater(parameters('amlfsSizeTiB'), 0)]",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "amlfs",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "subnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.amlfsSubnetId.value]"
+                  },
+                  "sizeTiB": {
+                    "value": "[parameters('amlfsSizeTiB')]"
+                  },
+                  "skuName": {
+                    "value": "[parameters('amlfsSkuName')]"
+                  },
+                  "zone": {
+                    "value": "[parameters('amlfsZone')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "14533393517017993771"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "subnetId": {
+                      "type": "string"
+                    },
+                    "sizeTiB": {
+                      "type": "int"
+                    },
+                    "skuName": {
+                      "type": "string",
+                      "allowedValues": [
+                        "AMLFS-Durable-Premium-40",
+                        "AMLFS-Durable-Premium-125",
+                        "AMLFS-Durable-Premium-250",
+                        "AMLFS-Durable-Premium-500"
+                      ]
+                    },
+                    "zone": {
+                      "type": "string"
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.StorageCache/amlFilesystems",
+                      "apiVersion": "2024-03-01",
+                      "name": "[format('amlfs-{0}', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "[parameters('skuName')]"
+                      },
+                      "zones": [
+                        "[parameters('zone')]"
+                      ],
+                      "properties": {
+                        "filesystemSubnet": "[parameters('subnetId')]",
+                        "storageCapacityTiB": "[parameters('sizeTiB')]",
+                        "maintenanceWindow": {
+                          "dayOfWeek": "Sunday",
+                          "timeOfDayUTC": "03:00"
+                        }
+                      }
+                    }
+                  ],
+                  "outputs": {
+                    "mgsAddress": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.StorageCache/amlFilesystems', format('amlfs-{0}', parameters('clusterName'))), '2024-03-01').clientInfo.mgsAddress]"
+                    },
+                    "mountCommand": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.StorageCache/amlFilesystems', format('amlfs-{0}', parameters('clusterName'))), '2024-03-01').clientInfo.mountCommand]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'network')]"
+              ]
+            },
+            {
+              "condition": "[parameters('enableMonitoring')]",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "monitoring",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "grafanaLocation": {
+                    "value": "[parameters('grafanaLocation')]"
+                  },
+                  "deployerPrincipalId": {
+                    "value": "[parameters('deployerPrincipalId')]"
+                  },
+                  "deployerPrincipalType": {
+                    "value": "[parameters('deployerPrincipalType')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "10397909612621697081"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "grafanaLocation": {
+                      "type": "string"
+                    },
+                    "deployerPrincipalId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "deployerPrincipalType": {
+                      "type": "string",
+                      "defaultValue": "User",
+                      "allowedValues": [
+                        "User",
+                        "ServicePrincipal",
+                        "Group"
+                      ]
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "variables": {
+                    "amwName": "[format('amw-{0}', parameters('clusterName'))]",
+                    "grafanaName": "[format('amg-{0}', parameters('clusterName'))]",
+                    "monUaiName": "[format('uai-{0}-mon', parameters('clusterName'))]",
+                    "monitoringDataReaderRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b0d8363b-8ddd-447d-831f-62ca05bff136')]",
+                    "grafanaAdminRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '22926164-76b3-42b3-bc55-97df8dab3e41')]",
+                    "managedRg": "[format('MA_{0}_{1}_managed', variables('amwName'), parameters('location'))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Monitor/accounts",
+                      "apiVersion": "2023-04-03",
+                      "name": "[variables('amwName')]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "publicNetworkAccess": "Enabled"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+                      "apiVersion": "2023-01-31",
+                      "name": "[variables('monUaiName')]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]"
+                    },
+                    {
+                      "type": "Microsoft.Dashboard/grafana",
+                      "apiVersion": "2024-10-01",
+                      "name": "[variables('grafanaName')]",
+                      "location": "[parameters('grafanaLocation')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "Standard"
+                      },
+                      "identity": {
+                        "type": "SystemAssigned"
+                      },
+                      "properties": {
+                        "apiKey": "Enabled",
+                        "publicNetworkAccess": "Enabled",
+                        "grafanaIntegrations": {
+                          "azureMonitorWorkspaceIntegrations": [
+                            {
+                              "azureMonitorWorkspaceResourceId": "[resourceId('Microsoft.Monitor/accounts', variables('amwName'))]"
+                            }
+                          ]
+                        }
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Monitor/accounts', variables('amwName'))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "scope": "[resourceId('Microsoft.Monitor/accounts', variables('amwName'))]",
+                      "name": "[guid(resourceId('Microsoft.Monitor/accounts', variables('amwName')), resourceId('Microsoft.Dashboard/grafana', variables('grafanaName')), variables('monitoringDataReaderRoleId'))]",
+                      "properties": {
+                        "roleDefinitionId": "[variables('monitoringDataReaderRoleId')]",
+                        "principalId": "[reference(resourceId('Microsoft.Dashboard/grafana', variables('grafanaName')), '2024-10-01', 'full').identity.principalId]",
+                        "principalType": "ServicePrincipal"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Monitor/accounts', variables('amwName'))]",
+                        "[resourceId('Microsoft.Dashboard/grafana', variables('grafanaName'))]"
+                      ]
+                    },
+                    {
+                      "condition": "[not(empty(parameters('deployerPrincipalId')))]",
+                      "type": "Microsoft.Authorization/roleAssignments",
+                      "apiVersion": "2022-04-01",
+                      "scope": "[resourceId('Microsoft.Dashboard/grafana', variables('grafanaName'))]",
+                      "name": "[guid(resourceId('Microsoft.Dashboard/grafana', variables('grafanaName')), parameters('deployerPrincipalId'), variables('grafanaAdminRoleId'))]",
+                      "properties": {
+                        "roleDefinitionId": "[variables('grafanaAdminRoleId')]",
+                        "principalId": "[parameters('deployerPrincipalId')]",
+                        "principalType": "[parameters('deployerPrincipalType')]"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Dashboard/grafana', variables('grafanaName'))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.Resources/deployments",
+                      "apiVersion": "2025-04-01",
+                      "name": "ingestionEndpoint",
+                      "resourceGroup": "[variables('managedRg')]",
+                      "properties": {
+                        "expressionEvaluationOptions": {
+                          "scope": "inner"
+                        },
+                        "mode": "Incremental",
+                        "parameters": {
+                          "dceName": {
+                            "value": "[variables('amwName')]"
+                          },
+                          "dcrName": {
+                            "value": "[variables('amwName')]"
+                          },
+                          "monUaiPrincipalId": {
+                            "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('monUaiName')), '2023-01-31').principalId]"
+                          }
+                        },
+                        "template": {
+                          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                          "contentVersion": "1.0.0.0",
+                          "metadata": {
+                            "_generator": {
+                              "name": "bicep",
+                              "version": "0.41.2.15936",
+                              "templateHash": "17192359634621255307"
+                            }
+                          },
+                          "parameters": {
+                            "dceName": {
+                              "type": "string"
+                            },
+                            "dcrName": {
+                              "type": "string"
+                            },
+                            "monUaiPrincipalId": {
+                              "type": "string"
+                            }
+                          },
+                          "variables": {
+                            "metricsPublisherRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '3913510d-42f4-4e42-8a64-420c390055eb')]"
+                          },
+                          "resources": [
+                            {
+                              "type": "Microsoft.Authorization/roleAssignments",
+                              "apiVersion": "2022-04-01",
+                              "scope": "[resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName'))]",
+                              "name": "[guid(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName')), parameters('monUaiPrincipalId'), variables('metricsPublisherRoleId'))]",
+                              "properties": {
+                                "roleDefinitionId": "[variables('metricsPublisherRoleId')]",
+                                "principalId": "[parameters('monUaiPrincipalId')]",
+                                "principalType": "ServicePrincipal"
+                              }
+                            }
+                          ],
+                          "outputs": {
+                            "ingestionEndpoint": {
+                              "type": "string",
+                              "value": "[format('{0}/dataCollectionRules/{1}/streams/Microsoft-PrometheusMetrics/api/v1/write?api-version=2023-04-24', reference(resourceId('Microsoft.Insights/dataCollectionEndpoints', parameters('dceName')), '2022-06-01').metricsIngestion.endpoint, reference(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName')), '2022-06-01').immutableId)]"
+                            }
+                          }
+                        }
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Monitor/accounts', variables('amwName'))]",
+                        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('monUaiName'))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "grafanaEndpoint": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.Dashboard/grafana', variables('grafanaName')), '2024-10-01').endpoint]"
+                    },
+                    "amwId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.Monitor/accounts', variables('amwName'))]"
+                    },
+                    "amwQueryEndpoint": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.Monitor/accounts', variables('amwName')), '2023-04-03').metrics.prometheusQueryEndpoint]"
+                    },
+                    "monUaiId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('monUaiName'))]"
+                    },
+                    "monUaiClientId": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('monUaiName')), '2023-01-31').clientId]"
+                    },
+                    "monUaiPrincipalId": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('monUaiName')), '2023-01-31').principalId]"
+                    },
+                    "ingestionEndpoint": {
+                      "type": "string",
+                      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('managedRg')), 'Microsoft.Resources/deployments', 'ingestionEndpoint'), '2025-04-01').outputs.ingestionEndpoint.value]"
+                    },
+                    "grafanaName": {
+                      "type": "string",
+                      "value": "[variables('grafanaName')]"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "condition": "[parameters('enableAccounting')]",
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "accounting",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "delegatedSubnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.databaseSubnetId.value]"
+                  },
+                  "adminPassword": {
+                    "value": "[parameters('mysqlAdminPassword')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "11642755552241860693"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Cluster name; used as suffix for the MySQL Flexible Server."
+                      }
+                    },
+                    "location": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Azure region for the MySQL Flexible Server. Must match the cluster region."
+                      }
+                    },
+                    "delegatedSubnetId": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Resource ID of the delegated subnet for MySQL Flexible Server VNet integration."
+                      }
+                    },
+                    "skuName": {
+                      "type": "string",
+                      "defaultValue": "Standard_B2ms",
+                      "metadata": {
+                        "description": "MySQL Flexible Server SKU. Standard_B2ms is the cheapest burstable option that supports slurmdbd."
+                      }
+                    },
+                    "skuTier": {
+                      "type": "string",
+                      "defaultValue": "Burstable",
+                      "allowedValues": [
+                        "Burstable",
+                        "GeneralPurpose",
+                        "MemoryOptimized"
+                      ],
+                      "metadata": {
+                        "description": "SKU tier."
+                      }
+                    },
+                    "storageSizeGB": {
+                      "type": "int",
+                      "defaultValue": 50,
+                      "minValue": 20,
+                      "metadata": {
+                        "description": "Storage size in GiB for the MySQL Flexible Server data disk."
+                      }
+                    },
+                    "adminLogin": {
+                      "type": "string",
+                      "defaultValue": "slurmadmin",
+                      "metadata": {
+                        "description": "MySQL admin login name. slurmdbd does not use this; it is the server admin."
+                      }
+                    },
+                    "adminPassword": {
+                      "type": "securestring",
+                      "metadata": {
+                        "description": "MySQL admin password. Generated by the CLI and passed as a secure parameter."
+                      }
+                    },
+                    "databaseName": {
+                      "type": "string",
+                      "defaultValue": "slurm_acct_db",
+                      "metadata": {
+                        "description": "Slurm accounting database name."
+                      }
+                    },
+                    "tags": {
+                      "type": "object",
+                      "metadata": {
+                        "description": "Resource tags."
+                      }
+                    }
+                  },
+                  "variables": {
+                    "serverName": "[format('mysql-{0}', parameters('clusterName'))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.DBforMySQL/flexibleServers",
+                      "apiVersion": "2023-12-30",
+                      "name": "[variables('serverName')]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "[parameters('skuName')]",
+                        "tier": "[parameters('skuTier')]"
+                      },
+                      "properties": {
+                        "administratorLogin": "[parameters('adminLogin')]",
+                        "administratorLoginPassword": "[parameters('adminPassword')]",
+                        "version": "8.0.21",
+                        "storage": {
+                          "storageSizeGB": "[parameters('storageSizeGB')]",
+                          "autoGrow": "Enabled",
+                          "iops": 360
+                        },
+                        "backup": {
+                          "backupRetentionDays": 7,
+                          "geoRedundantBackup": "Disabled"
+                        },
+                        "highAvailability": {
+                          "mode": "Disabled"
+                        },
+                        "network": {
+                          "delegatedSubnetResourceId": "[parameters('delegatedSubnetId')]",
+                          "publicNetworkAccess": "Disabled"
+                        }
+                      }
+                    },
+                    {
+                      "type": "Microsoft.DBforMySQL/flexibleServers/databases",
+                      "apiVersion": "2023-12-30",
+                      "name": "[format('{0}/{1}', variables('serverName'), parameters('databaseName'))]",
+                      "properties": {
+                        "charset": "utf8",
+                        "collation": "utf8_general_ci"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.DBforMySQL/flexibleServers', variables('serverName'))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.DBforMySQL/flexibleServers/configurations",
+                      "apiVersion": "2023-12-30",
+                      "name": "[format('{0}/{1}', variables('serverName'), 'innodb_lock_wait_timeout')]",
+                      "properties": {
+                        "value": "900",
+                        "source": "user-override"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.DBforMySQL/flexibleServers', variables('serverName'))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.DBforMySQL/flexibleServers/configurations",
+                      "apiVersion": "2023-12-30",
+                      "name": "[format('{0}/{1}', variables('serverName'), 'max_allowed_packet')]",
+                      "properties": {
+                        "value": "16777216",
+                        "source": "user-override"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.DBforMySQL/flexibleServers', variables('serverName'))]",
+                        "[resourceId('Microsoft.DBforMySQL/flexibleServers/configurations', variables('serverName'), 'innodb_lock_wait_timeout')]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.DBforMySQL/flexibleServers/configurations",
+                      "apiVersion": "2023-12-30",
+                      "name": "[format('{0}/{1}', variables('serverName'), 'log_bin_trust_function_creators')]",
+                      "properties": {
+                        "value": "ON",
+                        "source": "user-override"
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.DBforMySQL/flexibleServers', variables('serverName'))]",
+                        "[resourceId('Microsoft.DBforMySQL/flexibleServers/configurations', variables('serverName'), 'max_allowed_packet')]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "serverName": {
+                      "type": "string",
+                      "value": "[variables('serverName')]"
+                    },
+                    "fqdn": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.DBforMySQL/flexibleServers', variables('serverName')), '2023-12-30').fullyQualifiedDomainName]"
+                    },
+                    "adminLogin": {
+                      "type": "string",
+                      "value": "[parameters('adminLogin')]"
+                    },
+                    "databaseName": {
+                      "type": "string",
+                      "value": "[parameters('databaseName')]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'network')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "scheduler",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "vmSku": {
+                    "value": "[parameters('schedulerSku')]"
+                  },
+                  "ubuntuSku": {
+                    "value": "[parameters('ubuntuSku')]"
+                  },
+                  "subnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.schedulerSubnetId.value]"
+                  },
+                  "sshPublicKey": {
+                    "value": "[parameters('sshPublicKey')]"
+                  },
+                  "adminUsername": {
+                    "value": "[parameters('adminUsername')]"
+                  },
+                  "azclusterVersion": {
+                    "value": "[parameters('azclusterVersion')]"
+                  },
+                  "azclusterRepo": {
+                    "value": "[parameters('azclusterRepo')]"
+                  },
+                  "sharedMountIp": "[if(variables('runNfsServerOnScheduler'), createObject('value', ''), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountIp.value))]",
+                  "sharedExportPath": "[if(variables('runNfsServerOnScheduler'), createObject('value', ''), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountPath.value))]",
+                  "runNfsServer": {
+                    "value": "[variables('runNfsServerOnScheduler')]"
+                  },
+                  "partitionsConf": {
+                    "value": "[variables('partitionsConf')]"
+                  },
+                  "userAssignedIdentityId": {
+                    "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName')))]"
+                  },
+                  "userAssignedIdentityClientId": {
+                    "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName'))), '2023-01-31').clientId]"
+                  },
+                  "monUaiId": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.monUaiId.value), createObject('value', ''))]",
+                  "monUaiClientId": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.monUaiClientId.value), createObject('value', ''))]",
+                  "amwIngestionEndpoint": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.ingestionEndpoint.value), createObject('value', ''))]",
+                  "enableAccounting": {
+                    "value": "[parameters('enableAccounting')]"
+                  },
+                  "accountingMysqlFqdn": "[if(parameters('enableAccounting'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'accounting'), '2025-04-01').outputs.fqdn.value), createObject('value', ''))]",
+                  "accountingMysqlUser": "[if(parameters('enableAccounting'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'accounting'), '2025-04-01').outputs.adminLogin.value), createObject('value', ''))]",
+                  "accountingMysqlDatabase": "[if(parameters('enableAccounting'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'accounting'), '2025-04-01').outputs.databaseName.value), createObject('value', ''))]",
+                  "mysqlAdminPassword": {
+                    "value": "[parameters('mysqlAdminPassword')]"
+                  },
+                  "ldapAdminPassword": {
+                    "value": "[parameters('ldapAdminPassword')]"
+                  },
+                  "extraPackages": {
+                    "value": "[parameters('extraPackages')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "2265406851114073470"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "vmSku": {
+                      "type": "string"
+                    },
+                    "ubuntuSku": {
+                      "type": "string"
+                    },
+                    "subnetId": {
+                      "type": "string"
+                    },
+                    "sshPublicKey": {
+                      "type": "securestring"
+                    },
+                    "adminUsername": {
+                      "type": "string"
+                    },
+                    "azclusterVersion": {
+                      "type": "string"
+                    },
+                    "azclusterRepo": {
+                      "type": "string"
+                    },
+                    "sharedMountIp": {
+                      "type": "string"
+                    },
+                    "sharedExportPath": {
+                      "type": "string"
+                    },
+                    "runNfsServer": {
+                      "type": "bool",
+                      "defaultValue": false
+                    },
+                    "partitionsConf": {
+                      "type": "string"
+                    },
+                    "userAssignedIdentityId": {
+                      "type": "string"
+                    },
+                    "userAssignedIdentityClientId": {
+                      "type": "string"
+                    },
+                    "monUaiId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "monUaiClientId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "amwIngestionEndpoint": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "enableAccounting": {
+                      "type": "bool",
+                      "defaultValue": false
+                    },
+                    "accountingMysqlFqdn": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "accountingMysqlUser": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "accountingMysqlDatabase": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "mysqlAdminPassword": {
+                      "type": "securestring",
+                      "defaultValue": ""
+                    },
+                    "ldapAdminPassword": {
+                      "type": "securestring"
+                    },
+                    "extraPackages": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "variables": {
+                    "cloudInitTemplate": "#cloud-config\nhostname: {{CLUSTER_NAME}}-scheduler\nmanage_etc_hosts: true\nfqdn: {{CLUSTER_NAME}}-scheduler\n\npackage_update: true\npackage_upgrade: false\n\npackages:\n  - curl\n  - ca-certificates\n  - jq\n  - nfs-common\n  - munge\n  - libmunge2\n  - debconf-utils\n  - ldap-utils\n\nwrite_files:\n  - path: /etc/azcluster/install.env\n    permissions: '0644'\n    content: |\n      AZCLUSTER_VERSION={{AZCLUSTER_VERSION}}\n      AZCLUSTER_REPO={{AZCLUSTER_REPO}}\n      AZCLUSTER_NAME={{CLUSTER_NAME}}\n      AZCLUSTER_ROLE=scheduler\n      SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}\n      SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}\n      RUN_NFS_SERVER={{RUN_NFS_SERVER}}\n      ENABLE_ACCOUNTING={{ENABLE_ACCOUNTING}}\n      ACCT_MYSQL_FQDN={{ACCT_MYSQL_FQDN}}\n      ACCT_MYSQL_USER={{ACCT_MYSQL_USER}}\n      ACCT_MYSQL_DB={{ACCT_MYSQL_DB}}\n      LDAP_BASE_DN=dc=azcluster,dc=local\n      EXTRA_PACKAGES=\"{{EXTRA_PACKAGES}}\"\n  - path: /etc/azcluster/accounting.password\n    permissions: '0600'\n    owner: 'root:root'\n    content: |\n      {{ACCT_MYSQL_PASSWORD}}\n  - path: /etc/azcluster/ldap.password\n    permissions: '0600'\n    owner: 'root:root'\n    content: |\n      {{LDAP_ADMIN_PASSWORD}}\n  - path: /etc/azcluster/openssh-lpk.ldif\n    permissions: '0644'\n    content: |\n      dn: cn=openssh-lpk,cn=schema,cn=config\n      objectClass: olcSchemaConfig\n      cn: openssh-lpk\n      olcAttributeTypes: ( 1.3.6.1.4.1.24552.500.1.1.1.13\n        NAME 'sshPublicKey' DESC 'MANDATORY: OpenSSH Public key'\n        EQUALITY octetStringMatch\n        SYNTAX 1.3.6.1.4.1.1466.115.121.1.40 )\n      olcObjectClasses: ( 1.3.6.1.4.1.24552.500.1.1.2.0\n        NAME 'ldapPublicKey' SUP top AUXILIARY\n        DESC 'MANDATORY: OpenSSH LPK objectclass'\n        MAY ( sshPublicKey $ uid ) )\n  - path: /etc/azcluster/ldap-base.ldif.tmpl\n    permissions: '0644'\n    content: |\n      dn: ou=people,__BASE_DN__\n      objectClass: organizationalUnit\n      ou: people\n\n      dn: ou=groups,__BASE_DN__\n      objectClass: organizationalUnit\n      ou: groups\n\n      dn: cn=azusers,ou=groups,__BASE_DN__\n      objectClass: posixGroup\n      cn: azusers\n      gidNumber: 20000\n\n      dn: cn=uidNext,__BASE_DN__\n      objectClass: device\n      objectClass: extensibleObject\n      cn: uidNext\n      uidNumber: 20001\n  - path: /etc/systemd/system/azcluster-server.service\n    permissions: '0644'\n    content: |\n      [Unit]\n      Description=azcluster daemon\n      After=network-online.target\n      Wants=network-online.target\n\n      [Service]\n      Type=simple\n      ExecStart=/usr/local/bin/azcluster-server\n      Restart=on-failure\n      RestartSec=5\n      Environment=AZCLUSTER_BIND=0.0.0.0:8443\n      Environment=AZCLUSTER_CLUSTER_NAME={{CLUSTER_NAME}}\n      Environment=RUST_LOG=info\n\n      [Install]\n      WantedBy=multi-user.target\n  - path: /etc/apt/preferences.d/slurm-repository-pin-990\n    permissions: '0644'\n    content: |\n      Package: slurm-smd*\n      Pin: origin \"packages.microsoft.com\"\n      Pin-Priority: 990\n  - path: /opt/azcluster/install-scheduler.sh\n    permissions: '0755'\n    content: |\n      #!/usr/bin/env bash\n      set -euo pipefail\n      . /etc/azcluster/install.env\n\n      if [ -n \"${EXTRA_PACKAGES:-}\" ]; then\n        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}\n      fi\n\n      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmctld /var/log/slurm /etc/slurm /opt/pyxis\n\n      if [ \"${RUN_NFS_SERVER:-false}\" = \"false\" ]; then\n        if ! grep -q \" /shared \" /etc/fstab; then\n          echo \"${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0\" >> /etc/fstab\n        fi\n        mountpoint -q /shared || mount /shared\n      fi\n\n      SCHED_DIR=\"/shared/sched/${AZCLUSTER_NAME}\"\n      mkdir -p \"${SCHED_DIR}\"\n\n      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n      ARCH=$(dpkg --print-architecture)\n      CODENAME=$(. /etc/os-release; echo \"${VERSION_CODENAME}\")\n      echo \"deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main\" > /etc/apt/sources.list.d/slurm.list\n      EXTRA_PKGS=\"\"\n      if [ \"${RUN_NFS_SERVER:-false}\" = \"true\" ]; then\n        EXTRA_PKGS=\"${EXTRA_PKGS} nfs-kernel-server\"\n      fi\n      if [ \"${ENABLE_ACCOUNTING:-false}\" = \"true\" ]; then\n        EXTRA_PKGS=\"${EXTRA_PKGS} slurm-smd-slurmdbd mariadb-client\"\n      fi\n      apt-get -o DPkg::Lock::Timeout=600 update\n      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \\\n        slurm-smd \\\n        slurm-smd-client \\\n        slurm-smd-slurmctld \\\n        slurm-smd-libnss-slurm \\\n        ${EXTRA_PKGS}\n\n      if [ \"${RUN_NFS_SERVER:-false}\" = \"true\" ]; then\n        chmod 1777 /shared\n        if ! grep -q \"^/shared \" /etc/exports; then\n          echo \"/shared *(rw,sync,no_subtree_check,no_root_squash)\" >> /etc/exports\n        fi\n        systemctl enable --now nfs-server\n        exportfs -rav\n      fi\n\n      getent group slurm >/dev/null || groupadd -g 11100 slurm\n      id slurm >/dev/null 2>&1 || useradd -u 11100 -g 11100 -d /var/lib/slurm -s /usr/sbin/nologin -c \"Slurm\" slurm\n      chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm\n\n      if [ ! -f \"${SCHED_DIR}/munge.key\" ]; then\n        umask 077\n        dd if=/dev/urandom of=\"${SCHED_DIR}/munge.key\" bs=1 count=1024\n        chown munge:munge \"${SCHED_DIR}/munge.key\"\n        chmod 0400 \"${SCHED_DIR}/munge.key\"\n      fi\n      install -o munge -g munge -m 0400 \"${SCHED_DIR}/munge.key\" /etc/munge/munge.key\n\n      cat > /etc/slurm/slurm.conf <<EOF\n      ClusterName=${AZCLUSTER_NAME}\n      SlurmctldHost=${AZCLUSTER_NAME}-scheduler\n      SlurmUser=slurm\n      AuthType=auth/munge\n      CryptoType=crypto/munge\n      StateSaveLocation=/var/spool/slurmctld\n      SlurmdSpoolDir=/var/spool/slurmd\n      SlurmctldPort=6817\n      SlurmdPort=6818\n      SlurmctldLogFile=/var/log/slurm/slurmctld.log\n      SlurmdLogFile=/var/log/slurm/slurmd.log\n      ReturnToService=2\n      ProctrackType=proctrack/cgroup\n      TaskPlugin=task/affinity,task/cgroup\n      SelectType=select/cons_tres\n      SelectTypeParameters=CR_Core_Memory\n      GresTypes=gpu\n      SchedulerType=sched/backfill\n      MpiDefault=none\n      LaunchParameters=enable_nss_slurm\n      SlurmctldParameters=enable_configless\n      MaxNodeCount=128\n      TreeWidth=65533\n      PlugStackConfig=/etc/slurm/plugstack.conf\n      HealthCheckProgram=/usr/local/sbin/azcluster-healthcheck\n      HealthCheckInterval=300\n      HealthCheckNodeState=ANY,CYCLE\n      JobAcctGatherType=jobacct_gather/cgroup\n      JobAcctGatherFrequency=30\n      {{PARTITIONS}}\n      EOF\n\n      if [ \"${ENABLE_ACCOUNTING:-false}\" = \"true\" ]; then\n        cat >> /etc/slurm/slurm.conf <<EOF\n      AccountingStorageType=accounting_storage/slurmdbd\n      AccountingStorageHost=${AZCLUSTER_NAME}-scheduler\n      AccountingStoragePort=6819\n      AccountingStorageEnforce=associations,limits,qos\n      AccountingStorageTRES=gres/gpu\n      EOF\n      fi\n\n      cat > /etc/slurm/cgroup.conf <<EOF\n      CgroupPlugin=cgroup/v2\n      ConstrainCores=yes\n      ConstrainRAMSpace=yes\n      ConstrainDevices=yes\n      EOF\n\n      # Configless Slurm distributes slurm.conf to clients but NOT gres.conf;\n      # however slurmctld still parses its local copy to validate GresTypes.\n      # AutoDetect=nvml works because slurm-smd is built with NVML support.\n      cat > /etc/slurm/gres.conf <<EOF\n      AutoDetect=nvml\n      EOF\n      chown slurm:slurm /etc/slurm/gres.conf\n\n      mkdir -p /opt/pyxis\n      BASE=\"https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}\"\n      curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so \"${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so\"\n      chmod 0755 /opt/pyxis/spank_pyxis.so\n\n      cat > /etc/slurm/plugstack.conf <<EOF\n      required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime\n      EOF\n\n      chown -R slurm:slurm /etc/slurm\n      # cloud-init runcmd inherits a 0077 umask, so `cat >` produces 0600 files.\n      # The configs MUST be 0644 - srun/sinfo run as the submitting user and\n      # parse /etc/slurm/slurm.conf + plugstack.conf locally (Pyxis spank loads\n      # at submit time, so plugstack.conf must be world-readable too).\n      chmod 0644 /etc/slurm/slurm.conf /etc/slurm/plugstack.conf /etc/slurm/cgroup.conf /etc/slurm/gres.conf\n\n      EXAMPLES_DIR=/shared/examples\n      mkdir -p \"${EXAMPLES_DIR}\"\n      cat > \"${EXAMPLES_DIR}/hostname.sbatch\" <<'EOF'\n      #!/usr/bin/env bash\n      #SBATCH --job-name=hostname\n      #SBATCH --output=hostname-%j.out\n      #SBATCH --nodes=1\n      #SBATCH --ntasks-per-node=1\n      srun hostname\n      EOF\n      cat > \"${EXAMPLES_DIR}/pyxis-alpine.sbatch\" <<'EOF'\n      #!/usr/bin/env bash\n      #SBATCH --job-name=pyxis-alpine\n      #SBATCH --output=pyxis-alpine-%j.out\n      #SBATCH --nodes=1\n      #SBATCH --ntasks-per-node=1\n      srun --container-image=docker://alpine:latest hostname\n      EOF\n      cat > \"${EXAMPLES_DIR}/gpu-smi.sbatch\" <<'EOF'\n      #!/usr/bin/env bash\n      #SBATCH --job-name=gpu-smi\n      #SBATCH --output=gpu-smi-%j.out\n      #SBATCH --nodes=1\n      #SBATCH --gres=gpu:1\n      srun nvidia-smi\n      EOF\n      cat > \"${EXAMPLES_DIR}/nccl-allreduce.sbatch\" <<'EOF'\n      #!/usr/bin/env bash\n      #SBATCH --job-name=nccl-allreduce\n      #SBATCH --output=nccl-allreduce-%j.out\n      #SBATCH --nodes=2\n      #SBATCH --ntasks-per-node=8\n      #SBATCH --gpus-per-node=8\n      #SBATCH --exclusive\n\n      # Multi-node NCCL all-reduce on Azure NDv5 H100, bare-metal,\n      # using HPC-X (PMIx 4.x) + NCCL preinstalled in the\n      # microsoft-dsvm:ubuntu-hpc:2404 image. Expect ~340 GB/s avg /\n      # ~460 GB/s peak busbw at 16 GiB across 8x NDR400 IB.\n      #\n      # For the same test inside an NGC container (Pyxis), see\n      # dgxc-nemo-multinode-smoke.sbatch (added in v0.13.6).\n\n      HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 2>/dev/null | head -1)\n      if [ -z \"${HPCX_DIR}\" ]; then\n        echo \"HPC-X not found under /opt — wrong image?\" >&2\n        exit 1\n      fi\n      source \"${HPCX_DIR}/hpcx-init.sh\"\n      hpcx_load\n\n      export NCCL_DEBUG=INFO\n      export NCCL_IB_HCA=mlx5_ib\n      export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml\n      export UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1\n\n      srun --mpi=pmix /opt/nccl-tests/build/all_reduce_perf \\\n        -b 8M -e 16G -f 2 -g 1\n      EOF\n      cat > \"${EXAMPLES_DIR}/dgxc-nemo-container-smoke.sbatch\" <<'EOF'\n      #!/usr/bin/env bash\n      #SBATCH --job-name=dgxc-nemo-smoke\n      #SBATCH --output=dgxc-nemo-smoke-%j.out\n      #SBATCH --partition=gpu\n      #SBATCH --nodes=1\n      #SBATCH --ntasks-per-node=1\n      #SBATCH --gpus-per-node=8\n      #SBATCH --exclusive\n      #SBATCH --time=00:30:00\n\n      # DGXC infra smoke test on Azure NDv5 H100.\n      # Single node, 8 GPUs, in-container NCCL all-reduce inside the\n      # production DGXC NeMo container. ~10 minutes wall-clock (most of\n      # which is the first-time 20 GB container import onto /mnt/nvme).\n      #\n      # WHAT IT TESTS (the v0.13.5 surface):\n      #   * NVMe RAID-0 ephemeral scratch (/mnt/nvme) backing Enroot import\n      #     of the ~20 GB NeMo container -- seconds vs minutes on /var/lib\n      #   * Pyxis container launch with 8 H100 visible inside\n      #   * /etc/enroot/environ.d/50-nccl.env propagating NCCL_IB_HCA /\n      #     NCCL_TOPO_FILE / UCX_NET_DEVICES into the container\n      #   * /etc/enroot/mounts.d/50-azcluster.fstab bind-mounting\n      #     /opt/microsoft (NDv5 topology XML) into the container\n      #   * NCCL all-reduce across 8 H100 using NVLink + InfiniBand HCA\n      #     from inside the NGC NeMo container (IBext_v11 / SHARP)\n      #\n      # WHY SINGLE NODE: this is the infra smoke. For the multi-node\n      # containerised NCCL all-reduce (v0.13.6+) see\n      # dgxc-nemo-multinode-smoke.sbatch.\n      #\n      # WHY NOT \"RUN LLAMA 8B\": NeMo / Megatron-Bridge recipe APIs\n      # rename between container releases (llama31_8b_pretrain_config,\n      # llama3_8b factory, pretrain_recipe, etc.). The full DGXC Llama\n      # training flow is documented in walkthrough-dgxc.md via NVIDIA's\n      # llmb-run driver, which pins exact versions and handles the API\n      # surface for you. This sbatch is the deterministic infra check.\n      #\n      # RUN:\n      #   sbatch /shared/examples/dgxc-nemo-container-smoke.sbatch\n      #   tail -f dgxc-nemo-smoke-<jobid>.out\n      # Success criteria:\n      #   * \"pyxis: imported docker image: ...\" line appears\n      #   * \"rank 0 / world 8\" prints from inside the container\n      #   * \"all_reduce avg busbw\" prints with a value > 100 GB/s\n      #   * NCCL_DEBUG INFO mentions IBext_v11 + mlx5_ib (NOT 'via SOCKET')\n\n      NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}\n\n      mkdir -p /shared/dgxc\n      cat > /shared/dgxc/nccl_allreduce_smoke.py <<'PY'\n      import os, time, torch\n      import torch.distributed as dist\n\n      def main():\n          local_rank = int(os.environ[\"LOCAL_RANK\"])\n          torch.cuda.set_device(local_rank)\n          dist.init_process_group(backend=\"nccl\")\n          rank, world = dist.get_rank(), dist.get_world_size()\n          print(f\"rank {rank} / world {world} on device {torch.cuda.current_device()} \"\n                f\"({torch.cuda.get_device_name(local_rank)})\", flush=True)\n\n          # Warmup + measured all-reduce of a 1 GiB float16 tensor.\n          numel = 512 * 1024 * 1024          # 512 M elements = 1 GiB fp16\n          tensor = torch.ones(numel, dtype=torch.float16, device=\"cuda\")\n          for _ in range(5):\n              dist.all_reduce(tensor)\n          torch.cuda.synchronize()\n\n          iters = 20\n          dist.barrier()\n          t0 = time.perf_counter()\n          for _ in range(iters):\n              dist.all_reduce(tensor)\n          torch.cuda.synchronize()\n          elapsed = time.perf_counter() - t0\n\n          if rank == 0:\n              size_bytes = numel * 2\n              # busbw factor for ring/tree all-reduce = 2*(N-1)/N\n              algbw = size_bytes * iters / elapsed / 1e9\n              busbw = algbw * 2 * (world - 1) / world\n              print(f\"all_reduce size=1GiB iters={iters} elapsed={elapsed:.3f}s \"\n                    f\"algbw={algbw:.2f} GB/s avg busbw={busbw:.2f} GB/s\",\n                    flush=True)\n          dist.destroy_process_group()\n\n      if __name__ == \"__main__\":\n          main()\n      PY\n\n      srun \\\n        --container-image=\"${NEMO_IMAGE}\" \\\n        --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \\\n        --no-container-mount-home \\\n        --export=ALL,NCCL_DEBUG=INFO \\\n        bash -c 'set -euo pipefail; cd /; torchrun --nproc_per_node=8 /shared/dgxc/nccl_allreduce_smoke.py'\n      EOF\n      cat > \"${EXAMPLES_DIR}/dgxc-nemo-multinode-smoke.sbatch\" <<'EOF'\n      #!/usr/bin/env bash\n      #SBATCH --job-name=dgxc-nemo-multi\n      #SBATCH --output=dgxc-nemo-multi-%j.out\n      #SBATCH --partition=gpu\n      #SBATCH --nodes=2\n      #SBATCH --ntasks-per-node=8\n      #SBATCH --gpus-per-node=8\n      #SBATCH --exclusive\n      #SBATCH --time=00:30:00\n\n      # Multi-node containerised NCCL all-reduce on Azure NDv5 H100.\n      # 2 nodes x 8 H100 = 16 ranks across 8x NDR400 InfiniBand per node.\n      #\n      # This is the cross-node Pyxis test that v0.13.6 unblocked. Pre-\n      # v0.13.6 this failed with isolated single-node MPI worlds because\n      # slurmd had no PMIX_MCA_* env and Enroot wasn't propagating\n      # PMIX_* into the container or bind-mounting PMIX_SERVER_TMPDIR.\n      # v0.13.6 wires both: slurmd EnvironmentFile carries PMIX_MCA_*\n      # and /etc/enroot/hooks.d/50-slurm-pmi.sh handles propagation.\n      #\n      # WHAT IT TESTS:\n      #   * srun --mpi=pmix launches 16 ranks across 2 containers\n      #   * 50-slurm-pmi.sh hook copies PMIX_* + SLURM_* into container\n      #   * PMIX_SERVER_TMPDIR bind-mounted -> ranks see ONE PMIx world\n      #   * NCCL discovers 8x mlx5_ib NICs per node, IBext / SHARP\n      #   * All-reduce busbw across IB (expect > 100 GB/s avg @ 1 GiB)\n      #\n      # RUN:\n      #   sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch\n      # Success criteria:\n      #   * \"rank 0 / world 16\" and \"rank 8 / world 16\" both print\n      #   * \"all_reduce avg busbw\" prints with a value > 100 GB/s\n      #   * NCCL_DEBUG INFO shows \"NET/IB\" + \"mlx5_ib\" + \"via SHARP\"\n      #     (NOT \"via SOCKET\" - that means PMIx fell back to TCP)\n\n      NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}\n\n      # Reuse the same all-reduce script as the single-node smoke.\n      if [ ! -f /shared/dgxc/nccl_allreduce_smoke.py ]; then\n        echo \"Missing /shared/dgxc/nccl_allreduce_smoke.py; run dgxc-nemo-container-smoke.sbatch first to drop it.\" >&2\n        exit 1\n      fi\n\n      # srun --mpi=pmix is the key: it makes Slurm spawn one container\n      # rank per task with PMIX_* env populated; the enroot hook copies\n      # those into the container and bind-mounts the PMIx server socket.\n      srun --mpi=pmix \\\n        --container-image=\"${NEMO_IMAGE}\" \\\n        --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \\\n        --no-container-mount-home \\\n        --export=ALL,NCCL_DEBUG=INFO \\\n        bash -c 'set -euo pipefail; cd /; python /shared/dgxc/nccl_allreduce_smoke.py'\n      EOF\n      chmod 0755 \"${EXAMPLES_DIR}\"\n      chmod 0644 \"${EXAMPLES_DIR}\"/*.sbatch\n      chown -R azureuser:azureuser \"${EXAMPLES_DIR}\"\n\n      BASE=\"https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}\"\n      cd /tmp\n      TARBALL=\"azcluster-server-${AZCLUSTER_VERSION}-x86_64-linux.tar.gz\"\n      curl -fsSL --retry 8 --retry-delay 5 -O \"${BASE}/${TARBALL}\"\n      curl -fsSL --retry 8 --retry-delay 5 -O \"${BASE}/SHA256SUMS\"\n      sha256sum --ignore-missing -c SHA256SUMS\n      tar -xzf \"${TARBALL}\" -C /usr/local/bin/\n      chmod +x /usr/local/bin/azcluster-server\n\n      RG=$(curl -fsSL -H Metadata:true \"http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text\")\n      mkdir -p /etc/systemd/system/azcluster-server.service.d\n      cat > /etc/systemd/system/azcluster-server.service.d/resource-group.conf <<EOF\n      [Service]\n      Environment=AZCLUSTER_RESOURCE_GROUP=${RG}\n      EOF\n\n      # Azure CLI from MS repo (NOT via aka.ms/InstallAzureCLIDeb pipe — that\n      # script invokes apt without lock-timeout and races apt-daily on busy boots,\n      # killing the whole bootstrap under `set -euo pipefail`).\n      AZ_CODENAME=$(. /etc/os-release; echo \"${VERSION_CODENAME}\")\n      echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_CODENAME} main\" > /etc/apt/sources.list.d/azure-cli.list\n      apt-get -o DPkg::Lock::Timeout=600 update\n      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends azure-cli\n      # Defensive login: scheduler UAI may have no subscription RBAC under\n      # --no-monitoring --no-accounting test mode. No `az` calls follow on\n      # the scheduler itself, so a failed login is tolerable.\n      az login --identity --client-id {{UAI_CLIENT_ID}} --only-show-errors >/dev/null 2>&1 || true\n\n      NODE_EXP_VER=1.8.2\n      cd /tmp\n      curl -fsSL --retry 8 --retry-delay 5 -O \"https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXP_VER}/node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz\"\n      tar -xzf \"node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz\"\n      install -m 0755 \"node_exporter-${NODE_EXP_VER}.linux-amd64/node_exporter\" /usr/local/bin/node_exporter\n      id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter\n      cat > /etc/systemd/system/node_exporter.service <<'EOF'\n      [Unit]\n      Description=Prometheus Node Exporter\n      After=network-online.target\n      Wants=network-online.target\n      [Service]\n      User=node_exporter\n      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100\n      Restart=on-failure\n      RestartSec=5\n      [Install]\n      WantedBy=multi-user.target\n      EOF\n\n      systemctl daemon-reload\n      systemctl enable munge\n      systemctl restart munge\n      systemctl enable --now node_exporter\n\n      if [ \"${ENABLE_ACCOUNTING:-false}\" = \"true\" ]; then\n        # Azure MySQL Flex serves a DigiCert Global Root CA chain, which is\n        # already in Ubuntu's ca-certificates bundle. Point SSL_CA at the\n        # system bundle rather than re-downloading (dl.cacerts.digicert.com\n        # serves the wrong SNI cert and breaks curl).\n\n        ACCT_PASSWORD=$(cat /etc/azcluster/accounting.password)\n        cat > /etc/slurm/slurmdbd.conf <<EOF\n      AuthType=auth/munge\n      DbdHost=localhost\n      DbdPort=6819\n      SlurmUser=slurm\n      DebugLevel=info\n      LogFile=/var/log/slurm/slurmdbd.log\n      PidFile=/var/run/slurmdbd.pid\n      StorageType=accounting_storage/mysql\n      StorageHost=${ACCT_MYSQL_FQDN}\n      StoragePort=3306\n      StorageUser=${ACCT_MYSQL_USER}\n      StoragePass=${ACCT_PASSWORD}\n      StorageLoc=${ACCT_MYSQL_DB}\n      StorageParameters=SSL_CA=/etc/ssl/certs/ca-certificates.crt\n      EOF\n        chown slurm:slurm /etc/slurm/slurmdbd.conf\n        chmod 0600 /etc/slurm/slurmdbd.conf\n        unset ACCT_PASSWORD\n\n        # Wait for MySQL Flex to be reachable on :3306 before starting slurmdbd.\n        for i in $(seq 1 60); do\n          if (echo > /dev/tcp/${ACCT_MYSQL_FQDN}/3306) >/dev/null 2>&1; then\n            break\n          fi\n          sleep 5\n        done\n\n        systemctl enable --now slurmdbd\n        # Give slurmdbd a moment to open its socket before slurmctld registers.\n        sleep 5\n      fi\n\n      systemctl enable --now slurmctld\n      systemctl enable --now azcluster-server.service\n\n      if [ \"${ENABLE_ACCOUNTING:-false}\" = \"true\" ]; then\n        # Register the cluster with slurmdbd (no-op if already auto-registered).\n        for i in $(seq 1 12); do\n          if sacctmgr -i show cluster \"${AZCLUSTER_NAME}\" 2>/dev/null | grep -q \"${AZCLUSTER_NAME}\"; then\n            break\n          fi\n          sacctmgr -i add cluster \"${AZCLUSTER_NAME}\" >/dev/null 2>&1 || true\n          sleep 5\n        done\n        # AccountingStorageEnforce=associations refuses job submission unless\n        # every (user, account, cluster) tuple is registered. Seed a default\n        # account + the standard azureuser association so submits work out of\n        # the box. Future LDAP/Entra integration replaces the user step.\n        sacctmgr -i add account default Description=\"Default account\" Organization=azcluster >/dev/null 2>&1 || true\n        sacctmgr -i add user azureuser DefaultAccount=default >/dev/null 2>&1 || true\n      fi\n\n      LDAP_ADMIN_PW=$(cat /etc/azcluster/ldap.password)\n      export DEBIAN_FRONTEND=noninteractive\n      printf '%s\\n' \\\n        \"slapd slapd/internal/adminpw password ${LDAP_ADMIN_PW}\" \\\n        \"slapd slapd/internal/generated_adminpw password ${LDAP_ADMIN_PW}\" \\\n        \"slapd slapd/password1 password ${LDAP_ADMIN_PW}\" \\\n        \"slapd slapd/password2 password ${LDAP_ADMIN_PW}\" \\\n        \"slapd slapd/domain string azcluster.local\" \\\n        \"slapd shared/organization string azcluster\" \\\n        \"slapd slapd/backend select MDB\" \\\n        \"slapd slapd/purge_database boolean true\" \\\n        \"slapd slapd/move_old_database boolean true\" \\\n        \"slapd slapd/no_configuration boolean false\" \\\n        | debconf-set-selections\n      apt-get -o DPkg::Lock::Timeout=600 install -y slapd\n      for i in $(seq 1 30); do\n        if ldapsearch -Y EXTERNAL -H ldapi:/// -b cn=schema,cn=config dn 2>/dev/null | grep -q '^dn: cn=.*core,cn=schema'; then\n          break\n        fi\n        sleep 2\n      done\n\n      set +e\n      ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/azcluster/openssh-lpk.ldif\n      rc=$?\n      set -e\n      if [ $rc -ne 0 ] && [ $rc -ne 68 ]; then\n        echo \"openssh-lpk schema add failed (rc=$rc)\" >&2\n        exit $rc\n      fi\n\n      BASE_LDIF=/etc/azcluster/ldap-base.ldif\n      sed 's|__BASE_DN__|dc=azcluster,dc=local|g' /etc/azcluster/ldap-base.ldif.tmpl > ${BASE_LDIF}\n      set +e\n      ldapadd -x -D \"cn=admin,dc=azcluster,dc=local\" -w \"${LDAP_ADMIN_PW}\" -H ldap://127.0.0.1 -c -f ${BASE_LDIF}\n      rc=$?\n      set -e\n      if [ $rc -ne 0 ] && [ $rc -ne 68 ]; then\n        echo \"base LDIF add failed (rc=$rc)\" >&2\n        exit $rc\n      fi\n\n      sed -i 's|^SLAPD_SERVICES=.*|SLAPD_SERVICES=\"ldap:/// ldapi:///\"|' /etc/default/slapd\n      systemctl restart slapd\n      systemctl enable slapd\n      unset LDAP_ADMIN_PW\n\n      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \\\n        sssd sssd-ldap sssd-tools libnss-sss\n      cat > /etc/sssd/sssd.conf <<EOF\n      [sssd]\n      domains = azcluster\n      config_file_version = 2\n      services = nss, pam\n\n      [domain/azcluster]\n      id_provider = ldap\n      auth_provider = ldap\n      ldap_uri = ldap://127.0.0.1\n      ldap_search_base = dc=azcluster,dc=local\n      enumerate = false\n      cache_credentials = true\n      override_homedir = /shared/home/%u\n      entry_cache_timeout = 60\n      entry_cache_user_timeout = 60\n      EOF\n      chmod 0600 /etc/sssd/sssd.conf\n      chown root:root /etc/sssd/sssd.conf\n      systemctl enable --now sssd\n      systemctl restart slurmctld\n\n      chmod 0755 /shared\n      install -d -m 0755 -o root -g root /shared/home\n\n      touch /var/log/azcluster/ready\n\nruncmd:\n  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true\n  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true\n  - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'\n  - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-scheduler.sh 2>&1 | tee -a /var/log/azcluster/install.log'\n",
+                    "cloudInit": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(variables('cloudInitTemplate'), '{{AZCLUSTER_VERSION}}', parameters('azclusterVersion')), '{{AZCLUSTER_REPO}}', parameters('azclusterRepo')), '{{ADMIN_USER}}', parameters('adminUsername')), '{{CLUSTER_NAME}}', parameters('clusterName')), '{{SHARED_MOUNT_IP}}', parameters('sharedMountIp')), '{{SHARED_EXPORT_PATH}}', parameters('sharedExportPath')), '{{RUN_NFS_SERVER}}', if(parameters('runNfsServer'), 'true', 'false')), '{{PARTITIONS}}', parameters('partitionsConf')), '{{UAI_CLIENT_ID}}', parameters('userAssignedIdentityClientId')), '{{MON_UAI_CLIENT_ID}}', parameters('monUaiClientId')), '{{AMW_INGEST_URL}}', parameters('amwIngestionEndpoint')), '{{SUBSCRIPTION_ID}}', subscription().subscriptionId), '{{ENABLE_ACCOUNTING}}', if(parameters('enableAccounting'), 'true', 'false')), '{{ACCT_MYSQL_FQDN}}', parameters('accountingMysqlFqdn')), '{{ACCT_MYSQL_USER}}', parameters('accountingMysqlUser')), '{{ACCT_MYSQL_DB}}', parameters('accountingMysqlDatabase')), '{{ACCT_MYSQL_PASSWORD}}', parameters('mysqlAdminPassword')), '{{LDAP_ADMIN_PASSWORD}}', parameters('ldapAdminPassword')), '{{EXTRA_PACKAGES}}', parameters('extraPackages'))]",
+                    "userIdentities": "[if(empty(parameters('monUaiId')), createObject(format('{0}', parameters('userAssignedIdentityId')), createObject()), createObject(format('{0}', parameters('userAssignedIdentityId')), createObject(), format('{0}', parameters('monUaiId')), createObject()))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Network/networkInterfaces",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('nic-{0}-scheduler', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "ipConfigurations": [
+                          {
+                            "name": "ipcfg",
+                            "properties": {
+                              "privateIPAllocationMethod": "Dynamic",
+                              "subnet": {
+                                "id": "[parameters('subnetId')]"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Compute/virtualMachines",
+                      "apiVersion": "2024-07-01",
+                      "name": "[format('vm-{0}-scheduler', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "identity": {
+                        "type": "SystemAssigned, UserAssigned",
+                        "userAssignedIdentities": "[variables('userIdentities')]"
+                      },
+                      "properties": {
+                        "hardwareProfile": {
+                          "vmSize": "[parameters('vmSku')]"
+                        },
+                        "osProfile": {
+                          "computerName": "[format('{0}-scheduler', parameters('clusterName'))]",
+                          "adminUsername": "[parameters('adminUsername')]",
+                          "linuxConfiguration": {
+                            "disablePasswordAuthentication": true,
+                            "ssh": {
+                              "publicKeys": [
+                                {
+                                  "path": "[format('/home/{0}/.ssh/authorized_keys', parameters('adminUsername'))]",
+                                  "keyData": "[parameters('sshPublicKey')]"
+                                }
+                              ]
+                            }
+                          },
+                          "customData": "[base64(variables('cloudInit'))]"
+                        },
+                        "storageProfile": {
+                          "imageReference": {
+                            "publisher": "microsoft-dsvm",
+                            "offer": "ubuntu-hpc",
+                            "sku": "[parameters('ubuntuSku')]",
+                            "version": "latest"
+                          },
+                          "osDisk": {
+                            "createOption": "FromImage",
+                            "managedDisk": {
+                              "storageAccountType": "Premium_LRS"
+                            }
+                          }
+                        },
+                        "networkProfile": {
+                          "networkInterfaces": [
+                            {
+                              "id": "[resourceId('Microsoft.Network/networkInterfaces', format('nic-{0}-scheduler', parameters('clusterName')))]"
+                            }
+                          ]
+                        }
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/networkInterfaces', format('nic-{0}-scheduler', parameters('clusterName')))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "privateIp": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', format('nic-{0}-scheduler', parameters('clusterName'))), '2024-01-01').ipConfigurations[0].properties.privateIPAddress]"
+                    },
+                    "vmId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.Compute/virtualMachines', format('vm-{0}-scheduler', parameters('clusterName')))]"
+                    },
+                    "vmName": {
+                      "type": "string",
+                      "value": "[format('vm-{0}-scheduler', parameters('clusterName'))]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'accounting')]",
+                "[resourceId('Microsoft.Resources/deployments', 'anf')]",
+                "[resourceId('Microsoft.Resources/deployments', 'monitoring')]",
+                "[resourceId('Microsoft.Resources/deployments', 'network')]",
+                "[resourceId('Microsoft.Authorization/roleAssignments', guid(resourceGroup().id, resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName'))), variables('contributorRoleId')))]",
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('uai-{0}-scheduler', parameters('clusterName')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "login",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "vmSku": {
+                    "value": "[parameters('loginSku')]"
+                  },
+                  "ubuntuSku": {
+                    "value": "[parameters('ubuntuSku')]"
+                  },
+                  "subnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.loginSubnetId.value]"
+                  },
+                  "sshPublicKey": {
+                    "value": "[parameters('sshPublicKey')]"
+                  },
+                  "adminUsername": {
+                    "value": "[parameters('adminUsername')]"
+                  },
+                  "publicIp": {
+                    "value": "[parameters('loginPublicIp')]"
+                  },
+                  "schedulerPrivateIp": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'scheduler'), '2025-04-01').outputs.privateIp.value]"
+                  },
+                  "sharedMountIp": "[if(variables('runNfsServerOnScheduler'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'scheduler'), '2025-04-01').outputs.privateIp.value), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountIp.value))]",
+                  "sharedExportPath": "[if(variables('runNfsServerOnScheduler'), createObject('value', 'shared'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountPath.value))]",
+                  "azclusterVersion": {
+                    "value": "[parameters('azclusterVersion')]"
+                  },
+                  "azclusterRepo": {
+                    "value": "[parameters('azclusterRepo')]"
+                  },
+                  "amlfsMountCommand": "[if(greater(parameters('amlfsSizeTiB'), 0), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'amlfs'), '2025-04-01').outputs.mountCommand.value), createObject('value', ''))]",
+                  "monUaiId": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.monUaiId.value), createObject('value', ''))]",
+                  "monUaiClientId": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.monUaiClientId.value), createObject('value', ''))]",
+                  "amwIngestionEndpoint": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.ingestionEndpoint.value), createObject('value', ''))]",
+                  "extraPackages": {
+                    "value": "[parameters('extraPackages')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "17528199085614113961"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "vmSku": {
+                      "type": "string"
+                    },
+                    "ubuntuSku": {
+                      "type": "string"
+                    },
+                    "subnetId": {
+                      "type": "string"
+                    },
+                    "sshPublicKey": {
+                      "type": "securestring"
+                    },
+                    "adminUsername": {
+                      "type": "string"
+                    },
+                    "publicIp": {
+                      "type": "bool"
+                    },
+                    "schedulerPrivateIp": {
+                      "type": "string"
+                    },
+                    "sharedMountIp": {
+                      "type": "string"
+                    },
+                    "sharedExportPath": {
+                      "type": "string"
+                    },
+                    "azclusterVersion": {
+                      "type": "string"
+                    },
+                    "azclusterRepo": {
+                      "type": "string"
+                    },
+                    "amlfsMountCommand": {
+                      "type": "string"
+                    },
+                    "monUaiId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "monUaiClientId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "amwIngestionEndpoint": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "extraPackages": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "variables": {
+                    "cloudInitTemplate": "#cloud-config\nhostname: {{CLUSTER_NAME}}-login\nmanage_etc_hosts: true\n\npackage_update: true\npackage_upgrade: false\n\npackages:\n  - curl\n  - ca-certificates\n  - jq\n  - nfs-common\n  - munge\n  - libmunge2\n\nwrite_files:\n  - path: /etc/azcluster/cluster.env\n    permissions: '0644'\n    content: |\n      AZCLUSTER_NAME={{CLUSTER_NAME}}\n      AZCLUSTER_SCHEDULER={{SCHEDULER_IP}}\n      AZCLUSTER_REPO={{AZCLUSTER_REPO}}\n      AZCLUSTER_VERSION={{AZCLUSTER_VERSION}}\n      AZCLUSTER_ROLE=login\n      SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}\n      SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}\n      AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}\n      EXTRA_PACKAGES=\"{{EXTRA_PACKAGES}}\"\n  - path: /etc/profile.d/azcluster.sh\n    permissions: '0644'\n    content: |\n      export AZCLUSTER_NAME={{CLUSTER_NAME}}\n      export AZCLUSTER_SCHEDULER={{SCHEDULER_IP}}\n      export SLURM_CONF_SERVER={{SCHEDULER_IP}}:6817\n  - path: /etc/apt/preferences.d/slurm-repository-pin-990\n    permissions: '0644'\n    content: |\n      Package: slurm-smd*\n      Pin: origin \"packages.microsoft.com\"\n      Pin-Priority: 990\n  - path: /opt/azcluster/install-login.sh\n    permissions: '0755'\n    content: |\n      #!/usr/bin/env bash\n      set -euo pipefail\n      . /etc/azcluster/cluster.env\n\n      if [ -n \"${EXTRA_PACKAGES:-}\" ]; then\n        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}\n      fi\n\n      mkdir -p /shared /var/log/azcluster /etc/slurm\n\n      if ! grep -q \" /shared \" /etc/fstab; then\n        echo \"${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0\" >> /etc/fstab\n      fi\n      for i in $(seq 1 60); do\n        mountpoint -q /shared && break\n        mount /shared && break\n        echo \"waiting for NFS at ${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH}...\"\n        sleep 5\n      done\n      mountpoint -q /shared\n\n      if [ -n \"${AMLFS_MOUNT_CMD:-}\" ]; then\n        mkdir -p /amlfs\n        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client || true\n        if ! mountpoint -q /amlfs; then\n          eval \"${AMLFS_MOUNT_CMD} /amlfs\" || echo \"AMLFS mount failed; continuing\" >&2\n        fi\n      fi\n\n      SCHED_DIR=\"/shared/sched/${AZCLUSTER_NAME}\"\n      while [ ! -f \"${SCHED_DIR}/munge.key\" ]; do sleep 5; done\n      install -o munge -g munge -m 0400 \"${SCHED_DIR}/munge.key\" /etc/munge/munge.key\n\n      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n      ARCH=$(dpkg --print-architecture)\n      CODENAME=$(. /etc/os-release; echo \"${VERSION_CODENAME}\")\n      echo \"deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main\" > /etc/apt/sources.list.d/slurm.list\n      apt-get -o DPkg::Lock::Timeout=600 update\n      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \\\n        slurm-smd \\\n        slurm-smd-client \\\n        slurm-smd-sackd\n\n      mkdir -p /opt/pyxis\n      BASE=\"https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}\"\n      curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so \"${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so\"\n      chmod 0755 /opt/pyxis/spank_pyxis.so\n\n      mkdir -p /etc/slurm\n      cat > /etc/slurm/plugstack.conf <<EOF\n      required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime\n      EOF\n      # cloud-init runcmd inherits a 0077 umask; plugstack.conf MUST be\n      # world-readable because srun loads spank plugins at submit time.\n      chmod 0644 /etc/slurm/plugstack.conf\n\n      getent group slurm >/dev/null || groupadd -g 11100 slurm\n      id slurm >/dev/null 2>&1 || useradd -u 11100 -g 11100 -d /var/lib/slurm -s /usr/sbin/nologin -c \"Slurm\" slurm\n\n      mkdir -p /run/slurm/conf\n      cat > /etc/profile.d/slurm-configless.sh <<EOF\n      export SLURM_CONF=/run/slurm/conf/slurm.conf\n      EOF\n      cat > /etc/systemd/system/sackd.service <<EOF\n      [Unit]\n      Description=Slurm auth/cred daemon (configless client)\n      After=network-online.target munge.service remote-fs.target\n      Wants=network-online.target munge.service\n      [Service]\n      Type=notify\n      ExecStart=/usr/sbin/sackd --systemd --conf-server ${AZCLUSTER_SCHEDULER}:6817\n      Restart=on-failure\n      RestartSec=10\n      [Install]\n      WantedBy=multi-user.target\n      EOF\n\n      systemctl daemon-reload\n      systemctl enable munge\n      systemctl restart munge\n\n      NODE_EXP_VER=1.8.2\n      cd /tmp\n      curl -fsSL --retry 8 --retry-delay 5 -O \"https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXP_VER}/node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz\"\n      tar -xzf \"node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz\"\n      install -m 0755 \"node_exporter-${NODE_EXP_VER}.linux-amd64/node_exporter\" /usr/local/bin/node_exporter\n      id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter\n      cat > /etc/systemd/system/node_exporter.service <<'EOF'\n      [Unit]\n      Description=Prometheus Node Exporter\n      After=network-online.target\n      Wants=network-online.target\n      [Service]\n      User=node_exporter\n      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100\n      Restart=on-failure\n      RestartSec=5\n      [Install]\n      WantedBy=multi-user.target\n      EOF\n      systemctl daemon-reload\n      systemctl enable --now node_exporter\n\n      MON_UAI_CLIENT_ID=\"{{MON_UAI_CLIENT_ID}}\"\n      AMW_INGEST_URL=\"{{AMW_INGEST_URL}}\"\n      if [ -n \"${MON_UAI_CLIENT_ID}\" ] && [ -n \"${AMW_INGEST_URL}\" ]; then\n        PROM_VER=3.3.0\n        cd /tmp\n        curl -fsSL --retry 8 --retry-delay 5 -O \"https://github.com/prometheus/prometheus/releases/download/v${PROM_VER}/prometheus-${PROM_VER}.linux-amd64.tar.gz\"\n        tar -xzf \"prometheus-${PROM_VER}.linux-amd64.tar.gz\"\n        install -d /opt/prometheus\n        install -m 0755 \"prometheus-${PROM_VER}.linux-amd64/prometheus\" /opt/prometheus/prometheus\n        install -d /mnt/prometheus/data\n        id -u prometheus >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin prometheus\n        chown -R prometheus:prometheus /opt/prometheus /mnt/prometheus\n        INSTANCE_NAME=$(hostname)\n        SUBSCRIPTION_ID=\"{{SUBSCRIPTION_ID}}\"\n        RG_NAME=$(curl -fsSL -H Metadata:true \"http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text\")\n        cat > /opt/prometheus/prometheus.yml <<EOF\n      global:\n        scrape_interval: 15s\n        evaluation_interval: 15s\n        external_labels:\n          subscription: ${SUBSCRIPTION_ID}\n          cluster: ${RG_NAME}/{{CLUSTER_NAME}}\n          instance: ${INSTANCE_NAME}\n          role: login\n      remote_write:\n        - url: \"${AMW_INGEST_URL}\"\n          azuread:\n            cloud: AzurePublic\n            managed_identity:\n              client_id: ${MON_UAI_CLIENT_ID}\n      scrape_configs:\n        - job_name: node_exporter\n          static_configs:\n            - targets: ['127.0.0.1:9100']\n      EOF\n        chmod 0644 /opt/prometheus/prometheus.yml\n        cat > /etc/systemd/system/prometheus.service <<'EOF'\n      [Unit]\n      Description=Prometheus\n      After=network-online.target\n      Wants=network-online.target\n      [Service]\n      User=prometheus\n      ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/mnt/prometheus/data --web.listen-address=127.0.0.1:9090\n      Restart=on-failure\n      RestartSec=10\n      [Install]\n      WantedBy=multi-user.target\n      EOF\n        systemctl daemon-reload\n        systemctl enable --now prometheus\n      fi\n\n      if [ -x /usr/sbin/sackd ]; then\n        systemctl enable --now sackd\n      fi\n\n      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \\\n        sssd sssd-ldap sssd-tools libnss-sss libpam-sss oddjob-mkhomedir\n      cat > /etc/sssd/sssd.conf <<EOF\n      [sssd]\n      domains = azcluster\n      config_file_version = 2\n      services = nss, pam, ssh\n\n      [domain/azcluster]\n      id_provider = ldap\n      auth_provider = ldap\n      ldap_uri = ldap://${AZCLUSTER_SCHEDULER}\n      ldap_search_base = dc=azcluster,dc=local\n      ldap_user_extra_attrs = sshPublicKey:sshPublicKey\n      ldap_user_ssh_public_key = sshPublicKey\n      enumerate = false\n      cache_credentials = true\n      override_homedir = /shared/home/%u\n      entry_cache_timeout = 60\n      entry_cache_user_timeout = 60\n      EOF\n      chmod 0600 /etc/sssd/sssd.conf\n      chown root:root /etc/sssd/sssd.conf\n      pam-auth-update --enable mkhomedir\n      sed -i 's|^session\\s\\+optional\\s\\+pam_mkhomedir\\.so.*|session optional pam_mkhomedir.so umask=0077|' /etc/pam.d/common-session || true\n      if ! grep -q '^AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys' /etc/ssh/sshd_config; then\n        printf '\\nAuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys\\nAuthorizedKeysCommandUser nobody\\n' >> /etc/ssh/sshd_config\n      fi\n      systemctl enable --now sssd\n      systemctl restart ssh\n\n      touch /var/log/azcluster/ready\n\nruncmd:\n  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true\n  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true\n  - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'\n  - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-login.sh 2>&1 | tee -a /var/log/azcluster/install.log'\n",
+                    "cloudInit": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(variables('cloudInitTemplate'), '{{ADMIN_USER}}', parameters('adminUsername')), '{{CLUSTER_NAME}}', parameters('clusterName')), '{{SCHEDULER_IP}}', parameters('schedulerPrivateIp')), '{{SHARED_MOUNT_IP}}', parameters('sharedMountIp')), '{{SHARED_EXPORT_PATH}}', parameters('sharedExportPath')), '{{AZCLUSTER_VERSION}}', parameters('azclusterVersion')), '{{AZCLUSTER_REPO}}', parameters('azclusterRepo')), '{{AMLFS_MOUNT_CMD}}', parameters('amlfsMountCommand')), '{{MON_UAI_CLIENT_ID}}', parameters('monUaiClientId')), '{{AMW_INGEST_URL}}', parameters('amwIngestionEndpoint')), '{{SUBSCRIPTION_ID}}', subscription().subscriptionId), '{{EXTRA_PACKAGES}}', parameters('extraPackages'))]",
+                    "hasMonUai": "[not(empty(parameters('monUaiId')))]"
+                  },
+                  "resources": [
+                    {
+                      "condition": "[parameters('publicIp')]",
+                      "type": "Microsoft.Network/publicIPAddresses",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('pip-{0}-login', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "sku": {
+                        "name": "Standard"
+                      },
+                      "properties": {
+                        "publicIPAllocationMethod": "Static",
+                        "publicIPAddressVersion": "IPv4"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.Network/networkInterfaces",
+                      "apiVersion": "2024-01-01",
+                      "name": "[format('nic-{0}-login', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "properties": {
+                        "ipConfigurations": [
+                          {
+                            "name": "ipcfg",
+                            "properties": {
+                              "privateIPAllocationMethod": "Dynamic",
+                              "subnet": {
+                                "id": "[parameters('subnetId')]"
+                              },
+                              "publicIPAddress": "[if(parameters('publicIp'), createObject('id', resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-login', parameters('clusterName')))), null())]"
+                            }
+                          }
+                        ]
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-login', parameters('clusterName')))]"
+                      ]
+                    },
+                    {
+                      "type": "Microsoft.Compute/virtualMachines",
+                      "apiVersion": "2024-07-01",
+                      "name": "[format('vm-{0}-login', parameters('clusterName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "identity": "[if(variables('hasMonUai'), createObject('type', 'SystemAssigned, UserAssigned', 'userAssignedIdentities', createObject(format('{0}', parameters('monUaiId')), createObject())), createObject('type', 'SystemAssigned'))]",
+                      "properties": {
+                        "hardwareProfile": {
+                          "vmSize": "[parameters('vmSku')]"
+                        },
+                        "osProfile": {
+                          "computerName": "[format('{0}-login', parameters('clusterName'))]",
+                          "adminUsername": "[parameters('adminUsername')]",
+                          "linuxConfiguration": {
+                            "disablePasswordAuthentication": true,
+                            "ssh": {
+                              "publicKeys": [
+                                {
+                                  "path": "[format('/home/{0}/.ssh/authorized_keys', parameters('adminUsername'))]",
+                                  "keyData": "[parameters('sshPublicKey')]"
+                                }
+                              ]
+                            }
+                          },
+                          "customData": "[base64(variables('cloudInit'))]"
+                        },
+                        "storageProfile": {
+                          "imageReference": {
+                            "publisher": "microsoft-dsvm",
+                            "offer": "ubuntu-hpc",
+                            "sku": "[parameters('ubuntuSku')]",
+                            "version": "latest"
+                          },
+                          "osDisk": {
+                            "createOption": "FromImage",
+                            "managedDisk": {
+                              "storageAccountType": "Premium_LRS"
+                            }
+                          }
+                        },
+                        "networkProfile": {
+                          "networkInterfaces": [
+                            {
+                              "id": "[resourceId('Microsoft.Network/networkInterfaces', format('nic-{0}-login', parameters('clusterName')))]"
+                            }
+                          ]
+                        }
+                      },
+                      "dependsOn": [
+                        "[resourceId('Microsoft.Network/networkInterfaces', format('nic-{0}-login', parameters('clusterName')))]"
+                      ]
+                    }
+                  ],
+                  "outputs": {
+                    "publicIp": {
+                      "type": "string",
+                      "value": "[if(parameters('publicIp'), reference(resourceId('Microsoft.Network/publicIPAddresses', format('pip-{0}-login', parameters('clusterName'))), '2024-01-01').ipAddress, '')]"
+                    },
+                    "privateIp": {
+                      "type": "string",
+                      "value": "[reference(resourceId('Microsoft.Network/networkInterfaces', format('nic-{0}-login', parameters('clusterName'))), '2024-01-01').ipConfigurations[0].properties.privateIPAddress]"
+                    },
+                    "vmId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.Compute/virtualMachines', format('vm-{0}-login', parameters('clusterName')))]"
+                    },
+                    "vmName": {
+                      "type": "string",
+                      "value": "[format('vm-{0}-login', parameters('clusterName'))]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'amlfs')]",
+                "[resourceId('Microsoft.Resources/deployments', 'anf')]",
+                "[resourceId('Microsoft.Resources/deployments', 'monitoring')]",
+                "[resourceId('Microsoft.Resources/deployments', 'network')]",
+                "[resourceId('Microsoft.Resources/deployments', 'scheduler')]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "compute",
+                "count": "[length(parameters('pools'))]"
+              },
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "[format('compute-{0}', parameters('pools')[copyIndex()].name)]",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "clusterName": {
+                    "value": "[parameters('clusterName')]"
+                  },
+                  "poolName": {
+                    "value": "[parameters('pools')[copyIndex()].name]"
+                  },
+                  "location": {
+                    "value": "[parameters('location')]"
+                  },
+                  "vmSku": {
+                    "value": "[parameters('pools')[copyIndex()].sku]"
+                  },
+                  "ubuntuSku": {
+                    "value": "[parameters('ubuntuSku')]"
+                  },
+                  "subnetId": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'network'), '2025-04-01').outputs.computeSubnetId.value]"
+                  },
+                  "sshPublicKey": {
+                    "value": "[parameters('sshPublicKey')]"
+                  },
+                  "adminUsername": {
+                    "value": "[parameters('adminUsername')]"
+                  },
+                  "desiredCount": {
+                    "value": "[parameters('pools')[copyIndex()].count]"
+                  },
+                  "azclusterVersion": {
+                    "value": "[parameters('azclusterVersion')]"
+                  },
+                  "azclusterRepo": {
+                    "value": "[parameters('azclusterRepo')]"
+                  },
+                  "schedulerPrivateIp": {
+                    "value": "[reference(resourceId('Microsoft.Resources/deployments', 'scheduler'), '2025-04-01').outputs.privateIp.value]"
+                  },
+                  "sharedMountIp": "[if(variables('runNfsServerOnScheduler'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'scheduler'), '2025-04-01').outputs.privateIp.value), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountIp.value))]",
+                  "sharedExportPath": "[if(variables('runNfsServerOnScheduler'), createObject('value', 'shared'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountPath.value))]",
+                  "amlfsMountCommand": "[if(greater(parameters('amlfsSizeTiB'), 0), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'amlfs'), '2025-04-01').outputs.mountCommand.value), createObject('value', ''))]",
+                  "monUaiId": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.monUaiId.value), createObject('value', ''))]",
+                  "monUaiClientId": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.monUaiClientId.value), createObject('value', ''))]",
+                  "amwIngestionEndpoint": "[if(parameters('enableMonitoring'), createObject('value', reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.ingestionEndpoint.value), createObject('value', ''))]",
+                  "extraPackages": {
+                    "value": "[parameters('extraPackages')]"
+                  },
+                  "tags": {
+                    "value": "[parameters('tags')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.41.2.15936",
+                      "templateHash": "14688911601552575430"
+                    }
+                  },
+                  "parameters": {
+                    "clusterName": {
+                      "type": "string"
+                    },
+                    "poolName": {
+                      "type": "string"
+                    },
+                    "location": {
+                      "type": "string"
+                    },
+                    "vmSku": {
+                      "type": "string"
+                    },
+                    "ubuntuSku": {
+                      "type": "string"
+                    },
+                    "subnetId": {
+                      "type": "string"
+                    },
+                    "sshPublicKey": {
+                      "type": "securestring"
+                    },
+                    "adminUsername": {
+                      "type": "string"
+                    },
+                    "desiredCount": {
+                      "type": "int"
+                    },
+                    "azclusterVersion": {
+                      "type": "string"
+                    },
+                    "azclusterRepo": {
+                      "type": "string"
+                    },
+                    "schedulerPrivateIp": {
+                      "type": "string"
+                    },
+                    "sharedMountIp": {
+                      "type": "string"
+                    },
+                    "sharedExportPath": {
+                      "type": "string"
+                    },
+                    "amlfsMountCommand": {
+                      "type": "string"
+                    },
+                    "monUaiId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "monUaiClientId": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "amwIngestionEndpoint": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "extraPackages": {
+                      "type": "string",
+                      "defaultValue": ""
+                    },
+                    "tags": {
+                      "type": "object"
+                    }
+                  },
+                  "variables": {
+                    "cloudInitTemplate": "#cloud-config\nmanage_etc_hosts: false\n\npackage_update: true\npackage_upgrade: false\n\npackages:\n  - curl\n  - ca-certificates\n  - jq\n  - nfs-common\n  - munge\n  - libmunge2\n  - libcap2\n  - squashfs-tools\n  - parallel\n  - fuse-overlayfs\n  - pigz\n  - zstd\n\nwrite_files:\n  - path: /etc/azcluster/install.env\n    permissions: '0644'\n    content: |\n      AZCLUSTER_VERSION={{AZCLUSTER_VERSION}}\n      AZCLUSTER_REPO={{AZCLUSTER_REPO}}\n      AZCLUSTER_NAME={{CLUSTER_NAME}}\n      AZCLUSTER_ROLE=compute\n      AZCLUSTER_POOL={{POOL_NAME}}\n      SCHEDULER_IP={{SCHEDULER_IP}}\n      SHARED_MOUNT_IP={{SHARED_MOUNT_IP}}\n      SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}\n      AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}\n      EXTRA_PACKAGES=\"{{EXTRA_PACKAGES}}\"\n      ENROOT_VERSION=4.0.1\n  - path: /etc/apt/preferences.d/slurm-repository-pin-990\n    permissions: '0644'\n    content: |\n      Package: slurm-smd*\n      Pin: origin \"packages.microsoft.com\"\n      Pin-Priority: 990\n  - path: /etc/systemd/system/slurmd.service\n    permissions: '0644'\n    content: |\n      [Unit]\n      Description=Slurm node daemon (dynamic, configless)\n      After=network-online.target munge.service remote-fs.target\n      Wants=network-online.target munge.service\n      ConditionPathExists=/etc/munge/munge.key\n\n      [Service]\n      Type=simple\n      EnvironmentFile=/etc/default/slurmd\n      ExecStart=/usr/sbin/slurmd -D -Z $SLURMD_OPTIONS\n      KillMode=process\n      LimitNOFILE=131072\n      LimitMEMLOCK=infinity\n      LimitSTACK=infinity\n      Restart=on-failure\n      RestartSec=10\n\n      [Install]\n      WantedBy=multi-user.target\n  - path: /opt/azcluster/install-compute.sh\n    permissions: '0755'\n    content: |\n      #!/usr/bin/env bash\n      set -euo pipefail\n      . /etc/azcluster/install.env\n\n      if [ -n \"${EXTRA_PACKAGES:-}\" ]; then\n        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}\n      fi\n\n      mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /run/enroot\n\n      # --- Local NVMe RAID-0 for fast ephemeral scratch ----------------------\n      # Azure HPC/AI SKUs (ND/NC/HB/Ls-series) expose local NVMe disks under\n      # the model strings \"Microsoft NVMe Direct Disk\" or \"Microsoft NVMe\n      # Direct Disk v2\". On ND96isr_H100_v5 that's 8 x ~3.5 TB unformatted\n      # NVMe -- orders of magnitude faster and larger than the /mnt resource\n      # disk (~956 GB SCSI-attached SSD) and essential for importing\n      # multi-GB CUDA/AI container images via Enroot.\n      #\n      # Data is ephemeral (lost on stop-dealloc). We persist the array via\n      # /etc/mdadm/mdadm.conf + /etc/fstab so normal reboots reattach\n      # cleanly; nofail keeps boot moving if the disks ever disappear.\n      NVME_DEVS=$(lsblk -d -n -p -o NAME,MODEL 2>/dev/null \\\n        | awk 'BEGIN{IGNORECASE=1} /Microsoft NVMe Direct Disk/ {print $1}' \\\n        | sort -u)\n      NVME_COUNT=$(printf \"%s\\n\" \"${NVME_DEVS}\" | grep -c . || true)\n      if [ \"${NVME_COUNT}\" -ge 1 ] && ! mountpoint -q /mnt/nvme; then\n        echo \"Found ${NVME_COUNT} local NVMe disk(s) for RAID-0 scratch: ${NVME_DEVS}\"\n        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends mdadm\n        for d in ${NVME_DEVS}; do\n          swapoff \"$d\" 2>/dev/null || true\n          umount \"$d\" 2>/dev/null || true\n          wipefs -af \"$d\" 2>/dev/null || true\n        done\n        if [ \"${NVME_COUNT}\" -ge 2 ]; then\n          mdadm --create --verbose --force --run /dev/md/azcluster_nvme \\\n            --level=0 --chunk=128 --metadata=1.2 \\\n            --raid-devices=\"${NVME_COUNT}\" \\\n            --name=azcluster_nvme --homehost=any \\\n            ${NVME_DEVS}\n          BLKDEV=/dev/md/azcluster_nvme\n        else\n          BLKDEV=$(echo \"${NVME_DEVS}\" | head -n1)\n        fi\n        mkfs.ext4 -F -L azcluster_nvme -E lazy_itable_init=1,lazy_journal_init=1 \"${BLKDEV}\"\n        mkdir -p /mnt/nvme\n        mount -o noatime,nodiratime,discard \"${BLKDEV}\" /mnt/nvme\n        chmod 1777 /mnt/nvme\n        if [ \"${NVME_COUNT}\" -ge 2 ]; then\n          mkdir -p /etc/mdadm\n          mdadm --detail --scan | tee -a /etc/mdadm/mdadm.conf >/dev/null\n          update-initramfs -u 2>/dev/null || true\n        fi\n        if ! grep -q \"azcluster_nvme\" /etc/fstab; then\n          echo \"LABEL=azcluster_nvme /mnt/nvme ext4 defaults,nofail,noatime,nodiratime,discard,x-systemd.device-timeout=10 0 2\" >> /etc/fstab\n        fi\n      fi\n\n      # --- Enroot scratch base: prefer NVMe RAID, fall back to /mnt ---------\n      if mountpoint -q /mnt/nvme; then\n        ENROOT_BASE=/mnt/nvme\n      elif mountpoint -q /mnt; then\n        ENROOT_BASE=/mnt\n      else\n        ENROOT_BASE=/var/lib\n      fi\n      mkdir -p \"${ENROOT_BASE}/enroot/runtime\" \"${ENROOT_BASE}/enroot-data/cache\"\n      chmod 1777 \"${ENROOT_BASE}/enroot\" \"${ENROOT_BASE}/enroot/runtime\" \"${ENROOT_BASE}/enroot-data\" \"${ENROOT_BASE}/enroot-data/cache\"\n      if [ \"${ENROOT_BASE}\" != \"/var/lib\" ]; then\n        [ -L /var/lib/enroot ] || { rm -rf /var/lib/enroot; ln -s \"${ENROOT_BASE}/enroot\" /var/lib/enroot; }\n        [ -L /var/lib/enroot-data ] || { rm -rf /var/lib/enroot-data; ln -s \"${ENROOT_BASE}/enroot-data\" /var/lib/enroot-data; }\n      fi\n      chmod 1777 /run/enroot\n\n      cat > /etc/security/limits.d/99-azcluster.conf <<'EOF'\n      * soft memlock unlimited\n      * hard memlock unlimited\n      * soft stack unlimited\n      * hard stack unlimited\n      * soft nofile 1048576\n      * hard nofile 1048576\n      EOF\n\n      cat > /etc/modprobe.d/azcluster-mlx5.conf <<'EOF'\n      options mlx5_core prof_sel=3\n      EOF\n\n      if lspci -d 15b3: 2>/dev/null | grep -q .; then\n        for dev in $(ls /sys/class/net 2>/dev/null); do\n          drv=$(ethtool -i \"$dev\" 2>/dev/null | awk '/^driver:/ {print $2}' || true)\n          if [ \"$drv\" = \"mlx5_core\" ]; then\n            ethtool --set-priv-flags \"$dev\" pcie_relaxed_ordering_enable on 2>/dev/null || true\n            ethtool -C \"$dev\" adaptive-rx on adaptive-tx on 2>/dev/null || true\n          fi\n        done\n      fi\n\n      IFACE=$(ip -4 -o route show default | awk '{print $5; exit}')\n      IPV4=$(ip -4 -o addr show \"${IFACE}\" | awk '{print $4}' | cut -d/ -f1)\n      OCT3=$(echo \"${IPV4}\" | cut -d. -f3)\n      OCT4=$(echo \"${IPV4}\" | cut -d. -f4)\n      NODE_INDEX=$(( (OCT3 * 256 + OCT4) - (4 * 256 + 4) + 1 ))\n      NEW_HOSTNAME=\"${AZCLUSTER_NAME}-${AZCLUSTER_POOL}-$(printf '%04d' ${NODE_INDEX})\"\n      hostnamectl set-hostname \"${NEW_HOSTNAME}\"\n      sed -i '/127\\.0\\.1\\.1/d' /etc/hosts\n      # Map hostname to the eth0 IPv4 (NOT 127.0.1.1) so cross-node\n      # torch.distributed/Gloo connectFullMesh doesn't try to dial localhost.\n      # NGC PyTorch containers call gethostbyname(hostname) for the rendezvous\n      # address; the Ubuntu cloud-image default of `127.0.1.1 <hostname>` makes\n      # every remote rank attempt to connect to its own loopback.\n      echo \"${IPV4} ${NEW_HOSTNAME}\" >> /etc/hosts\n\n      if ! grep -q \" /shared \" /etc/fstab; then\n        echo \"${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH} /shared nfs rw,hard,rsize=262144,wsize=262144,vers=4.1,tcp,_netdev 0 0\" >> /etc/fstab\n      fi\n      for i in $(seq 1 60); do\n        mountpoint -q /shared && break\n        mount /shared && break\n        echo \"waiting for NFS at ${SHARED_MOUNT_IP}:/${SHARED_EXPORT_PATH}...\"\n        sleep 5\n      done\n      mountpoint -q /shared\n\n      if [ -n \"${AMLFS_MOUNT_CMD:-}\" ]; then\n        mkdir -p /amlfs\n        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client || true\n        if ! mountpoint -q /amlfs; then\n          eval \"${AMLFS_MOUNT_CMD} /amlfs\" || echo \"AMLFS mount failed; continuing\" >&2\n        fi\n      fi\n\n      SCHED_DIR=\"/shared/sched/${AZCLUSTER_NAME}\"\n      while [ ! -f \"${SCHED_DIR}/munge.key\" ]; do sleep 5; done\n      install -o munge -g munge -m 0400 \"${SCHED_DIR}/munge.key\" /etc/munge/munge.key\n\n      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg\n      ARCH=$(dpkg --print-architecture)\n      CODENAME=$(. /etc/os-release; echo \"${VERSION_CODENAME}\")\n      echo \"deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main\" > /etc/apt/sources.list.d/slurm.list\n      apt-get -o DPkg::Lock::Timeout=600 update\n      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \\\n        slurm-smd \\\n        slurm-smd-client \\\n        slurm-smd-slurmd \\\n        slurm-smd-libnss-slurm \\\n        slurm-smd-libpam-slurm-adopt\n\n      getent group slurm >/dev/null || groupadd -g 11100 slurm\n      id slurm >/dev/null 2>&1 || useradd -u 11100 -g 11100 -d /var/lib/slurm -s /usr/sbin/nologin -c \"Slurm\" slurm\n      chown -R slurm:slurm /var/spool/slurmd /var/log/slurm\n\n      cd /tmp\n      curl -fsSL --retry 8 --retry-delay 5 -o enroot.deb \"https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${ARCH}.deb\"\n      curl -fsSL --retry 8 --retry-delay 5 -o enroot-caps.deb \"https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot+caps_${ENROOT_VERSION}-1_${ARCH}.deb\"\n      apt-get -o DPkg::Lock::Timeout=600 install -y ./enroot.deb ./enroot-caps.deb\n\n      mkdir -p /etc/enroot /etc/enroot/environ.d\n      cat > /etc/enroot/enroot.conf <<'EOF'\n      ENROOT_RUNTIME_PATH    /var/lib/enroot/runtime/user-$(id -u)\n      ENROOT_CACHE_PATH      /var/lib/enroot-data/cache/user-$(id -u)\n      ENROOT_DATA_PATH       /var/lib/enroot-data/user-$(id -u)\n      ENROOT_TEMP_PATH       /run/enroot\n      ENROOT_SQUASH_OPTIONS  -comp lzo -noI\n      ENROOT_MOUNT_HOME      yes\n      ENROOT_RESTRICT_DEV    yes\n      ENROOT_ROOTFS_WRITABLE yes\n      ENROOT_REMAP_ROOT      yes\n      EOF\n\n      BASE=\"https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}\"\n      curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so \"${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so\"\n      chmod 0755 /opt/pyxis/spank_pyxis.so\n\n      cd /tmp\n      HC_TARBALL=\"azhealthcheck-${AZCLUSTER_VERSION}-x86_64-linux.tar.gz\"\n      curl -fsSL --retry 8 --retry-delay 5 -O \"${BASE}/${HC_TARBALL}\"\n      tar -xzf \"${HC_TARBALL}\" -C /usr/local/bin/\n      chmod 0755 /usr/local/bin/azhealthcheck\n      cat > /usr/local/sbin/azcluster-healthcheck <<'HC_EOF'\n      #!/bin/bash\n      SERVICES=\"slurmd,prometheus,node_exporter\"\n      if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -qE '^GPU [0-9]+:'; then\n        SERVICES=\"${SERVICES},dcgm-exporter\"\n      fi\n      exec /usr/local/bin/azhealthcheck \\\n        --services \"${SERVICES}\" \\\n        --metrics-dir /var/lib/node_exporter/textfile_collector \\\n        \"$@\"\n      HC_EOF\n      chmod 0755 /usr/local/sbin/azcluster-healthcheck\n\n      cat > /etc/slurm/plugstack.conf <<EOF\n      required /opt/pyxis/spank_pyxis.so runtime_path=/var/lib/enroot/runtime\n      EOF\n      # cloud-init runcmd inherits a 0077 umask; plugstack.conf MUST be\n      # world-readable because srun loads spank plugins at submit time.\n      chmod 0644 /etc/slurm/plugstack.conf\n\n      MEM=$(awk '/^MemTotal/ {printf \"%d\\n\", $2/1024 * 0.95}' /proc/meminfo)\n      GRES_OPT=\"\"\n      EXTRA_CONF=\"\"\n      FEATURES=\"cloud,pool_${AZCLUSTER_POOL}\"\n      GPU_COUNT=0\n      if command -v nvidia-smi >/dev/null 2>&1; then\n        GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -cE '^GPU [0-9]+:' || true)\n      fi\n      if [ \"${GPU_COUNT}\" -gt 0 ]; then\n        # Extract short SKU name (h100, h200, a100, ...) from full product\n        # string like \"NVIDIA H100 80GB HBM3\" — match the first token of\n        # form <letter><digits>+ and lowercase it. Earlier versions used\n        # `$NF` which produced \"hbm3\" and broke Slurm Gres registration.\n        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 \\\n          | head -1 \\\n          | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-Za-z][0-9]+$/) {print tolower($i); exit}}')\n        [ -z \"${GPU_NAME}\" ] && GPU_NAME=\"gpu\"\n        # Detect HBM tier for feature labelling.\n        HBM=$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0 \\\n          | head -1 \\\n          | awk '{for(i=1;i<=NF;i++) if($i ~ /^[Hh][Bb][Mm]/) {print tolower($i); exit}}')\n        GRES_OPT=\"Gres=gpu:${GPU_NAME}:${GPU_COUNT}\"\n        FEATURES=\"${FEATURES},gpu,${GPU_NAME}\"\n        [ -n \"${HBM}\" ] && FEATURES=\"${FEATURES},${HBM}\"\n        # On Azure NDv5 (and similar AI SKUs) Slurm's default S:C:T detection\n        # bunches all cores into one socket, which interacts badly with NCCL\n        # GPU<->NIC affinity. Tell slurmd to treat each L3 cache as a socket.\n        EXTRA_CONF=\" Parameters=l3cache_as_socket\"\n\n        # Configless distribution does NOT push gres.conf. Each compute\n        # writes its own. AutoDetect=nvml matches the slurmctld gres.conf\n        # and lets slurm-smd discover device files via NVML.\n        cat > /etc/slurm/gres.conf <<EOF\n      AutoDetect=nvml\n      EOF\n        chown slurm:slurm /etc/slurm/gres.conf\n\n        nvidia-smi -pm 1 2>/dev/null || true\n        for i in $(seq 0 $((GPU_COUNT-1))); do\n          nvidia-smi -i ${i} -c EXCLUSIVE_PROCESS 2>/dev/null || true\n        done\n\n        # InfiniBand userspace devices ship as 0660 root:root on the\n        # microsoft-dsvm:ubuntu-hpc image. The enroot 99-mellanox.sh hook\n        # (triggered by MELLANOX_VISIBLE_DEVICES=all, set below in\n        # environ.d/50-nccl.env) bind-mounts these device nodes into the\n        # container preserving host perms. With ENROOT_REMAP_ROOT yes\n        # (set below for DGXC compatibility) the in-container \"root\" maps\n        # to a host non-root uid and cannot open 0660 root:root devices.\n        # Open them 0666 via a persistent udev rule and apply immediately\n        # for the current boot (devices are already present by the time\n        # cloud-init runs).\n        cat > /etc/udev/rules.d/91-azcluster-ib-perms.rules <<'EOF'\n        KERNEL==\"uverbs*\", MODE=\"0666\"\n        KERNEL==\"rdma_cm\", MODE=\"0666\"\n        KERNEL==\"ucm*\", MODE=\"0666\"\n        KERNEL==\"umad*\", MODE=\"0666\"\n        KERNEL==\"issm*\", MODE=\"0666\"\n      EOF\n        chmod 0644 /etc/udev/rules.d/91-azcluster-ib-perms.rules\n        udevadm control --reload-rules 2>/dev/null || true\n        udevadm trigger --subsystem-match=infiniband_verbs --action=change 2>/dev/null || true\n        udevadm trigger --subsystem-match=infiniband --action=change 2>/dev/null || true\n        chmod 0666 /dev/infiniband/uverbs* /dev/infiniband/rdma_cm /dev/infiniband/ucm* /dev/infiniband/umad* /dev/infiniband/issm* 2>/dev/null || true\n\n        # NOTE: NO UCX_TLS=tcp here. Earlier versions set it because the\n        # NCCL plugin's OOB bootstrap path uses TCP, but UCX_TLS is a GLOBAL\n        # transport policy: setting it to \"tcp\" tells HPC-X/OpenMPI UCX to\n        # use TCP transport on every UCX_NET_DEVICES interface, INCLUDING\n        # mlx5_ib* which do NOT expose TCP sockets. The result is\n        # `UCX ERROR no usable transports/devices (asked tcp on\n        # network:mlx5_ib0:1,...)` and OMPI falls back to its TCP BTL,\n        # which then hangs in `btl_tcp_endpoint_recv_connect_ack:\n        # received unexpected process identifier`. NCCL itself does NOT\n        # use UCX (it uses its own IBext_v10 plugin), so leaving UCX_TLS\n        # unset lets UCX auto-detect rc,ud,sm,self for IB MPI workloads\n        # (e.g. /usr/local/bin/all_reduce_perf_mpi from NGC containers)\n        # without touching NCCL's IB path. v0.19.4 fix.\n        cat > /etc/profile.d/nccl-azcluster.sh <<'EOF'\n        export NCCL_IB_DISABLE=0\n        export NCCL_IB_HCA=mlx5_ib\n        export NCCL_IB_PCI_RELAXED_ORDERING=1\n        export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml\n        export NCCL_SOCKET_IFNAME=eth0\n        export NCCL_MIN_NCHANNELS=32\n      EOF\n        chmod 0644 /etc/profile.d/nccl-azcluster.sh\n\n        # DGXC + most NCCL containers need these env vars set INSIDE the\n        # container. Enroot's environ.d gets sourced by Pyxis on container\n        # start, unlike /etc/profile.d which only fires for host login shells.\n        # MELLANOX_VISIBLE_DEVICES=all triggers enroot's /etc/enroot/hooks.d/\n        # 99-mellanox.sh hook to bind-mount /dev/infiniband/{uverbs,umad,issm}*\n        # + /dev/infiniband/rdma_cm into the container. Without it, enroot\n        # does not expose /dev/infiniband by default and NCCL inside the\n        # container logs \"NET/IB : No device found.\" then falls back to\n        # OOB ethernet (~5-15 GB/s vs ~430 GB/s on IB+SHARP).\n        # See nccl-azcluster.sh above for why UCX_TLS is intentionally\n        # absent here. UCX_NET_DEVICES is still listed so HPC-X picks the\n        # 8 NDR IB rails by name when it auto-detects; it does NOT force\n        # a transport.\n        cat > /etc/enroot/environ.d/50-nccl.env <<'EOF'\n        NCCL_IB_DISABLE=0\n        NCCL_IB_HCA=mlx5_ib\n        NCCL_IB_PCI_RELAXED_ORDERING=1\n        NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml\n        NCCL_SOCKET_IFNAME=eth0\n        NCCL_MIN_NCHANNELS=32\n        UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1\n        MELLANOX_VISIBLE_DEVICES=all\n      EOF\n        chmod 0644 /etc/enroot/environ.d/50-nccl.env\n\n        # Bind-mount the NDv5 NCCL topology file into every Pyxis container.\n        # NCCL_TOPO_FILE references a host path; without this mount NCCL\n        # falls back to autodetect inside the container and loses the\n        # optimal channel layout.\n        mkdir -p /etc/enroot/mounts.d\n        cat > /etc/enroot/mounts.d/50-azcluster.fstab <<'EOF'\n        /opt/microsoft /opt/microsoft none x-create=dir,bind,ro,nosuid,nodev\n      EOF\n        chmod 0644 /etc/enroot/mounts.d/50-azcluster.fstab\n      fi\n\n      # Cross-node containerised MPI via Pyxis needs two pieces working\n      # together (CCWS / Azure HPC pattern; see AGENTS.md PMIx gotcha):\n      #   1) slurmd must export PMIX_MCA_* env so the PMIx server tmpdir\n      #      / security / GDS modules don't drift between ranks.\n      #   2) Enroot must propagate PMIX_* + SLURM_* env into the container\n      #      and bind-mount $PMIX_SERVER_TMPDIR; the 50-slurm-pmi.sh hook\n      #      does both. Without it Pyxis containers can't talk to the\n      #      host PMIx server and each rank initialises as a singleton\n      #      MPI world.\n      # The hook content is upstream NVIDIA Enroot (Apache 2.0); pinned\n      # in-tree so this works whether or not the enroot .deb ships\n      # /usr/share/enroot/hooks.d/extra/.\n      mkdir -p /etc/enroot/hooks.d\n      cat > /etc/enroot/hooks.d/50-slurm-pmi.sh <<'EOF'\n      #! /usr/bin/env bash\n      # Upstream NVIDIA/enroot conf/hooks/extra/50-slurm-pmi.sh (Apache 2.0)\n      set -euo pipefail\n      shopt -s lastpipe\n\n      if [ -z \"${SLURM_JOB_ID-}\" ] || [ -z \"${SLURM_STEP_ID-}\" ]; then\n          exit 0\n      fi\n\n      for var in $(compgen -e \"SLURM_\"); do\n          printf \"%s=%s\\n\" \"${var}\" \"${!var}\" >> \"${ENROOT_ENVIRON}\"\n      done\n\n      if [[ -z \"${SLURM_MPI_TYPE-}\" || \"${SLURM_MPI_TYPE}\" == pmix* ]] && compgen -e \"PMIX_\" > /dev/null; then\n          for var in $(compgen -e \"PMIX_\"); do\n              printf \"%s=%s\\n\" \"${var}\" \"${!var}\" >> \"${ENROOT_ENVIRON}\"\n          done\n          if [ -n \"${PMIX_PTL_MODULE-}\" ] && [ -z \"${PMIX_MCA_ptl-}\" ]; then\n              printf \"PMIX_MCA_ptl=%s\\n\" ${PMIX_PTL_MODULE} >> \"${ENROOT_ENVIRON}\"\n          fi\n          if [ -n \"${PMIX_SECURITY_MODE-}\" ] && [ -z \"${PMIX_MCA_psec-}\" ]; then\n              printf \"PMIX_MCA_psec=%s\\n\" ${PMIX_SECURITY_MODE} >> \"${ENROOT_ENVIRON}\"\n          fi\n          if [ -n \"${PMIX_GDS_MODULE-}\" ] && [ -z \"${PMIX_MCA_gds-}\" ]; then\n              printf \"PMIX_MCA_gds=%s\\n\" ${PMIX_GDS_MODULE} >> \"${ENROOT_ENVIRON}\"\n          fi\n          if [ -n \"${PMIX_SERVER_TMPDIR-}\" ]; then\n              printf \"%s x-create=dir,bind,rw,nosuid,noexec,nodev,private,nofail\\n\" \"${PMIX_SERVER_TMPDIR}\" >> \"${ENROOT_MOUNTS}\"\n          fi\n      fi\n\n      if compgen -e \"PMI_\" > /dev/null; then\n          for var in $(compgen -e \"PMI_\"); do\n              printf \"%s=%s\\n\" \"${var}\" \"${!var}\" >> \"${ENROOT_ENVIRON}\"\n          done\n      fi\n      EOF\n      chmod 0755 /etc/enroot/hooks.d/50-slurm-pmi.sh\n\n      cat > /etc/enroot/hooks.d/50-slurm-pytorch.sh <<'EOF'\n      #! /usr/bin/env bash\n      # Upstream NVIDIA/enroot conf/hooks/extra/50-slurm-pytorch.sh (Apache 2.0)\n      set -eu\n\n      if ! grep -q \"^PYTORCH_VERSION=\" \"${ENROOT_ENVIRON}\"; then\n          exit 0\n      fi\n\n      if [ -n \"${SLURM_STEP_NODELIST-}\" ] && ! grep -q \"^MASTER_ADDR=\" \"${ENROOT_ENVIRON}\" && command -v scontrol > /dev/null; then\n          printf \"MASTER_ADDR=%s\\n\" \"$(scontrol show hostname \"${SLURM_STEP_NODELIST}\" | head -n1)\" >> \"${ENROOT_ENVIRON}\"\n      fi\n      if [ -n \"${SLURM_JOB_ID-}\" ] && ! grep -q \"^MASTER_PORT=\" \"${ENROOT_ENVIRON}\"; then\n          printf \"MASTER_PORT=%s\\n\" \"$((${SLURM_JOB_ID} % 4536 + 61000))\" >> \"${ENROOT_ENVIRON}\"\n      fi\n      if [ -n \"${SLURM_NTASKS-}\" ] && ! grep -q \"^WORLD_SIZE=\" \"${ENROOT_ENVIRON}\"; then\n          printf \"WORLD_SIZE=%s\\n\" \"${SLURM_NTASKS}\" >> \"${ENROOT_ENVIRON}\"\n      fi\n      if [ -n \"${SLURM_PROCID-}\" ] && ! grep -q \"^RANK=\" \"${ENROOT_ENVIRON}\"; then\n          printf \"RANK=%s\\n\" \"${SLURM_PROCID}\" >> \"${ENROOT_ENVIRON}\"\n      fi\n      if [ -n \"${SLURM_LOCALID-}\" ] && ! grep -q \"^LOCAL_RANK=\" \"${ENROOT_ENVIRON}\"; then\n          printf \"LOCAL_RANK=%s\\n\" \"${SLURM_LOCALID}\" >> \"${ENROOT_ENVIRON}\"\n      fi\n      if [ \"${SLURM_STEP_NUM_TASKS:-1}\" -gt \"${SLURM_STEP_NUM_NODES:-1}\" ] && ! grep -q \"^OMP_NUM_THREADS=\" \"${ENROOT_ENVIRON}\"; then\n          printf \"OMP_NUM_THREADS=1\\n\" >> \"${ENROOT_ENVIRON}\"\n      fi\n      EOF\n      chmod 0755 /etc/enroot/hooks.d/50-slurm-pytorch.sh\n\n      # Note: drop CPUs= from --conf so slurmd autodetects sockets/cores/\n      # threads consistent with Parameters=l3cache_as_socket. Specifying\n      # CPUs= explicitly here loses the L3-as-socket topology.\n      # PMIX_MCA_* env: pinned PMIx server/client modules so all ranks\n      # negotiate the same transport / security / GDS regardless of host\n      # autodetect. HWLOC_COMPONENTS=-opencl avoids a noisy hwloc OpenCL\n      # warning on GPU nodes.\n      cat > /etc/default/slurmd <<EOF\n      SLURMD_OPTIONS=--conf-server ${SCHEDULER_IP}:6817 --conf \"RealMemory=${MEM} ${GRES_OPT} Feature=${FEATURES}${EXTRA_CONF}\"\n      PMIX_MCA_ptl=^usock\n      PMIX_MCA_psec=none\n      PMIX_SYSTEM_TMPDIR=/var/empty\n      PMIX_MCA_gds=hash\n      HWLOC_COMPONENTS=-opencl\n      EOF\n\n      systemctl daemon-reload\n      systemctl enable munge\n      systemctl restart munge\n\n      NODE_EXP_VER=1.8.2\n      cd /tmp\n      curl -fsSL --retry 8 --retry-delay 5 -O \"https://github.com/prometheus/node_exporter/releases/download/v${NODE_EXP_VER}/node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz\"\n      tar -xzf \"node_exporter-${NODE_EXP_VER}.linux-amd64.tar.gz\"\n      install -m 0755 \"node_exporter-${NODE_EXP_VER}.linux-amd64/node_exporter\" /usr/local/bin/node_exporter\n      id -u node_exporter >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter\n      install -d -o node_exporter -g node_exporter -m 0755 /var/lib/node_exporter/textfile_collector\n      cat > /etc/systemd/system/node_exporter.service <<'EOF'\n      [Unit]\n      Description=Prometheus Node Exporter\n      After=network-online.target\n      Wants=network-online.target\n      [Service]\n      User=node_exporter\n      ExecStart=/usr/local/bin/node_exporter --web.listen-address=127.0.0.1:9100 --collector.textfile --collector.textfile.directory=/var/lib/node_exporter/textfile_collector\n      Restart=on-failure\n      RestartSec=5\n      [Install]\n      WantedBy=multi-user.target\n      EOF\n      systemctl daemon-reload\n      systemctl enable --now node_exporter\n\n      GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -cE '^GPU [0-9]+:' || true)\n      if [ \"${GPU_COUNT:-0}\" -gt 0 ] && command -v docker >/dev/null 2>&1; then\n        docker run -d --restart=unless-stopped --gpus all --cap-add SYS_ADMIN \\\n          --publish 127.0.0.1:9400:9400 \\\n          --name dcgm-exporter \\\n          nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.4.1-ubuntu22.04 || true\n      fi\n\n      MON_UAI_CLIENT_ID=\"{{MON_UAI_CLIENT_ID}}\"\n      AMW_INGEST_URL=\"{{AMW_INGEST_URL}}\"\n      if [ -n \"${MON_UAI_CLIENT_ID}\" ] && [ -n \"${AMW_INGEST_URL}\" ]; then\n        PROM_VER=3.3.0\n        cd /tmp\n        curl -fsSL --retry 8 --retry-delay 5 -O \"https://github.com/prometheus/prometheus/releases/download/v${PROM_VER}/prometheus-${PROM_VER}.linux-amd64.tar.gz\"\n        tar -xzf \"prometheus-${PROM_VER}.linux-amd64.tar.gz\"\n        install -d /opt/prometheus\n        install -m 0755 \"prometheus-${PROM_VER}.linux-amd64/prometheus\" /opt/prometheus/prometheus\n        install -d /mnt/prometheus/data\n        id -u prometheus >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin prometheus\n        chown -R prometheus:prometheus /opt/prometheus /mnt/prometheus\n        INSTANCE_NAME=$(hostname)\n        SUBSCRIPTION_ID=\"{{SUBSCRIPTION_ID}}\"\n        RG_NAME=$(curl -fsSL -H Metadata:true \"http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text\")\n        SCRAPE_GPU=\"\"\n        if [ \"${GPU_COUNT:-0}\" -gt 0 ]; then\n          SCRAPE_GPU=$'\\n        - job_name: dcgm_exporter\\n          static_configs:\\n            - targets: [\\'127.0.0.1:9400\\']'\n        fi\n        cat > /opt/prometheus/prometheus.yml <<EOF\n      global:\n        scrape_interval: 15s\n        evaluation_interval: 15s\n        external_labels:\n          subscription: ${SUBSCRIPTION_ID}\n          cluster: ${RG_NAME}/{{CLUSTER_NAME}}\n          instance: ${INSTANCE_NAME}\n          role: compute\n          pool: {{POOL_NAME}}\n      remote_write:\n        - url: \"${AMW_INGEST_URL}\"\n          azuread:\n            cloud: AzurePublic\n            managed_identity:\n              client_id: ${MON_UAI_CLIENT_ID}\n      scrape_configs:\n        - job_name: node_exporter\n          static_configs:\n            - targets: ['127.0.0.1:9100']${SCRAPE_GPU}\n      EOF\n        chmod 0644 /opt/prometheus/prometheus.yml\n        cat > /etc/systemd/system/prometheus.service <<'EOF'\n      [Unit]\n      Description=Prometheus\n      After=network-online.target\n      Wants=network-online.target\n      [Service]\n      User=prometheus\n      ExecStart=/opt/prometheus/prometheus --config.file=/opt/prometheus/prometheus.yml --storage.tsdb.path=/mnt/prometheus/data --web.listen-address=127.0.0.1:9090\n      Restart=on-failure\n      RestartSec=10\n      [Install]\n      WantedBy=multi-user.target\n      EOF\n        systemctl daemon-reload\n        systemctl enable --now prometheus\n      fi\n\n      systemctl enable --now slurmd\n\n      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \\\n        sssd sssd-ldap sssd-tools libnss-sss libpam-sss oddjob-mkhomedir\n      cat > /etc/sssd/sssd.conf <<EOF\n      [sssd]\n      domains = azcluster\n      config_file_version = 2\n      services = nss, pam, ssh\n\n      [domain/azcluster]\n      id_provider = ldap\n      auth_provider = ldap\n      ldap_uri = ldap://${SCHEDULER_IP}\n      ldap_search_base = dc=azcluster,dc=local\n      ldap_user_extra_attrs = sshPublicKey:sshPublicKey\n      ldap_user_ssh_public_key = sshPublicKey\n      enumerate = false\n      cache_credentials = true\n      override_homedir = /shared/home/%u\n      entry_cache_timeout = 60\n      entry_cache_user_timeout = 60\n      EOF\n      chmod 0600 /etc/sssd/sssd.conf\n      chown root:root /etc/sssd/sssd.conf\n      pam-auth-update --enable mkhomedir\n      sed -i 's|^session\\s\\+optional\\s\\+pam_mkhomedir\\.so.*|session optional pam_mkhomedir.so umask=0077|' /etc/pam.d/common-session || true\n      if ! grep -q '^AuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys' /etc/ssh/sshd_config; then\n        printf '\\nAuthorizedKeysCommand /usr/bin/sss_ssh_authorizedkeys\\nAuthorizedKeysCommandUser nobody\\n' >> /etc/ssh/sshd_config\n      fi\n      systemctl enable --now sssd\n      systemctl restart ssh\n\n      touch /var/log/azcluster/ready\n\nruncmd:\n  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true\n  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true\n  - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'\n  - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-compute.sh 2>&1 | tee -a /var/log/azcluster/install.log'\n",
+                    "cloudInit": "[replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(variables('cloudInitTemplate'), '{{AZCLUSTER_VERSION}}', parameters('azclusterVersion')), '{{AZCLUSTER_REPO}}', parameters('azclusterRepo')), '{{ADMIN_USER}}', parameters('adminUsername')), '{{CLUSTER_NAME}}', parameters('clusterName')), '{{POOL_NAME}}', parameters('poolName')), '{{SCHEDULER_IP}}', parameters('schedulerPrivateIp')), '{{SHARED_MOUNT_IP}}', parameters('sharedMountIp')), '{{SHARED_EXPORT_PATH}}', parameters('sharedExportPath')), '{{AMLFS_MOUNT_CMD}}', parameters('amlfsMountCommand')), '{{MON_UAI_CLIENT_ID}}', parameters('monUaiClientId')), '{{AMW_INGEST_URL}}', parameters('amwIngestionEndpoint')), '{{SUBSCRIPTION_ID}}', subscription().subscriptionId), '{{EXTRA_PACKAGES}}', parameters('extraPackages'))]",
+                    "hasMonUai": "[not(empty(parameters('monUaiId')))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.Compute/virtualMachineScaleSets",
+                      "apiVersion": "2024-07-01",
+                      "name": "[format('vmss-{0}-{1}', parameters('clusterName'), parameters('poolName'))]",
+                      "location": "[parameters('location')]",
+                      "tags": "[parameters('tags')]",
+                      "identity": "[if(variables('hasMonUai'), createObject('type', 'UserAssigned', 'userAssignedIdentities', createObject(format('{0}', parameters('monUaiId')), createObject())), null())]",
+                      "sku": {
+                        "name": "[parameters('vmSku')]",
+                        "capacity": "[parameters('desiredCount')]"
+                      },
+                      "properties": {
+                        "orchestrationMode": "Flexible",
+                        "platformFaultDomainCount": 1,
+                        "singlePlacementGroup": false,
+                        "virtualMachineProfile": {
+                          "osProfile": {
+                            "computerNamePrefix": "[format('{0}-{1}-', parameters('clusterName'), parameters('poolName'))]",
+                            "adminUsername": "[parameters('adminUsername')]",
+                            "linuxConfiguration": {
+                              "disablePasswordAuthentication": true,
+                              "ssh": {
+                                "publicKeys": [
+                                  {
+                                    "path": "[format('/home/{0}/.ssh/authorized_keys', parameters('adminUsername'))]",
+                                    "keyData": "[parameters('sshPublicKey')]"
+                                  }
+                                ]
+                              }
+                            },
+                            "customData": "[base64(variables('cloudInit'))]"
+                          },
+                          "storageProfile": {
+                            "imageReference": {
+                              "publisher": "microsoft-dsvm",
+                              "offer": "ubuntu-hpc",
+                              "sku": "[parameters('ubuntuSku')]",
+                              "version": "latest"
+                            },
+                            "osDisk": {
+                              "createOption": "FromImage",
+                              "managedDisk": {
+                                "storageAccountType": "Premium_LRS"
+                              }
+                            }
+                          },
+                          "networkProfile": {
+                            "networkApiVersion": "2022-11-01",
+                            "networkInterfaceConfigurations": [
+                              {
+                                "name": "nic",
+                                "properties": {
+                                  "primary": true,
+                                  "ipConfigurations": [
+                                    {
+                                      "name": "ipcfg",
+                                      "properties": {
+                                        "subnet": {
+                                          "id": "[parameters('subnetId')]"
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  ],
+                  "outputs": {
+                    "vmssName": {
+                      "type": "string",
+                      "value": "[format('vmss-{0}-{1}', parameters('clusterName'), parameters('poolName'))]"
+                    },
+                    "vmssId": {
+                      "type": "string",
+                      "value": "[resourceId('Microsoft.Compute/virtualMachineScaleSets', format('vmss-{0}-{1}', parameters('clusterName'), parameters('poolName')))]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Resources/deployments', 'amlfs')]",
+                "[resourceId('Microsoft.Resources/deployments', 'anf')]",
+                "[resourceId('Microsoft.Resources/deployments', 'monitoring')]",
+                "[resourceId('Microsoft.Resources/deployments', 'network')]",
+                "[resourceId('Microsoft.Resources/deployments', 'scheduler')]"
+              ]
+            }
+          ],
+          "outputs": {
+            "loginPublicIp": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Resources/deployments', 'login'), '2025-04-01').outputs.publicIp.value]"
+            },
+            "schedulerPrivateIp": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Resources/deployments', 'scheduler'), '2025-04-01').outputs.privateIp.value]"
+            },
+            "anfMountIp": {
+              "type": "string",
+              "value": "[if(variables('runNfsServerOnScheduler'), reference(resourceId('Microsoft.Resources/deployments', 'scheduler'), '2025-04-01').outputs.privateIp.value, reference(resourceId('Microsoft.Resources/deployments', 'anf'), '2025-04-01').outputs.mountIp.value)]"
+            },
+            "amlfsMgsAddress": {
+              "type": "string",
+              "value": "[if(greater(parameters('amlfsSizeTiB'), 0), reference(resourceId('Microsoft.Resources/deployments', 'amlfs'), '2025-04-01').outputs.mgsAddress.value, '')]"
+            },
+            "amlfsMountCommand": {
+              "type": "string",
+              "value": "[if(greater(parameters('amlfsSizeTiB'), 0), reference(resourceId('Microsoft.Resources/deployments', 'amlfs'), '2025-04-01').outputs.mountCommand.value, '')]"
+            },
+            "computeVmssNames": {
+              "type": "array",
+              "copy": {
+                "count": "[length(parameters('pools'))]",
+                "input": "[reference(resourceId('Microsoft.Resources/deployments', format('compute-{0}', parameters('pools')[copyIndex()].name)), '2025-04-01').outputs.vmssName.value]"
+              }
+            },
+            "grafanaEndpoint": {
+              "type": "string",
+              "value": "[if(parameters('enableMonitoring'), reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.grafanaEndpoint.value, '')]"
+            },
+            "grafanaName": {
+              "type": "string",
+              "value": "[if(parameters('enableMonitoring'), reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.grafanaName.value, '')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('rgName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[variables('rgName')]"
+    },
+    "loginPublicIp": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.loginPublicIp.value]"
+    },
+    "schedulerPrivateIp": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.schedulerPrivateIp.value]"
+    },
+    "anfMountIp": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.anfMountIp.value]"
+    },
+    "amlfsMgsAddress": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.amlfsMgsAddress.value]"
+    },
+    "amlfsMountCommand": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.amlfsMountCommand.value]"
+    },
+    "computeVmssNames": {
+      "type": "array",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.computeVmssNames.value]"
+    },
+    "grafanaEndpoint": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.grafanaEndpoint.value]"
+    },
+    "grafanaName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('rgName')), 'Microsoft.Resources/deployments', format('cluster-{0}', parameters('clusterName'))), '2025-04-01').outputs.grafanaName.value]"
+    }
+  }
+}

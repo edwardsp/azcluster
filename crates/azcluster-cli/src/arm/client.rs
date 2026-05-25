@@ -277,10 +277,14 @@ impl ArmClient {
         self.delete(&url)
     }
 
-    /// Create a subscription-level deployment.
-    pub fn create_deployment(
+    // ARM REST subscription-level body shape: `location` at root,
+    // `properties.{template,parameters,mode}`, parameter values MUST be
+    // wrapped `{"value": <v>}` (or `{"reference": {...}}`). Wrong shape =
+    // silent param injection or 400 from ARM.
+    pub fn create_subscription_deployment(
         &self,
         deployment_name: &str,
+        location: &str,
         template: Value,
         parameters: Value,
     ) -> Result<Value> {
@@ -288,16 +292,109 @@ impl ArmClient {
             "https://management.azure.com/subscriptions/{}/providers/Microsoft.Resources/deployments/{}?api-version={}",
             self.subscription_id, deployment_name, self.api_versions.deployment
         );
-
         let body = json!({
+            "location": location,
             "properties": {
                 "template": template,
                 "parameters": parameters,
                 "mode": "Incremental",
             }
         });
-
         self.put(&url, body)
+    }
+
+    pub fn whatif_subscription_deployment(
+        &self,
+        deployment_name: &str,
+        location: &str,
+        template: Value,
+        parameters: Value,
+    ) -> Result<Value> {
+        use std::time::{Duration, Instant};
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.Resources/deployments/{}/whatIf?api-version={}",
+            self.subscription_id, deployment_name, self.api_versions.deployment
+        );
+        let body = json!({
+            "location": location,
+            "properties": {
+                "template": template,
+                "parameters": parameters,
+                "mode": "Incremental",
+            }
+        });
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .context("Failed to send whatIf POST")?;
+        let status = response.status();
+        if status.as_u16() == 200 {
+            return response.json().context("parse whatIf result");
+        }
+        if status.as_u16() != 202 {
+            let err = response.text().unwrap_or_default();
+            bail!("whatIf POST failed ({status}): {err}");
+        }
+        let location_url = response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+            .ok_or_else(|| anyhow!("whatIf 202 missing Location header"))?;
+        const MAX_WAIT_SECS: u64 = 30 * 60;
+        const POLL_INTERVAL_SECS: u64 = 10;
+        let started = Instant::now();
+        loop {
+            let r = self
+                .client
+                .get(&location_url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .context("poll whatIf")?;
+            let st = r.status();
+            if st.as_u16() == 202 {
+                if started.elapsed().as_secs() > MAX_WAIT_SECS {
+                    bail!("whatIf polling exceeded 30 min");
+                }
+                std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+                continue;
+            }
+            if !st.is_success() {
+                let body = r.text().unwrap_or_default();
+                bail!("whatIf poll failed ({st}): {body}");
+            }
+            return r.json().context("parse whatIf final result");
+        }
+    }
+
+    pub fn wait_for_deployment_completion(&self, deployment_name: &str) -> Result<Value> {
+        use std::time::{Duration, Instant};
+        const MAX_WAIT_SECS: u64 = 90 * 60;
+        const POLL_INTERVAL_SECS: u64 = 15;
+        let started = Instant::now();
+        loop {
+            let v = self.get_deployment(deployment_name)?;
+            let state = v
+                .get("properties")
+                .and_then(|p| p.get("provisioningState"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            match state {
+                "Succeeded" | "Failed" | "Canceled" => return Ok(v),
+                _ => {
+                    if started.elapsed().as_secs() > MAX_WAIT_SECS {
+                        bail!(
+                            "deployment '{}' did not reach terminal state within 90 min (last: {state})",
+                            deployment_name
+                        );
+                    }
+                    std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+                }
+            }
+        }
     }
 
     /// Get deployment status.

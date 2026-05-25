@@ -12,5 +12,9 @@ Cargo.lock.bak
 # Bicep transpile output
 *.json.bicep
 bicep/**/*.json
+# Exception: main.json is the prebuilt ARM template embedded into the CLI binary
+# (`include_str!`). Must be rebuilt with `az bicep build --file bicep/main.bicep
+# --outfile bicep/main.json` whenever any .bicep file changes; CI verifies drift.
+!bicep/main.json
 ngc_key.txt
 hf_token.txt

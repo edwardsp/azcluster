@@ -28,7 +28,7 @@ jobs:
         run: cargo test --workspace --all-targets
 
   bicep:
-    name: Bicep (build + lint)
+    name: Bicep (build + lint + drift)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +40,16 @@ jobs:
             echo "==> $f"
             az bicep build --file "$f" --stdout > /dev/null
           done
+      - name: Verify bicep/main.json is in sync
+        run: |
+          set -e
+          az bicep build --file bicep/main.bicep --outfile /tmp/main.json
+          if ! diff -q /tmp/main.json bicep/main.json > /dev/null; then
+            echo "::error::bicep/main.json is out of sync. Run: az bicep build --file bicep/main.bicep --outfile bicep/main.json"
+            diff -u bicep/main.json /tmp/main.json | head -40
+            exit 1
+          fi
+          echo "==> bicep/main.json matches transpiled main.bicep"
 
   shellcheck:
     name: Shellcheck

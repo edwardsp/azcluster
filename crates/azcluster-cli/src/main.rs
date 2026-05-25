@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand};
 use cluster_state::{ClusterState, PendingDeploy};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 #[derive(Parser)]
 #[command(name = "azcluster", version = azcluster_core::VERSION, about = "Manage Slurm clusters on Azure")]
@@ -455,20 +455,29 @@ fn main() -> Result<()> {
     }
 }
 
-fn resolve_template(explicit: Option<PathBuf>) -> Result<PathBuf> {
+const EMBEDDED_MAIN_TEMPLATE: &str = include_str!("../../../bicep/main.json");
+
+fn resolve_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
     if let Some(p) = explicit {
         if !p.exists() {
             bail!("template {} not found", p.display());
         }
-        return Ok(p);
-    }
-    for candidate in ["./bicep/main.bicep", "./assets/bicep/main.bicep"] {
-        let p = PathBuf::from(candidate);
-        if p.exists() {
-            return Ok(p);
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        if ext.as_deref() != Some("json") {
+            bail!(
+                "--template {} must be an ARM JSON file (.json). Transpile bicep with: az bicep build --file <input>.bicep --outfile <output>.json",
+                p.display()
+            );
         }
+        let raw = std::fs::read_to_string(&p)
+            .with_context(|| format!("read template {}", p.display()))?;
+        return serde_json::from_str(&raw)
+            .with_context(|| format!("parse ARM JSON {}", p.display()));
     }
-    bail!("no Bicep template found. Pass --template PATH or run from a checkout / extracted assets directory.")
+    serde_json::from_str(EMBEDDED_MAIN_TEMPLATE).context("parse embedded main.json")
 }
 
 fn resolve_ssh_key(explicit: Option<PathBuf>) -> Result<PathBuf> {
@@ -513,30 +522,6 @@ fn arm_client() -> Result<arm::client::ArmClient> {
     let token = get_access_token()?;
     let sub_id = current_subscription_id()?;
     arm::client::ArmClient::new(token, sub_id)
-}
-
-fn ensure_az() -> Result<()> {
-    let ok = Command::new("az")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !ok {
-        bail!("az CLI not found in PATH");
-    }
-    let logged_in = Command::new("az")
-        .args(["account", "show"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !logged_in {
-        bail!("not logged in to Azure. Run: az login");
-    }
-    Ok(())
 }
 
 fn login(args: LoginArgs) -> Result<()> {
@@ -593,8 +578,6 @@ fn login(args: LoginArgs) -> Result<()> {
 }
 
 fn deploy(args: DeployArgs) -> Result<()> {
-    ensure_az()?;
-
     let template = resolve_template(args.template.clone())?;
     let ssh_key_path = resolve_ssh_key(args.ssh_key.clone())?;
     let ssh_key = std::fs::read_to_string(&ssh_key_path)
@@ -602,11 +585,14 @@ fn deploy(args: DeployArgs) -> Result<()> {
 
     let sub_id = current_subscription_id()?;
 
-    let allowed_cidrs_json = match args.allowed_ssh_cidrs.as_deref() {
-        Some(csv) if !csv.is_empty() => {
-            serde_json::to_string(&csv.split(',').filter(|s| !s.is_empty()).collect::<Vec<_>>())?
-        }
-        _ => "[]".to_string(),
+    let allowed_cidrs_json: serde_json::Value = match args.allowed_ssh_cidrs.as_deref() {
+        Some(csv) if !csv.is_empty() => serde_json::Value::Array(
+            csv.split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| serde_json::Value::String(s.to_string()))
+                .collect(),
+        ),
+        _ => serde_json::Value::Array(vec![]),
     };
 
     let resolved_rg = args
@@ -640,7 +626,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
             .map(|s| parse_pool(s))
             .collect::<Result<_>>()?
     };
-    let pools_json = serde_json::to_string(&pools).context("encode pools")?;
+    let pools_value = serde_json::to_value(&pools).context("encode pools")?;
 
     let monitoring_enabled = args.monitoring && !args.no_monitoring;
     let accounting_enabled = args.accounting && !args.no_accounting;
@@ -683,106 +669,88 @@ fn deploy(args: DeployArgs) -> Result<()> {
     let secrets_path = secrets_to_save.save(&args.name)?;
     eprintln!("==> saved cluster secrets -> {}", secrets_path.display());
 
-    let mut params: Vec<(&str, String)> = vec![
-        ("clusterName", args.name.clone()),
-        ("location", args.location.clone()),
-        ("sshPublicKey", ssh_key.trim().to_string()),
-        ("loginPublicIp", args.login_public_ip.to_string()),
+    use serde_json::{json, Value};
+    let mut params: Vec<(&str, Value)> = vec![
+        ("clusterName", json!(args.name)),
+        ("location", json!(args.location)),
+        ("sshPublicKey", json!(ssh_key.trim())),
+        ("loginPublicIp", json!(args.login_public_ip)),
         ("allowedSshCidrs", allowed_cidrs_json),
-        ("azclusterVersion", args.azcluster_version.clone()),
-        ("azclusterRepo", args.azcluster_repo.clone()),
-        ("ubuntuSku", args.ubuntu.clone()),
+        ("azclusterVersion", json!(args.azcluster_version)),
+        ("azclusterRepo", json!(args.azcluster_repo)),
+        ("ubuntuSku", json!(args.ubuntu)),
         (
             "existingResourceGroup",
-            args.resource_group.clone().unwrap_or_default(),
+            json!(args.resource_group.clone().unwrap_or_default()),
         ),
-        ("anfSizeTiB", args.anf_size_tib.to_string()),
-        ("anfServiceLevel", args.anf_tier.clone()),
-        ("amlfsSizeTiB", args.amlfs_size_tib.to_string()),
-        ("amlfsSkuName", args.amlfs_sku.clone()),
-        ("amlfsZone", args.amlfs_zone.clone()),
-        ("pools", pools_json),
-        ("enableMonitoring", monitoring_enabled.to_string()),
-        ("sharedStorageMode", args.shared_storage.clone()),
-        ("enableAccounting", accounting_enabled.to_string()),
-        ("mysqlAdminPassword", mysql_password.clone()),
-        ("ldapAdminPassword", ldap_password.clone()),
+        ("anfSizeTiB", json!(args.anf_size_tib)),
+        ("anfServiceLevel", json!(args.anf_tier)),
+        ("amlfsSizeTiB", json!(args.amlfs_size_tib)),
+        ("amlfsSkuName", json!(args.amlfs_sku)),
+        ("amlfsZone", json!(args.amlfs_zone)),
+        ("pools", pools_value),
+        ("enableMonitoring", json!(monitoring_enabled)),
+        ("sharedStorageMode", json!(args.shared_storage)),
+        ("enableAccounting", json!(accounting_enabled)),
+        ("mysqlAdminPassword", json!(mysql_password)),
+        ("ldapAdminPassword", json!(ldap_password)),
         (
             "grafanaLocation",
-            args.grafana_location
+            json!(args
+                .grafana_location
                 .clone()
-                .unwrap_or_else(|| args.location.clone()),
+                .unwrap_or_else(|| args.location.clone())),
         ),
-        ("extraPackages", args.extra_packages.join(" ")),
+        ("extraPackages", json!(args.extra_packages.join(" "))),
     ];
 
     if monitoring_enabled {
         let (oid, ptype) = current_principal()?;
         eprintln!("==> deployer principal: {oid} ({ptype}) -> will receive Grafana Admin on AMG");
-        params.push(("deployerPrincipalId", oid));
-        params.push(("deployerPrincipalType", ptype));
+        params.push(("deployerPrincipalId", json!(oid)));
+        params.push(("deployerPrincipalType", json!(ptype)));
     }
 
-    let mut az_args: Vec<String> = vec![
-        "deployment".into(),
-        "sub".into(),
-        if args.what_if {
-            "what-if".into()
-        } else {
-            "create".into()
-        },
-        "--name".into(),
-        deployment_name.clone(),
-        "--location".into(),
-        args.location.clone(),
-        "--template-file".into(),
-        template.display().to_string(),
-        "--parameters".into(),
-    ];
-    for (k, v) in &params {
-        az_args.push(format!("{k}={v}"));
+    let mut params_obj = serde_json::Map::new();
+    for (k, v) in params {
+        params_obj.insert(k.to_string(), json!({ "value": v }));
     }
-    if args.no_wait && !args.what_if {
-        az_args.push("--no-wait".into());
-    }
+    let params_json = Value::Object(params_obj);
 
-    if !args.what_if {
-        let pending = PendingDeploy {
-            cluster: args.name.clone(),
-            deployment_name: deployment_name.clone(),
-            resource_group: resolved_rg.clone(),
-            started_at: utc_iso8601(),
-            monitoring_enabled,
-            accounting_enabled,
-            shared_storage: args.shared_storage.clone(),
-            grafana_location: args.grafana_location.clone(),
-            extra_packages: args.extra_packages.clone(),
-        };
-        let pending_path = pending.save()?;
-        eprintln!("==> saved pending deploy -> {}", pending_path.display());
-    }
-
-    eprintln!(
-        "==> az deployment sub {} --name {}{}",
-        if args.what_if { "what-if" } else { "create" },
-        deployment_name,
-        if args.no_wait && !args.what_if {
-            " (--no-wait)"
-        } else {
-            ""
-        }
-    );
-    let status = Command::new("az")
-        .args(&az_args)
-        .status()
-        .context("spawn az deployment")?;
-    if !status.success() {
-        bail!("az deployment failed");
-    }
+    let client = arm_client()?;
 
     if args.what_if {
+        eprintln!("==> ARM whatIf deployment '{}'", deployment_name);
+        let result = client
+            .whatif_subscription_deployment(&deployment_name, &args.location, template, params_json)
+            .context("whatIf submission failed")?;
+        let pretty = serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string());
+        println!("{pretty}");
         return Ok(());
     }
+
+    let pending = PendingDeploy {
+        cluster: args.name.clone(),
+        deployment_name: deployment_name.clone(),
+        resource_group: resolved_rg.clone(),
+        started_at: utc_iso8601(),
+        monitoring_enabled,
+        accounting_enabled,
+        shared_storage: args.shared_storage.clone(),
+        grafana_location: args.grafana_location.clone(),
+        extra_packages: args.extra_packages.clone(),
+    };
+    let pending_path = pending.save()?;
+    eprintln!("==> saved pending deploy -> {}", pending_path.display());
+
+    eprintln!(
+        "==> ARM create deployment '{}'{}",
+        deployment_name,
+        if args.no_wait { " (--no-wait)" } else { "" }
+    );
+    client
+        .create_subscription_deployment(&deployment_name, &args.location, template, params_json)
+        .context("ARM deployment submission failed")?;
 
     if args.no_wait {
         eprintln!(
@@ -791,6 +759,25 @@ fn deploy(args: DeployArgs) -> Result<()> {
         );
         eprintln!("==> Track progress with: azcluster status {}", args.name);
         return Ok(());
+    }
+
+    eprintln!(
+        "==> waiting for ARM deployment '{}' to complete...",
+        deployment_name
+    );
+    let final_state = client
+        .wait_for_deployment_completion(&deployment_name)
+        .context("polling ARM deployment")?;
+    let state_str = final_state
+        .get("properties")
+        .and_then(|p| p.get("provisioningState"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    if state_str != "Succeeded" {
+        bail!(
+            "ARM deployment '{}' ended in state {state_str}. Run `azcluster delete --name {}` to tear down.",
+            deployment_name, args.name
+        );
     }
 
     finalize_deploy(
@@ -809,7 +796,6 @@ fn deploy(args: DeployArgs) -> Result<()> {
 }
 
 fn resume(args: ResumeArgs) -> Result<()> {
-    ensure_az()?;
     let pending = PendingDeploy::load_optional(&args.name)?.ok_or_else(|| {
         anyhow!(
             "no pending deploy for cluster '{}'. If `azcluster deploy` already finalized successfully, there is nothing to do. Otherwise run `azcluster deploy --name {} …` first.",
@@ -1232,7 +1218,6 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
 }
 
 fn scale(args: ScaleArgs) -> Result<()> {
-    ensure_az()?;
     let state = ClusterState::load(&args.name)?;
     let vmss_name = format!("vmss-{}-{}", state.name, args.pool);
     if !state.compute_vmss_names.is_empty() && !state.compute_vmss_names.contains(&vmss_name) {
@@ -1433,7 +1418,6 @@ fn bootstrap_probe(state: &ClusterState) {
 }
 
 fn delete(args: DeleteArgs) -> Result<()> {
-    ensure_az()?;
     let (cluster_name, resource_group) = match ClusterState::load(&args.name) {
         Ok(s) => (s.name, s.resource_group),
         Err(_) => match PendingDeploy::load_optional(&args.name)? {
