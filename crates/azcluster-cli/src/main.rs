@@ -20,6 +20,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum CliCommand {
     Version,
+    Login,
     Deploy(Box<DeployArgs>),
     Ssh(ConnectArgs),
     Tunnel(ConnectArgs),
@@ -412,6 +413,7 @@ fn main() -> Result<()> {
             println!("azcluster {}", azcluster_core::VERSION);
             Ok(())
         }
+        CliCommand::Login => login(),
         CliCommand::Deploy(args) => deploy(*args),
         CliCommand::Ssh(args) => ssh(args),
         CliCommand::Tunnel(args) => tunnel(args),
@@ -467,6 +469,24 @@ fn resolve_ssh_key(explicit: Option<PathBuf>) -> Result<PathBuf> {
     bail!("no SSH public key found. Pass --ssh-key PATH.")
 }
 
+/// Get a valid Azure access token, using native auth with fallback to az CLI.
+fn get_access_token() -> Result<String> {
+    // First, try to get subscription and tenant info from az CLI (fast path).
+    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
+        .as_str()
+        .ok_or_else(|| anyhow!("subscription id not a string"))?
+        .to_string();
+
+    let tenant_id = az_json(&["account", "show", "--query", "tenantId", "-o", "json"])?
+        .as_str()
+        .ok_or_else(|| anyhow!("tenant id not a string"))?
+        .to_string();
+
+    // Try native token provider (with cache + refresh).
+    let mut provider = auth::TokenProvider::new(sub_id, tenant_id)?;
+    provider.get_token()
+}
+
 fn ensure_az() -> Result<()> {
     let ok = Command::new("az")
         .arg("--version")
@@ -505,6 +525,39 @@ fn az_json(args: &[&str]) -> Result<serde_json::Value> {
     }
     serde_json::from_slice(&out.stdout).context("parse az JSON output")
 }
+
+fn login() -> Result<()> {
+    // Get subscription and tenant info from az CLI.
+    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
+        .as_str()
+        .ok_or_else(|| anyhow!("subscription id not a string"))?
+        .to_string();
+
+    let tenant_id = az_json(&["account", "show", "--query", "tenantId", "-o", "json"])?
+        .as_str()
+        .ok_or_else(|| anyhow!("tenant id not a string"))?
+        .to_string();
+
+    let username = az_json(&["account", "show", "--query", "user.name", "-o", "json"])?
+        .as_str()
+        .ok_or_else(|| anyhow!("username not a string"))?
+        .to_string();
+
+    // Try to get a token using the native provider.
+    let mut provider = auth::TokenProvider::new(sub_id.clone(), tenant_id)?;
+    let token = provider.get_token()?;
+
+    // Verify the token is valid by checking its length (JWT tokens are typically 1000+ chars).
+    if token.len() < 100 {
+        bail!("Token appears invalid (too short)");
+    }
+
+    println!("✓ Logged in as: {}", username);
+    println!("✓ Subscription: {}", sub_id);
+    println!("✓ Token cached at: ~/.azure/azcli_tokens.json");
+    Ok(())
+}
+
 
 fn deploy(args: DeployArgs) -> Result<()> {
     ensure_az()?;
