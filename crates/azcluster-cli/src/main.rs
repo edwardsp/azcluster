@@ -539,21 +539,6 @@ fn ensure_az() -> Result<()> {
     Ok(())
 }
 
-fn az_json(args: &[&str]) -> Result<serde_json::Value> {
-    let out = Command::new("az")
-        .args(args)
-        .output()
-        .with_context(|| format!("spawn az {}", args.join(" ")))?;
-    if !out.status.success() {
-        bail!(
-            "az {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    serde_json::from_slice(&out.stdout).context("parse az JSON output")
-}
-
 fn login(args: LoginArgs) -> Result<()> {
     let tenant = args.tenant.as_deref();
     let account = if args.device_code {
@@ -1066,8 +1051,17 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
         DASHBOARDS.len(),
         grafana_name
     );
-    let tmp_dir = std::env::temp_dir().join(format!("azcluster-dash-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir).context("create tmp dashboard dir")?;
+    let client = arm_client()?;
+    let endpoint = client
+        .get_grafana_endpoint(resource_group, grafana_name)
+        .with_context(|| format!("resolve Grafana endpoint for {grafana_name}"))?;
+    let endpoint = endpoint.trim_end_matches('/').to_string();
+    let token = get_access_token()?;
+    let http = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("build Grafana HTTP client")?;
+
     for (slug, body) in DASHBOARDS {
         let dashboard: serde_json::Value =
             serde_json::from_str(body).with_context(|| format!("parse dashboard {slug}"))?;
@@ -1076,39 +1070,31 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
             "overwrite": true,
             "folderId": 0,
         });
-        let path = tmp_dir.join(format!("{slug}.json"));
-        std::fs::write(&path, serde_json::to_vec(&envelope)?)
-            .with_context(|| format!("write {}", path.display()))?;
-        let definition_arg = format!("@{}", path.display());
+        let url = format!("{endpoint}/api/dashboards/db");
         let mut imported = false;
         for attempt in 1..=10u32 {
-            let output = Command::new("az")
-                .args([
-                    "grafana",
-                    "dashboard",
-                    "create",
-                    "--name",
-                    grafana_name,
-                    "--resource-group",
-                    resource_group,
-                    "--definition",
-                    &definition_arg,
-                    "--overwrite",
-                    "true",
-                ])
-                .output()
-                .with_context(|| format!("spawn az grafana dashboard create for {slug}"))?;
-            if output.status.success() {
+            let resp = http
+                .post(&url)
+                .bearer_auth(&token)
+                .json(&envelope)
+                .send()
+                .with_context(|| format!("POST grafana dashboard {slug}"))?;
+            let status = resp.status();
+            if status.is_success() {
                 eprintln!("    imported {slug} (attempt {attempt})");
                 imported = true;
                 break;
             }
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let propagating = stderr.contains("NoRoleAssignedException")
-                || stderr.contains("401")
-                || stderr.contains("Unauthorized");
+            let body_text = resp.text().unwrap_or_default();
+            let propagating = status.as_u16() == 401
+                || status.as_u16() == 403
+                || body_text.contains("NoRoleAssignedException")
+                || body_text.contains("Unauthorized");
             if !propagating || attempt == 10 {
-                eprintln!("    FAILED {slug}: {}", stderr.lines().last().unwrap_or(""));
+                eprintln!(
+                    "    FAILED {slug} ({status}): {}",
+                    body_text.lines().last().unwrap_or("")
+                );
                 bail!("dashboard import {slug} failed after {attempt} attempt(s)");
             }
             eprintln!(
@@ -1120,7 +1106,6 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
             bail!("dashboard {slug} not imported");
         }
     }
-    let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(())
 }
 
@@ -1668,22 +1653,8 @@ fn validate(args: ValidateArgs) -> Result<()> {
 fn monitor(args: MonitorArgs) -> Result<()> {
     let state = ClusterState::load(&args.name)?;
     let grafana_name = format!("amg-{}", state.name);
-    let endpoint = az_json(&[
-        "grafana",
-        "show",
-        "--name",
-        &grafana_name,
-        "--resource-group",
-        &state.resource_group,
-        "--query",
-        "properties.endpoint",
-        "-o",
-        "json",
-    ])
-    .ok()
-    .and_then(|v| v.as_str().map(String::from));
-    match endpoint {
-        Some(url) if !url.is_empty() => {
+    match arm_client()?.get_grafana_endpoint(&state.resource_group, &grafana_name) {
+        Ok(url) if !url.is_empty() => {
             println!("{url}");
             Ok(())
         }

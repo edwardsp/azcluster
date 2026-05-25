@@ -14,6 +14,7 @@ pub struct ApiVersions {
     pub compute: String,
     pub network: String,
     pub storage: String,
+    pub grafana: String,
 }
 
 impl Default for ApiVersions {
@@ -24,6 +25,7 @@ impl Default for ApiVersions {
             compute: "2024-07-01".to_string(),
             network: "2023-11-01".to_string(),
             storage: "2023-05-01".to_string(),
+            grafana: "2023-09-01".to_string(),
         }
     }
 }
@@ -398,6 +400,19 @@ impl ArmClient {
         // LinkedAuthorizationFailed (see AGENTS.md vmss gotcha).
         let body = json!({ "sku": { "capacity": new_capacity } });
         self.patch_and_wait(&url, body)
+    }
+
+    pub fn get_grafana_endpoint(&self, resource_group: &str, name: &str) -> Result<String> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Dashboard/grafana/{}?api-version={}",
+            self.subscription_id, resource_group, name, self.api_versions.grafana
+        );
+        let v = self.get(&url)?;
+        v.get("properties")
+            .and_then(|p| p.get("endpoint"))
+            .and_then(|e| e.as_str())
+            .map(String::from)
+            .ok_or_else(|| anyhow!("AMG {name} has no properties.endpoint"))
     }
 }
 
