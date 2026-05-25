@@ -1265,30 +1265,12 @@ fn scale(args: ScaleArgs) -> Result<()> {
         );
     }
     eprintln!(
-        "==> az vmss scale --resource-group {} --name {vmss_name} --new-capacity {}",
+        "==> scaling vmss {vmss_name} (rg={}) -> capacity {}",
         state.resource_group, args.count
     );
-    let out = Command::new("az")
-        .args([
-            "vmss",
-            "scale",
-            "--resource-group",
-            &state.resource_group,
-            "--name",
-            &vmss_name,
-            "--new-capacity",
-            &args.count.to_string(),
-            "--only-show-errors",
-        ])
-        .output()
-        .context("spawn az vmss scale")?;
-    if !out.status.success() {
-        bail!(
-            "az vmss scale failed ({}): {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    arm_client()?
+        .scale_vmss(&state.resource_group, &vmss_name, args.count)
+        .with_context(|| format!("scale {vmss_name}"))?;
     println!(
         "scaled {vmss_name} to capacity {} (resource group {})",
         args.count, state.resource_group
@@ -1312,53 +1294,52 @@ fn status(args: StatusArgs) -> Result<()> {
         println!("pending deploy:    {}", p.deployment_name);
         println!("  started:         {}", p.started_at);
         println!("  resource group:  {}", p.resource_group);
-        match az_json(&[
-            "deployment",
-            "sub",
-            "show",
-            "--name",
-            &p.deployment_name,
-            "--query",
-            "properties.provisioningState",
-            "-o",
-            "json",
-        ]) {
-            Ok(v) => println!("  ARM state:       {}", v.as_str().unwrap_or("?")),
-            Err(e) => println!("  ARM state:       ERR ({e:#})"),
+        let client = arm_client().ok();
+        match client
+            .as_ref()
+            .and_then(|c| c.get_deployment(&p.deployment_name).ok())
+        {
+            Some(v) => println!(
+                "  ARM state:       {}",
+                v.get("properties")
+                    .and_then(|p| p.get("provisioningState"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("?")
+            ),
+            None => println!("  ARM state:       ERR (lookup failed)"),
         }
-        match az_json(&[
-            "deployment",
-            "operation",
-            "sub",
-            "list",
-            "--name",
-            &p.deployment_name,
-            "--query",
-            "[].properties.provisioningState",
-            "-o",
-            "json",
-        ]) {
-            Ok(arr) => {
-                if let Some(list) = arr.as_array() {
-                    let mut succ = 0usize;
-                    let mut run = 0usize;
-                    let mut fail = 0usize;
-                    let mut other = 0usize;
-                    for v in list {
-                        match v.as_str().unwrap_or("") {
-                            "Succeeded" => succ += 1,
-                            "Running" => run += 1,
-                            "Failed" => fail += 1,
-                            _ => other += 1,
-                        }
+        match client.as_ref().and_then(|c| {
+            c.list_subscription_deployment_operations(&p.deployment_name)
+                .ok()
+        }) {
+            Some(list) => {
+                let mut succ = 0usize;
+                let mut run = 0usize;
+                let mut fail = 0usize;
+                let mut other = 0usize;
+                for op in &list {
+                    match op
+                        .get("properties")
+                        .and_then(|p| p.get("provisioningState"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                    {
+                        "Succeeded" => succ += 1,
+                        "Running" => run += 1,
+                        "Failed" => fail += 1,
+                        _ => other += 1,
                     }
-                    println!(
-                        "  operations:      {} total ({} succeeded, {} running, {} failed, {} other)",
-                        list.len(), succ, run, fail, other
-                    );
                 }
+                println!(
+                    "  operations:      {} total ({} succeeded, {} running, {} failed, {} other)",
+                    list.len(),
+                    succ,
+                    run,
+                    fail,
+                    other
+                );
             }
-            Err(e) => println!("  operations:      ERR ({e:#})"),
+            None => println!("  operations:      ERR (lookup failed)"),
         }
         println!(
             "  -> run `azcluster resume --name {}` once ARM state is Succeeded",
@@ -1391,29 +1372,25 @@ fn status(args: StatusArgs) -> Result<()> {
     if state.compute_vmss_names.is_empty() {
         println!("  <none>");
     } else {
+        let client = arm_client().ok();
         for vmss in &state.compute_vmss_names {
             print!("  {vmss}: ");
             std::io::Write::flush(&mut std::io::stdout()).ok();
-            let out = Command::new("az")
-                .args([
-                    "vmss",
-                    "show",
-                    "--resource-group",
-                    &state.resource_group,
-                    "--name",
-                    vmss,
-                    "--query",
-                    "sku.capacity",
-                    "-o",
-                    "tsv",
-                ])
-                .output();
-            match out {
-                Ok(o) if o.status.success() => {
-                    println!("capacity={}", String::from_utf8_lossy(&o.stdout).trim())
+            match client
+                .as_ref()
+                .and_then(|c| c.get_vmss(&state.resource_group, vmss).ok())
+            {
+                Some(v) => {
+                    let cap = v
+                        .get("sku")
+                        .and_then(|s| s.get("capacity"))
+                        .and_then(|n| n.as_u64());
+                    match cap {
+                        Some(n) => println!("capacity={n}"),
+                        None => println!("ERR (no sku.capacity)"),
+                    }
                 }
-                Ok(o) => println!("ERR ({})", String::from_utf8_lossy(&o.stderr).trim()),
-                Err(e) => println!("ERR ({e})"),
+                None => println!("ERR (lookup failed)"),
             }
         }
     }

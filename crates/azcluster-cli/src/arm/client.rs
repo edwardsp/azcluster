@@ -137,6 +137,82 @@ impl ArmClient {
         Ok(())
     }
 
+    fn patch_and_wait(&self, url: &str, body: Value) -> Result<()> {
+        let response = self
+            .client
+            .patch(url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .context("Failed to send PATCH request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let err_body = response.text().unwrap_or_default();
+            bail!("ARM PATCH failed ({status}): {err_body}");
+        }
+
+        let async_url = response
+            .headers()
+            .get("azure-asyncoperation")
+            .or_else(|| response.headers().get("location"))
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
+        if status.as_u16() == 200 {
+            return Ok(());
+        }
+
+        let Some(async_url) = async_url else {
+            return Ok(());
+        };
+
+        self.wait_for_async_operation(&async_url)
+    }
+
+    fn wait_for_async_operation(&self, async_url: &str) -> Result<()> {
+        use std::time::{Duration, Instant};
+        const MAX_WAIT_SECS: u64 = 30 * 60;
+        const POLL_INTERVAL_SECS: u64 = 10;
+        let started = Instant::now();
+        loop {
+            let response = self
+                .client
+                .get(async_url)
+                .bearer_auth(&self.access_token)
+                .send()
+                .context("Failed to poll async operation")?;
+            let http_status = response.status();
+            if !http_status.is_success() {
+                let body = response.text().unwrap_or_default();
+                bail!("async-operation poll failed ({http_status}): {body}");
+            }
+            let v: Value = response
+                .json()
+                .context("Failed to parse async-operation response")?;
+            let op_status = v
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            match op_status.as_str() {
+                "Succeeded" => return Ok(()),
+                "Failed" | "Canceled" => {
+                    let err = v
+                        .get("error")
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| op_status.clone());
+                    bail!("async-operation terminated with status {op_status}: {err}");
+                }
+                _ => {}
+            }
+            if started.elapsed().as_secs() > MAX_WAIT_SECS {
+                bail!("async-operation still '{op_status}' after {MAX_WAIT_SECS}s");
+            }
+            std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+        }
+    }
+
     /// List resources with pagination support.
     fn list_paginated(&self, url: &str) -> Result<Vec<Value>> {
         let mut results = Vec::new();
@@ -303,6 +379,25 @@ impl ArmClient {
         }
 
         Ok(results)
+    }
+
+    pub fn get_vmss(&self, resource_group: &str, name: &str) -> Result<Value> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}?api-version={}",
+            self.subscription_id, resource_group, name, self.api_versions.compute
+        );
+        self.get(&url)
+    }
+
+    pub fn scale_vmss(&self, resource_group: &str, name: &str, new_capacity: u32) -> Result<()> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Compute/virtualMachineScaleSets/{}?api-version={}",
+            self.subscription_id, resource_group, name, self.api_versions.compute
+        );
+        // PATCH only `sku.capacity`. Re-emitting `identity` triggers AzSecPack
+        // LinkedAuthorizationFailed (see AGENTS.md vmss gotcha).
+        let body = json!({ "sku": { "capacity": new_capacity } });
+        self.patch_and_wait(&url, body)
     }
 }
 
