@@ -484,8 +484,7 @@ fn resolve_ssh_key(explicit: Option<PathBuf>) -> Result<PathBuf> {
     bail!("no SSH public key found. Pass --ssh-key PATH.")
 }
 
-/// Get a valid Azure access token, using native auth with fallback to az CLI.
-#[allow(dead_code)]
+/// Get a valid Azure access token from the cache populated by `azcluster login`.
 fn get_access_token() -> Result<String> {
     let cache = auth::TokenCache::load()?;
     let account = cache
@@ -1051,39 +1050,9 @@ fn poll_deployment_until_terminal(deployment_name: &str) -> Result<String> {
 }
 
 fn current_principal() -> Result<(String, String)> {
-    let user_type = az_json(&["account", "show", "--query", "user.type", "-o", "json"])?;
-    let user_type_s = user_type.as_str().unwrap_or("user");
-    if user_type_s == "user" {
-        let v = az_json(&[
-            "ad",
-            "signed-in-user",
-            "show",
-            "--query",
-            "id",
-            "-o",
-            "json",
-        ])
-        .context("az ad signed-in-user show (need 'User.Read' Graph permission)")?;
-        let oid = v
-            .as_str()
-            .ok_or_else(|| anyhow!("signed-in-user id not a string"))?
-            .to_string();
-        Ok((oid, "User".into()))
-    } else {
-        let upn = az_json(&["account", "show", "--query", "user.name", "-o", "json"])?
-            .as_str()
-            .ok_or_else(|| anyhow!("user.name missing"))?
-            .to_string();
-        let v = az_json(&[
-            "ad", "sp", "show", "--id", &upn, "--query", "id", "-o", "json",
-        ])
-        .context("az ad sp show for service principal")?;
-        let oid = v
-            .as_str()
-            .ok_or_else(|| anyhow!("sp id not a string"))?
-            .to_string();
-        Ok((oid, "ServicePrincipal".into()))
-    }
+    let token = get_access_token()?;
+    let (oid, ptype) = auth::token_provider::extract_principal(&token)?;
+    Ok((oid, ptype.as_arm_str().to_string()))
 }
 
 const DASHBOARDS: &[(&str, &str)] = &[

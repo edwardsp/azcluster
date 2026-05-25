@@ -153,6 +153,63 @@ pub fn bind_subscription(tenant_id: &str, subscription_id: &str) -> Result<Cache
 
 /// Decode the `upn` or `preferred_username` claim from an Azure JWT for display.
 pub fn extract_username(token: &str) -> Result<String> {
+    let claims = decode_jwt_claims(token)?;
+    for key in ["upn", "preferred_username", "unique_name", "email"] {
+        if let Some(v) = claims.get(key).and_then(|x| x.as_str()) {
+            return Ok(v.to_string());
+        }
+    }
+    bail!("no username claim found in JWT")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalType {
+    User,
+    ServicePrincipal,
+}
+
+impl PrincipalType {
+    /// Display string matching ARM role-assignment principalType values.
+    pub fn as_arm_str(&self) -> &'static str {
+        match self {
+            PrincipalType::User => "User",
+            PrincipalType::ServicePrincipal => "ServicePrincipal",
+        }
+    }
+}
+
+/// Extract `(object_id, principal_type)` from an Azure access token.
+///
+/// Reads the `oid` claim for the object ID and infers principal type from
+/// the `idtyp` claim (Microsoft-specific: `user` / `app`). Falls back to the
+/// presence of `upn` / `appid` claims if `idtyp` is absent. This replaces
+/// the `az ad signed-in-user show` + `az ad sp show` round-trip — no
+/// network call needed; the access token already carries the object ID.
+pub fn extract_principal(token: &str) -> Result<(String, PrincipalType)> {
+    let claims = decode_jwt_claims(token)?;
+    let oid = claims
+        .get("oid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("no 'oid' claim in JWT - token may be malformed"))?
+        .to_string();
+
+    let principal_type = match claims.get("idtyp").and_then(|v| v.as_str()) {
+        Some("user") => PrincipalType::User,
+        Some("app") => PrincipalType::ServicePrincipal,
+        _ => {
+            if claims.get("upn").is_some() {
+                PrincipalType::User
+            } else if claims.get("appid").is_some() {
+                PrincipalType::ServicePrincipal
+            } else {
+                PrincipalType::User
+            }
+        }
+    };
+    Ok((oid, principal_type))
+}
+
+fn decode_jwt_claims(token: &str) -> Result<serde_json::Value> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         bail!("invalid JWT: expected 3 segments, got {}", parts.len());
@@ -160,15 +217,7 @@ pub fn extract_username(token: &str) -> Result<String> {
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(parts[1])
         .context("failed to base64-decode JWT payload")?;
-    let claims: serde_json::Value =
-        serde_json::from_slice(&decoded).context("failed to parse JWT payload as JSON")?;
-
-    for key in ["upn", "preferred_username", "unique_name", "email"] {
-        if let Some(v) = claims.get(key).and_then(|x| x.as_str()) {
-            return Ok(v.to_string());
-        }
-    }
-    bail!("no username claim found in JWT")
+    serde_json::from_slice(&decoded).context("failed to parse JWT payload as JSON")
 }
 
 #[cfg(test)]
@@ -205,5 +254,52 @@ mod tests {
             .encode(br#"{"preferred_username":"bob@example.com"}"#);
         let token = format!("{header}.{payload}.sig");
         assert_eq!(extract_username(&token).unwrap(), "bob@example.com");
+    }
+
+    fn make_token(payload_json: &[u8]) -> String {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{}");
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_json);
+        format!("{header}.{payload}.sig")
+    }
+
+    #[test]
+    fn extract_principal_user_via_idtyp() {
+        let token = make_token(br#"{"oid":"11111111-1111-1111-1111-111111111111","idtyp":"user"}"#);
+        let (oid, ptype) = extract_principal(&token).unwrap();
+        assert_eq!(oid, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(ptype, PrincipalType::User);
+        assert_eq!(ptype.as_arm_str(), "User");
+    }
+
+    #[test]
+    fn extract_principal_sp_via_idtyp() {
+        let token = make_token(br#"{"oid":"22222222-2222-2222-2222-222222222222","idtyp":"app"}"#);
+        let (oid, ptype) = extract_principal(&token).unwrap();
+        assert_eq!(oid, "22222222-2222-2222-2222-222222222222");
+        assert_eq!(ptype, PrincipalType::ServicePrincipal);
+        assert_eq!(ptype.as_arm_str(), "ServicePrincipal");
+    }
+
+    #[test]
+    fn extract_principal_user_via_upn_fallback() {
+        let token = make_token(
+            br#"{"oid":"33333333-3333-3333-3333-333333333333","upn":"alice@example.com"}"#,
+        );
+        let (_, ptype) = extract_principal(&token).unwrap();
+        assert_eq!(ptype, PrincipalType::User);
+    }
+
+    #[test]
+    fn extract_principal_sp_via_appid_fallback() {
+        let token =
+            make_token(br#"{"oid":"44444444-4444-4444-4444-444444444444","appid":"deadbeef"}"#);
+        let (_, ptype) = extract_principal(&token).unwrap();
+        assert_eq!(ptype, PrincipalType::ServicePrincipal);
+    }
+
+    #[test]
+    fn extract_principal_missing_oid_errors() {
+        let token = make_token(br#"{"idtyp":"user"}"#);
+        assert!(extract_principal(&token).is_err());
     }
 }
