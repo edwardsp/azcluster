@@ -498,7 +498,6 @@ fn get_access_token() -> Result<String> {
     provider.get_token()
 }
 
-#[allow(dead_code)]
 fn current_subscription_id() -> Result<String> {
     let cache = auth::TokenCache::load()?;
     let account = cache
@@ -610,10 +609,7 @@ fn deploy(args: DeployArgs) -> Result<()> {
     let ssh_key = std::fs::read_to_string(&ssh_key_path)
         .with_context(|| format!("read {}", ssh_key_path.display()))?;
 
-    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("subscription id not a string"))?
-        .to_string();
+    let sub_id = current_subscription_id()?;
 
     let allowed_cidrs_json = match args.allowed_ssh_cidrs.as_deref() {
         Some(csv) if !csv.is_empty() => {
@@ -845,10 +841,7 @@ fn resume(args: ResumeArgs) -> Result<()> {
         pending.deployment_name, pending.started_at
     );
 
-    let sub_id = az_json(&["account", "show", "--query", "id", "-o", "json"])?
-        .as_str()
-        .ok_or_else(|| anyhow!("subscription id not a string"))?
-        .to_string();
+    let sub_id = current_subscription_id()?;
 
     let terminal = poll_deployment_until_terminal(&pending.deployment_name)?;
     match terminal.as_str() {
