@@ -235,7 +235,7 @@ impl ArmClient {
         self.list_paginated(&url)
     }
 
-    /// Get deployment operations (for nested deployments).
+    /// List deployment operations (for nested deployments).
     pub fn list_deployment_operations(&self, deployment_name: &str) -> Result<Vec<Value>> {
         let url = format!(
             "https://management.azure.com/subscriptions/{}/providers/Microsoft.Resources/deployments/{}/operations?api-version={}",
@@ -243,6 +243,74 @@ impl ArmClient {
         );
         self.list_paginated(&url)
     }
+
+    /// Get deployment operations with timing information.
+    pub fn get_deployment_operations_with_timings(
+        &self,
+        deployment_name: &str,
+    ) -> Result<Vec<Value>> {
+        let operations = self.list_deployment_operations(deployment_name)?;
+        
+        // Filter and extract timing information from operations.
+        let mut results = Vec::new();
+        for op in operations {
+            if let Some(props) = op.get("properties") {
+                // Extract resource type, name, provisioning state, and duration.
+                let resource_type = op
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .and_then(|id| id.split('/').find(|s| s.contains("providers")))
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                let provisioning_state = props
+                    .get("provisioningState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+
+                let duration = props
+                    .get("duration")
+                    .and_then(|v| v.as_str())
+                    .and_then(|d| parse_iso8601_duration(d))
+                    .unwrap_or(0.0);
+
+                results.push(json!({
+                    "resourceType": resource_type,
+                    "provisioningState": provisioning_state,
+                    "duration_seconds": duration,
+                }));
+            }
+        }
+
+        Ok(results)
+    }
+}
+
+/// Parse ISO8601 duration string (e.g., "PT1H30M45S") to seconds.
+fn parse_iso8601_duration(s: &str) -> Option<f64> {
+    let s = s.strip_prefix("PT")?;
+    let mut total: f64 = 0.0;
+    let mut buf = String::new();
+    for ch in s.chars() {
+        match ch {
+            '0'..='9' | '.' => buf.push(ch),
+            'H' => {
+                total += buf.parse::<f64>().ok()? * 3600.0;
+                buf.clear();
+            }
+            'M' => {
+                total += buf.parse::<f64>().ok()? * 60.0;
+                buf.clear();
+            }
+            'S' => {
+                total += buf.parse::<f64>().ok()?;
+                buf.clear();
+            }
+            _ => return None,
+        }
+    }
+    Some(total)
 }
 
 #[cfg(test)]
@@ -264,5 +332,13 @@ mod tests {
             "sub-123".to_string(),
         ).unwrap();
         assert_eq!(client.subscription_id(), "sub-123");
+    }
+
+    #[test]
+    fn test_parse_iso8601_duration() {
+        assert_eq!(parse_iso8601_duration("PT1H30M45S"), Some(5445.0));
+        assert_eq!(parse_iso8601_duration("PT30S"), Some(30.0));
+        assert_eq!(parse_iso8601_duration("PT1M"), Some(60.0));
+        assert_eq!(parse_iso8601_duration("PT1H"), Some(3600.0));
     }
 }
