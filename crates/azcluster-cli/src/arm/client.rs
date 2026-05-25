@@ -240,11 +240,25 @@ impl ArmClient {
         self.list_paginated(&url)
     }
 
-    /// List deployment operations (for nested deployments).
-    pub fn list_deployment_operations(&self, deployment_name: &str) -> Result<Vec<Value>> {
+    pub fn list_subscription_deployment_operations(
+        &self,
+        deployment_name: &str,
+    ) -> Result<Vec<Value>> {
         let url = format!(
             "https://management.azure.com/subscriptions/{}/providers/Microsoft.Resources/deployments/{}/operations?api-version={}",
             self.subscription_id, deployment_name, self.api_versions.deployment
+        );
+        self.list_paginated(&url)
+    }
+
+    pub fn list_resource_group_deployment_operations(
+        &self,
+        resource_group: &str,
+        deployment_name: &str,
+    ) -> Result<Vec<Value>> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Resources/deployments/{}/operations?api-version={}",
+            self.subscription_id, resource_group, deployment_name, self.api_versions.deployment
         );
         self.list_paginated(&url)
     }
@@ -254,7 +268,7 @@ impl ArmClient {
         &self,
         deployment_name: &str,
     ) -> Result<Vec<Value>> {
-        let operations = self.list_deployment_operations(deployment_name)?;
+        let operations = self.list_subscription_deployment_operations(deployment_name)?;
 
         // Filter and extract timing information from operations.
         let mut results = Vec::new();

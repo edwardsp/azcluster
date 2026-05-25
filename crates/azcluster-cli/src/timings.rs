@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
+use crate::arm::client::ArmClient;
+use anyhow::{anyhow, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentTiming {
@@ -57,140 +57,92 @@ fn parse_iso8601_duration(s: &str) -> Option<f64> {
     Some(total)
 }
 
-fn az_json(args: &[&str]) -> Result<Value> {
-    let output = Command::new("az")
-        .args(args)
-        .output()
-        .with_context(|| format!("spawn az {}", args.join(" ")))?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "az {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    serde_json::from_slice(&output.stdout).context("parse az json output")
-}
-
-fn collect_sub_operations(deployment: &str) -> Result<Vec<OperationTiming>> {
-    let ops = az_json(&[
-        "deployment",
-        "operation",
-        "sub",
-        "list",
-        "--name",
-        deployment,
-        "-o",
-        "json",
-    ])?;
-    let arr = ops.as_array().cloned().unwrap_or_default();
-    let mut out = Vec::new();
-    let mut nested_modules: Vec<(String, String)> = Vec::new();
-    for op in arr {
-        let props = match op.get("properties") {
-            Some(p) => p,
-            None => continue,
-        };
-        let duration = props
-            .get("duration")
-            .and_then(|v| v.as_str())
-            .and_then(parse_iso8601_duration)
-            .unwrap_or(0.0);
-        let target = props.get("targetResource");
-        let rtype = target
-            .and_then(|t| t.get("resourceType"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let rname = target
-            .and_then(|t| t.get("resourceName"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let rg = target
-            .and_then(|t| t.get("resourceGroup"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let state = props
-            .get("provisioningState")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if rtype == "Microsoft.Resources/deployments" && !rg.is_empty() {
-            nested_modules.push((rg.clone(), rname.clone()));
-        }
-        out.push(OperationTiming {
+fn az_op_to_timing(
+    op: &Value,
+    deployment: &str,
+) -> Option<(OperationTiming, Option<(String, String)>)> {
+    let props = op.get("properties")?;
+    let duration = props
+        .get("duration")
+        .and_then(|v| v.as_str())
+        .and_then(parse_iso8601_duration)
+        .unwrap_or(0.0);
+    let target = props.get("targetResource");
+    let rtype = target
+        .and_then(|t| t.get("resourceType"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let rname = target
+        .and_then(|t| t.get("resourceName"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let rg = target
+        .and_then(|t| t.get("resourceGroup"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let state = props
+        .get("provisioningState")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let nested = if rtype == "Microsoft.Resources/deployments" && !rg.is_empty() {
+        Some((rg, rname.clone()))
+    } else {
+        None
+    };
+    Some((
+        OperationTiming {
             resource_type: rtype,
             resource_name: rname,
             provisioning_state: state,
             duration_seconds: duration,
             deployment: deployment.to_string(),
-        });
+        },
+        nested,
+    ))
+}
+
+fn collect_sub_operations(client: &ArmClient, deployment: &str) -> Result<Vec<OperationTiming>> {
+    let ops = client.list_subscription_deployment_operations(deployment)?;
+    let mut out = Vec::new();
+    let mut nested_modules: Vec<(String, String)> = Vec::new();
+    for op in ops {
+        if let Some((timing, nested)) = az_op_to_timing(&op, deployment) {
+            if let Some(n) = nested {
+                nested_modules.push(n);
+            }
+            out.push(timing);
+        }
     }
     for (rg, module) in nested_modules {
-        if let Ok(child) = collect_group_operations(&rg, &module) {
+        if let Ok(child) = collect_group_operations(client, &rg, &module) {
             out.extend(child);
         }
     }
     Ok(out)
 }
 
-fn collect_group_operations(rg: &str, module: &str) -> Result<Vec<OperationTiming>> {
-    let ops = az_json(&[
-        "deployment",
-        "operation",
-        "group",
-        "list",
-        "--resource-group",
-        rg,
-        "--name",
-        module,
-        "-o",
-        "json",
-    ])?;
-    let arr = ops.as_array().cloned().unwrap_or_default();
+fn collect_group_operations(
+    client: &ArmClient,
+    rg: &str,
+    module: &str,
+) -> Result<Vec<OperationTiming>> {
+    let ops = client.list_resource_group_deployment_operations(rg, module)?;
     let mut out = Vec::new();
     let mut nested = Vec::new();
-    for op in arr {
-        let props = match op.get("properties") {
-            Some(p) => p,
-            None => continue,
-        };
-        let duration = props
-            .get("duration")
-            .and_then(|v| v.as_str())
-            .and_then(parse_iso8601_duration)
-            .unwrap_or(0.0);
-        let target = props.get("targetResource");
-        let rtype = target
-            .and_then(|t| t.get("resourceType"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let rname = target
-            .and_then(|t| t.get("resourceName"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let state = props
-            .get("provisioningState")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if rtype == "Microsoft.Resources/deployments" {
-            nested.push(rname.clone());
+    for op in ops {
+        if let Some((timing, child_nested)) = az_op_to_timing(&op, module) {
+            if let Some((_, child_name)) = child_nested {
+                nested.push(child_name);
+            }
+            out.push(timing);
         }
-        out.push(OperationTiming {
-            resource_type: rtype,
-            resource_name: rname,
-            provisioning_state: state,
-            duration_seconds: duration,
-            deployment: module.to_string(),
-        });
     }
     for child_module in nested {
-        if let Ok(child) = collect_group_operations(rg, &child_module) {
+        if let Ok(child) = collect_group_operations(client, rg, &child_module) {
             out.extend(child);
         }
     }
@@ -198,12 +150,13 @@ fn collect_group_operations(rg: &str, module: &str) -> Result<Vec<OperationTimin
 }
 
 pub fn capture(
+    client: &ArmClient,
     cluster: &str,
     deployment: &str,
     _resource_group: &str,
     shared_storage: &str,
 ) -> Result<PathBuf> {
-    let mut operations = collect_sub_operations(deployment).unwrap_or_default();
+    let mut operations = collect_sub_operations(client, deployment).unwrap_or_default();
     operations.retain(|o| !o.resource_type.is_empty());
     operations.sort_by(|a, b| {
         (&a.resource_type, &a.resource_name, &a.deployment)

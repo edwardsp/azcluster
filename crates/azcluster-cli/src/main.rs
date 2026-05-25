@@ -443,6 +443,7 @@ fn main() -> Result<()> {
         CliCommand::Timings(args) => timings(args),
         CliCommand::TimingsCapture(args) => {
             timings::capture(
+                &arm_client()?,
                 &args.name,
                 &args.deployment,
                 &args.resource_group,
@@ -978,6 +979,7 @@ fn finalize_deploy(
     eprintln!("==> saved cluster secrets -> {}", secrets_path.display());
 
     if let Err(e) = timings::capture(
+        &arm_client()?,
         &args.name,
         deployment_name,
         &state.resource_group,
