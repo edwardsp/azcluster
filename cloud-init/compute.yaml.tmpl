@@ -326,6 +326,19 @@ write_files:
         udevadm trigger --subsystem-match=infiniband --action=change 2>/dev/null || true
         chmod 0666 /dev/infiniband/uverbs* /dev/infiniband/rdma_cm /dev/infiniband/ucm* /dev/infiniband/umad* /dev/infiniband/issm* 2>/dev/null || true
 
+        # NOTE: NO UCX_TLS=tcp here. Earlier versions set it because the
+        # NCCL plugin's OOB bootstrap path uses TCP, but UCX_TLS is a GLOBAL
+        # transport policy: setting it to "tcp" tells HPC-X/OpenMPI UCX to
+        # use TCP transport on every UCX_NET_DEVICES interface, INCLUDING
+        # mlx5_ib* which do NOT expose TCP sockets. The result is
+        # `UCX ERROR no usable transports/devices (asked tcp on
+        # network:mlx5_ib0:1,...)` and OMPI falls back to its TCP BTL,
+        # which then hangs in `btl_tcp_endpoint_recv_connect_ack:
+        # received unexpected process identifier`. NCCL itself does NOT
+        # use UCX (it uses its own IBext_v10 plugin), so leaving UCX_TLS
+        # unset lets UCX auto-detect rc,ud,sm,self for IB MPI workloads
+        # (e.g. /usr/local/bin/all_reduce_perf_mpi from NGC containers)
+        # without touching NCCL's IB path. v0.19.4 fix.
         cat > /etc/profile.d/nccl-azcluster.sh <<'EOF'
         export NCCL_IB_DISABLE=0
         export NCCL_IB_HCA=mlx5_ib
@@ -333,7 +346,6 @@ write_files:
         export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml
         export NCCL_SOCKET_IFNAME=eth0
         export NCCL_MIN_NCHANNELS=32
-        export UCX_TLS=tcp
       EOF
         chmod 0644 /etc/profile.d/nccl-azcluster.sh
 
@@ -346,6 +358,10 @@ write_files:
         # does not expose /dev/infiniband by default and NCCL inside the
         # container logs "NET/IB : No device found." then falls back to
         # OOB ethernet (~5-15 GB/s vs ~430 GB/s on IB+SHARP).
+        # See nccl-azcluster.sh above for why UCX_TLS is intentionally
+        # absent here. UCX_NET_DEVICES is still listed so HPC-X picks the
+        # 8 NDR IB rails by name when it auto-detects; it does NOT force
+        # a transport.
         cat > /etc/enroot/environ.d/50-nccl.env <<'EOF'
         NCCL_IB_DISABLE=0
         NCCL_IB_HCA=mlx5_ib
@@ -353,7 +369,6 @@ write_files:
         NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml
         NCCL_SOCKET_IFNAME=eth0
         NCCL_MIN_NCHANNELS=32
-        UCX_TLS=tcp
         UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1
         MELLANOX_VISIBLE_DEVICES=all
       EOF

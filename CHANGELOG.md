@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.19.4] - 2026-05-25
+
+### Fixed
+- **`UCX_TLS=tcp` in `/etc/enroot/environ.d/50-nccl.env` broke every container that ran an MPI workload over HPC-X/UCX** (e.g. `/usr/local/bin/all_reduce_perf_mpi` shipped in `nvcr.io/nvidia/nemo:25.07.02`, `nvcr.io/nvidia/pytorch:*`, and other NGC containers). UCX is a GLOBAL transport policy: `UCX_TLS=tcp` told HPC-X's UCX layer to use TCP transport on every interface in `UCX_NET_DEVICES`, including `mlx5_ib0..7` which don't expose TCP sockets. Every rank logged `ucp_context.c:1582 UCX ERROR no usable transports/devices (asked tcp on network:mlx5_ib0:1,...)`, OMPI then fell back to its TCP BTL and hung indefinitely in `mca_btl_tcp_endpoint_recv_connect_ack: received unexpected process identifier`. Removed the line from `cloud-init/compute.yaml.tmpl` (both `/etc/profile.d/nccl-azcluster.sh` and `/etc/enroot/environ.d/50-nccl.env`). NCCL itself doesn't use UCX (it has its own `IBext_v10` plugin), so the removal does NOT affect the bare NCCL path; UCX auto-detects `rc,ud,sm,self` for IB MPI workloads. `UCX_NET_DEVICES` is kept so HPC-X picks the 8 NDR rails by name when it auto-detects transports. Live-validated on `paul-azcluster-v194a` (2× ND96isr_H100_v5, `nvcr.io/nvidia/nemo:25.07.02`): `srun --mpi=pmix --container-image=... /usr/local/bin/all_reduce_perf_mpi -b 8M -e 1G -f 2 -g 1` across 16 ranks reaches **avg busbw 277.005 GB/s, peak 439.38 GB/s at 1 GiB**, NCCL using `NET/IBext_v10/N/GDRDMA` on all 8 rails (matches the v0.13.8 bare-metal HPC-X baseline of 434 GB/s — confirming zero container overhead on the IB+SHARP+GPUDirect RDMA path).
+
+### Changed
+- `Cargo.toml` workspace version `0.19.3` → `0.19.4`. CLI default `--azcluster-version` bumped to `v0.19.4`.
+
+### Live-validated
+- 2-node 16-rank NCCL all-reduce via Slurm + Pyxis + PMIx + HPC-X **`_mpi` binary** on `nvcr.io/nvidia/nemo:25.07.02`. NeMo container ships HPC-X 2.x → `libpmix.so.2.2.35` (NOT PMIx 4.2.x as previously documented — see AGENTS.md correction). PMIx 2↔4 wire compatibility is sufficient for `srun --mpi=pmix` rendezvous. Peak in-place busbw 439.38 GB/s; avg 277.005 GB/s across 8 MB → 1 GiB sweep.
+
 ## [0.19.3] - 2026-05-25
 
 ### Added
