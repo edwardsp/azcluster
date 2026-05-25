@@ -81,7 +81,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.21.2")]
+    #[arg(long, default_value = "v0.21.3")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -409,9 +409,15 @@ struct ConnectArgs {
     local_port: u16,
     #[arg(long)]
     identity: Option<PathBuf>,
-    /// Hop through login to the scheduler VM.
-    #[arg(long, default_value_t = false)]
+    /// Hop through login to the scheduler VM. Mutually exclusive with --host.
+    #[arg(long, default_value_t = false, conflicts_with = "host")]
     scheduler: bool,
+    /// Hop through login to an arbitrary hostname (typically a compute VMSS instance).
+    #[arg(long)]
+    host: Option<String>,
+    /// Connect as this user instead of the cluster admin (e.g. an LDAP user from `azcluster user add`).
+    #[arg(long, short = 'u')]
+    user: Option<String>,
     /// Disable auto-routing through Azure Bastion when no login public IP is set.
     #[arg(long, default_value_t = false)]
     no_bastion: bool,
@@ -422,9 +428,18 @@ struct ExecArgs {
     name: String,
     #[arg(long)]
     identity: Option<PathBuf>,
-    /// Hop through login to the scheduler VM.
-    #[arg(long, default_value_t = false)]
+    /// Hop through login to the scheduler VM. Mutually exclusive with --host.
+    #[arg(long, default_value_t = false, conflicts_with = "host")]
     scheduler: bool,
+    /// Hop through login to an arbitrary hostname (typically a compute VMSS instance).
+    #[arg(long)]
+    host: Option<String>,
+    /// Connect as this user instead of the cluster admin (e.g. an LDAP user from `azcluster user add`).
+    #[arg(long, short = 'u')]
+    user: Option<String>,
+    /// Forward the SSH agent (`-A`) so nested `ssh` from the remote host can re-use local keys.
+    #[arg(long, short = 'A', default_value_t = false)]
+    forward_agent: bool,
     /// Disable auto-routing through Azure Bastion when no login public IP is set.
     #[arg(long, default_value_t = false)]
     no_bastion: bool,
@@ -443,6 +458,9 @@ struct ScpArgs {
     preserve: bool,
     #[arg(short = 'i', long)]
     identity: Option<PathBuf>,
+    /// Connect as this user instead of the cluster admin (e.g. an LDAP user from `azcluster user add`).
+    #[arg(long, short = 'u')]
+    user: Option<String>,
     /// Disable auto-routing through Azure Bastion when no login public IP is set.
     #[arg(long, default_value_t = false)]
     no_bastion: bool,
@@ -1400,6 +1418,8 @@ fn ssh(args: ConnectArgs) -> Result<()> {
     let state = ClusterState::load(&args.name)?;
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
+    let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
+    let jump_user = connect_user;
     let mut cmd = Command::new("ssh");
     cmd.args(["-A", "-L", &forward]);
     if let Some(id) = &args.identity {
@@ -1407,20 +1427,26 @@ fn ssh(args: ConnectArgs) -> Result<()> {
     }
     if use_bastion {
         let exe = self_exe_path()?;
-        let target_name = if args.scheduler { "scheduler" } else { "login" };
-        let host_ip = if args.scheduler {
-            state.scheduler_private_ip.clone()
+        let (target_name, host_ip) = if args.scheduler {
+            ("scheduler", state.scheduler_private_ip.clone())
         } else {
-            "127.0.0.1".to_string()
+            ("login", "127.0.0.1".to_string())
         };
-        let target = format!("{}@{}", state.admin_username, host_ip);
         let proxy = format!(
             "{} bastion-proxy --cluster {} --target {}",
             exe, args.name, target_name
         );
         cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
-        cmd.arg(&target);
-        eprintln!("==> ssh via Bastion -> {target_name}");
+        if let Some(host) = &args.host {
+            let jump_target = format!("{}@{}", jump_user, host_ip);
+            let dest = format!("{}@{}", connect_user, host);
+            cmd.args(["-J", &jump_target, &dest]);
+            eprintln!("==> ssh via Bastion -> {jump_target} -> {dest}");
+        } else {
+            let target = format!("{}@{}", connect_user, host_ip);
+            cmd.arg(&target);
+            eprintln!("==> ssh via Bastion -> {target}");
+        }
     } else {
         let host = state.login_public_ip.as_deref().ok_or_else(|| {
             anyhow!(
@@ -1429,12 +1455,17 @@ fn ssh(args: ConnectArgs) -> Result<()> {
                 args.name
             )
         })?;
-        let login_target = format!("{}@{}", state.admin_username, host);
-        if args.scheduler {
-            let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
-            cmd.args(["-J", &login_target, &sched_target]);
-            eprintln!("==> ssh -J {login_target} {sched_target}");
+        let jump_login = format!("{}@{}", jump_user, host);
+        if let Some(hostname) = &args.host {
+            let dest = format!("{}@{}", connect_user, hostname);
+            cmd.args(["-J", &jump_login, &dest]);
+            eprintln!("==> ssh -J {jump_login} {dest}");
+        } else if args.scheduler {
+            let sched_target = format!("{}@{}", connect_user, state.scheduler_private_ip);
+            cmd.args(["-J", &jump_login, &sched_target]);
+            eprintln!("==> ssh -J {jump_login} {sched_target}");
         } else {
+            let login_target = format!("{}@{}", connect_user, host);
             cmd.arg(&login_target);
             eprintln!("==> ssh -L {forward} {login_target}");
         }
@@ -1767,25 +1798,33 @@ fn delete(args: DeleteArgs) -> Result<()> {
 fn exec(args: ExecArgs) -> Result<()> {
     let state = ClusterState::load(&args.name)?;
     let use_bastion = should_use_bastion(&state, args.no_bastion);
+    let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
+    let jump_user = connect_user;
     let mut cmd = Command::new("ssh");
+    if args.forward_agent {
+        cmd.arg("-A");
+    }
     if let Some(id) = &args.identity {
         cmd.args(["-i", &id.display().to_string()]);
     }
     if use_bastion {
         let exe = self_exe_path()?;
-        let target_name = if args.scheduler { "scheduler" } else { "login" };
-        let host_ip = if args.scheduler {
-            state.scheduler_private_ip.clone()
+        let (target_name, host_ip) = if args.scheduler {
+            ("scheduler", state.scheduler_private_ip.clone())
         } else {
-            "127.0.0.1".to_string()
+            ("login", "127.0.0.1".to_string())
         };
-        let target = format!("{}@{}", state.admin_username, host_ip);
         let proxy = format!(
             "{} bastion-proxy --cluster {} --target {}",
             exe, args.name, target_name
         );
         cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
-        cmd.arg(&target);
+        if let Some(host) = &args.host {
+            let jump_target = format!("{}@{}", jump_user, host_ip);
+            cmd.args(["-J", &jump_target, &format!("{}@{}", connect_user, host)]);
+        } else {
+            cmd.arg(format!("{}@{}", connect_user, host_ip));
+        }
     } else {
         let host = state.login_public_ip.as_deref().ok_or_else(|| {
             anyhow!(
@@ -1794,12 +1833,17 @@ fn exec(args: ExecArgs) -> Result<()> {
                 args.name
             )
         })?;
-        let login_target = format!("{}@{}", state.admin_username, host);
-        if args.scheduler {
-            let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
-            cmd.args(["-J", &login_target, &sched_target]);
+        let jump_login = format!("{}@{}", jump_user, host);
+        if let Some(hostname) = &args.host {
+            cmd.args(["-J", &jump_login, &format!("{}@{}", connect_user, hostname)]);
+        } else if args.scheduler {
+            cmd.args([
+                "-J",
+                &jump_login,
+                &format!("{}@{}", connect_user, state.scheduler_private_ip),
+            ]);
         } else {
-            cmd.arg(&login_target);
+            cmd.arg(format!("{}@{}", connect_user, host));
         }
     }
     cmd.arg("--");
@@ -1868,6 +1912,7 @@ fn scp(args: ScpArgs) -> Result<()> {
     }
     let node = remote_node.expect("any_remote implies remote_node");
 
+    let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
     let (proxy_target, jump_login_host, dest_host) = resolve_scp_route(&state, &node, use_bastion)?;
 
     let mut cmd = Command::new("scp");
@@ -1889,11 +1934,11 @@ fn scp(args: ScpArgs) -> Result<()> {
         cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
     }
     if let Some(login) = jump_login_host.as_deref() {
-        let jump = format!("{}@{}", state.admin_username, login);
+        let jump = format!("{}@{}", connect_user, login);
         cmd.args(["-o", &format!("ProxyJump={}", jump)]);
     }
 
-    let user_at_host = format!("{}@{}", state.admin_username, dest_host);
+    let user_at_host = format!("{}@{}", connect_user, dest_host);
     for p in &parsed {
         match p {
             ScpPath::Local(s) => cmd.arg(s),

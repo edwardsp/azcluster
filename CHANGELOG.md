@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-05-25
+
+### Added
+- **`azcluster ssh`/`exec`/`scp` `--host <hostname>`** — hop through login to an arbitrary in-VNet hostname (typically a compute VMSS instance like `<cluster>-cpu-0001`). Mutually exclusive with `--scheduler`. Works under both no-bastion (operator → login → host via `-J`) and bastion (operator → bastion-proxy → login → host via `-J`) routing. The VNet's auto-registered DNS resolves the compute hostname from the login VM, so no manual IP lookups are needed.
+- **`azcluster ssh`/`exec`/`scp` `--user <name>` (short `-u`)** — connect as a non-admin user, intended for LDAP users created via `azcluster user add`. The same user identity is used at BOTH hops (ProxyJump and final destination), because LDAP users have their pubkey distributed via SSSD on login + compute, but admin's authorized_keys may not contain the connecting operator's key. Defaults to `state.admin_username` (azureuser) when omitted, preserving v0.21.2 behavior.
+- **`azcluster exec --forward-agent` / `-A`** — opt-in SSH agent forwarding for nested ssh from the remote shell. Off by default to keep the auditable behavior of v0.21.2.
+
+### Changed
+- `ConnectArgs` (ssh), `ExecArgs` (exec), and `ScpArgs` (scp) gain `--host` + `--user` flags; `ExecArgs` additionally gains `-A/--forward-agent`. `--scheduler` is marked `conflicts_with = "host"` via clap.
+- `ssh()`, `exec()`, and `scp()` internally use a unified `connect_user = args.user.unwrap_or(admin_username)` and `jump_user = connect_user` so a single identity authenticates at every hop.
+
+### Notes
+- **Known limitation:** `--scheduler --user <ldap-user>` does NOT work. The scheduler hosts the slapd LDAP server itself and runs no SSSD client, so LDAP users have no local presence there and pubkey lookup fails. Job submission happens from login (where SSSD resolves LDAP users), not from scheduler. If you need shell access to scheduler, use the admin user (`azcluster ssh <name> --scheduler`).
+
 ## [0.21.2] - 2026-05-25
 
 ### Fixed
@@ -731,7 +745,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.21.3...HEAD
+[0.21.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.3
+[0.21.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.2
 [0.21.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.1
 [0.21.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.0
 [0.19.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.19.3

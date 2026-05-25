@@ -263,6 +263,32 @@ srun -N1 --partition=gpu --container-image=docker://nvcr.io/nvidia/pytorch:24.05
 sbatch /shared/examples/nccl-allreduce.sbatch     # multi-node NCCL all-reduce template
 ```
 
+### First user (LDAP) — the canonical multi-user path
+
+The cluster admin account (`azureuser`) is the operator's foothold. Real users come from `azcluster user add`, which writes them to the on-cluster LDAP, SSSD on login + every compute node resolves them, and `pam_mkhomedir` creates `/shared/home/<user>` on first login.
+
+```bash
+# 1. Add an LDAP user with your local pubkey
+azcluster user add demo --username alice --ssh-key ~/.ssh/id_rsa.pub
+
+# 2. SSH straight in as that user (no agent forwarding needed)
+azcluster ssh demo --user alice                  # → login VM, home /shared/home/alice
+azcluster ssh demo --host demo-cpu-0001 --user alice    # → compute via ProxyJump
+
+# 3. Exec one-shots and scp as the LDAP user (works for any compute hostname)
+azcluster exec demo --host demo-cpu-0001 --user alice -- "id; hostname"
+azcluster scp  demo --user alice ./local.txt demo-cpu-0001:/shared/home/alice/
+
+# 4. Job submission as alice (writes to her own /shared/home/alice/)
+azcluster ssh demo --user alice -- sbatch /shared/examples/nccl-allreduce.sbatch
+```
+
+Notes:
+- `--host <hostname>` and `--scheduler` are mutually exclusive. `--host` is the generic compute-targeting flag and works for any in-VNet hostname the login VM can resolve.
+- `--user <name>` (short `-u`) is honored at every SSH hop so the same identity authenticates ProxyJump and final destination.
+- `--scheduler --user <ldap-user>` does NOT work — the scheduler hosts the LDAP server itself and runs no SSSD client. Use the admin user for scheduler shell access; job submission happens from login.
+- `azcluster exec --forward-agent` / `-A` opts into SSH agent forwarding when you want nested ssh from the remote shell.
+
 ## Repo Layout
 
 ```
