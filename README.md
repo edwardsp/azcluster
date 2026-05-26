@@ -149,7 +149,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.22.1
+VERSION=v0.22.2
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

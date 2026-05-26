@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-05-26
+
+Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete+re-push race with the Actions trigger debouncer left no release published). Re-tagged as v0.22.2 to force a clean trigger.
+
+### Fixed
+(same as v0.22.1 below)
+
 ## [0.22.1] - 2026-05-26
 
 ### Fixed
@@ -790,7 +797,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.2...HEAD
+[0.22.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.2
 [0.22.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.1
 [0.22.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.0
 [0.21.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.4
