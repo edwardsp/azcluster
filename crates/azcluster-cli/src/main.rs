@@ -107,7 +107,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.22.0")]
+    #[arg(long, default_value = "v0.22.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -827,6 +827,23 @@ fn fetch_admin_private_key(name: &str) -> Result<std::path::PathBuf> {
     Ok(key_path)
 }
 
+/// Append OpenSSH `ProxyCommand` args that jump via `jump_target` using the explicit
+/// `identity` key. Replaces `-J <jump_target>` because OpenSSH's `-J` does NOT propagate
+/// the outer `-i` to the inner ssh — the jump hop falls back to the agent / `~/.ssh/id_*`,
+/// which is empty in v0.22 (admin key lives in `~/.azcluster/keys/<cluster>`).
+fn add_ssh_jump_with_identity(
+    cmd: &mut Command,
+    identity: &std::path::Path,
+    jump_target: &str,
+) {
+    let pc = format!(
+        "ProxyCommand=ssh -W %h:%p -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR {}",
+        identity.display(),
+        jump_target,
+    );
+    cmd.args(["-o", &pc]);
+}
+
 fn login(args: LoginArgs) -> Result<()> {
     let tenant = args.tenant.as_deref();
 
@@ -1339,6 +1356,7 @@ fn finalize_deploy(
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());
 
+    let on_disk_secrets = cluster_state::ClusterSecrets::load_optional(&args.name)?;
     let secrets = cluster_state::ClusterSecrets {
         ldap_admin_password: ldap_password.to_string(),
         mysql_admin_password: if accounting_enabled {
@@ -1346,11 +1364,15 @@ fn finalize_deploy(
         } else {
             existing_secrets.and_then(|s| s.mysql_admin_password.clone())
         },
-        admin_ssh_public_key: existing_secrets
+        admin_ssh_public_key: on_disk_secrets
+            .as_ref()
             .map(|s| s.admin_ssh_public_key.clone())
+            .or_else(|| existing_secrets.map(|s| s.admin_ssh_public_key.clone()))
             .unwrap_or_default(),
-        admin_ssh_private_key: existing_secrets
+        admin_ssh_private_key: on_disk_secrets
+            .as_ref()
             .map(|s| s.admin_ssh_private_key.clone())
+            .or_else(|| existing_secrets.map(|s| s.admin_ssh_private_key.clone()))
             .unwrap_or_default(),
     };
     let secrets_path = secrets.save(&args.name)?;
@@ -1642,7 +1664,8 @@ fn ssh(args: ConnectArgs) -> Result<()> {
         if let Some(host) = &args.host {
             let jump_target = format!("{}@{}", jump_user, host_ip);
             let dest = format!("{}@{}", connect_user, host);
-            cmd.args(["-J", &jump_target, &dest]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_target);
+            cmd.arg(&dest);
             eprintln!("==> ssh via Bastion -> {jump_target} -> {dest}");
         } else {
             let target = format!("{}@{}", connect_user, host_ip);
@@ -1660,11 +1683,13 @@ fn ssh(args: ConnectArgs) -> Result<()> {
         let jump_login = format!("{}@{}", jump_user, host);
         if let Some(hostname) = &args.host {
             let dest = format!("{}@{}", connect_user, hostname);
-            cmd.args(["-J", &jump_login, &dest]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            cmd.arg(&dest);
             eprintln!("==> ssh -J {jump_login} {dest}");
         } else if args.scheduler {
             let sched_target = format!("{}@{}", connect_user, state.scheduler_private_ip);
-            cmd.args(["-J", &jump_login, &sched_target]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            cmd.arg(&sched_target);
             eprintln!("==> ssh -J {jump_login} {sched_target}");
         } else {
             let login_target = format!("{}@{}", connect_user, host);
@@ -1888,6 +1913,14 @@ fn bootstrap_probe(state: &ClusterState) {
     if !use_bastion && login_ip.is_none() {
         return;
     }
+    let identity = match resolve_identity(None, &state.name) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("  login    : SKIP (no admin key: {e})");
+            println!("  scheduler: SKIP (no admin key: {e})");
+            return;
+        }
+    };
     let exe = if use_bastion {
         self_exe_path().ok()
     } else {
@@ -1918,6 +1951,10 @@ fn bootstrap_probe(state: &ClusterState) {
             "UserKnownHostsFile=/dev/null",
             "-o",
             "LogLevel=ERROR",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-i",
+            &identity.display().to_string(),
         ]);
         if use_bastion {
             let proxy_target = if is_scheduler { "scheduler" } else { "login" };
@@ -1929,7 +1966,7 @@ fn bootstrap_probe(state: &ClusterState) {
             );
             cmd.args(["-o", &format!("ProxyCommand={proxy_cmd}")]);
         } else if is_scheduler {
-            cmd.args(["-J", &login_target]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &login_target);
         }
         cmd.args([
             &target,
@@ -2021,7 +2058,8 @@ fn exec(args: ExecArgs) -> Result<()> {
         cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
         if let Some(host) = &args.host {
             let jump_target = format!("{}@{}", jump_user, host_ip);
-            cmd.args(["-J", &jump_target, &format!("{}@{}", connect_user, host)]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_target);
+            cmd.arg(format!("{}@{}", connect_user, host));
         } else {
             cmd.arg(format!("{}@{}", connect_user, host_ip));
         }
@@ -2035,13 +2073,11 @@ fn exec(args: ExecArgs) -> Result<()> {
         })?;
         let jump_login = format!("{}@{}", jump_user, host);
         if let Some(hostname) = &args.host {
-            cmd.args(["-J", &jump_login, &format!("{}@{}", connect_user, hostname)]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            cmd.arg(format!("{}@{}", connect_user, hostname));
         } else if args.scheduler {
-            cmd.args([
-                "-J",
-                &jump_login,
-                &format!("{}@{}", connect_user, state.scheduler_private_ip),
-            ]);
+            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            cmd.arg(format!("{}@{}", connect_user, state.scheduler_private_ip));
         } else {
             cmd.arg(format!("{}@{}", connect_user, host));
         }
@@ -2134,7 +2170,7 @@ fn scp(args: ScpArgs) -> Result<()> {
     }
     if let Some(login) = jump_login_host.as_deref() {
         let jump = format!("{}@{}", connect_user, login);
-        cmd.args(["-o", &format!("ProxyJump={}", jump)]);
+        add_ssh_jump_with_identity(&mut cmd, &identity, &jump);
     }
 
     let user_at_host = format!("{}@{}", connect_user, dest_host);

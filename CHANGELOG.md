@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-05-26
+
+### Fixed
+- **`finalize_deploy()` was overwriting the freshly-generated admin SSH keypair on disk with empty strings, then uploading the empty keypair to Key Vault.** Root cause: `finalize_deploy()` rebuilt the `ClusterSecrets` struct from `existing_secrets` (captured at the start of `deploy()` — `None` on a fresh deploy), so `admin_ssh_{public,private}_key` defaulted to empty strings. The subsequent `secrets.save()` clobbered the keypair that `deploy()` had written at line 1003, and the KV upload then pushed empty keys. Effect: a fresh `azcluster deploy` succeeded, the cluster reached ARM `Succeeded`, but `azcluster ssh/exec/scp/tunnel` then errored with `secrets-bundle in vault '<kv>' has no admin_ssh_private_key`. Re-running deploy then generated a *fresh* keypair (because local secrets file was now empty), but ARM rejected the update with `PropertyChangeNotAllowed` since `osProfile.linuxConfiguration.ssh.publicKeys` is immutable on existing VMs. Fix: `finalize_deploy()` now re-loads `ClusterSecrets::load_optional(&args.name)` from disk first to pick up the keypair that `deploy()` just persisted, and only falls back to `existing_secrets` if the on-disk copy is missing. Live-reproduced on `v22a`/`southafricanorth` (v0.22.0) before the fix; live-validated end-to-end on `v22b`/`southafricanorth` after the fix.
+- **OpenSSH `-J <jump>` does NOT propagate `-i <identity>` to the jump hop.** Every `azcluster ssh/exec/scp` invocation that traverses the login VM (i.e. `--scheduler` or `--host <compute>`, or any scp to a non-login target) was failing with `Permission denied (publickey)` on the jump hop because the inner ssh that handles `-J` falls back to the agent / `~/.ssh/id_*` instead of inheriting the outer `-i`. In v0.21.x this happened to work because the admin key was a copy of the operator's `~/.ssh/id_ed25519.pub` and therefore already in the agent; v0.22 generates the admin keypair fresh per deploy and stores it only in Key Vault + `~/.azcluster/keys/<cluster>`, breaking the implicit agent assumption. Fix: introduced `add_ssh_jump_with_identity()` helper that emits an explicit `-o ProxyCommand="ssh -W %h:%p -i <key> -o IdentitiesOnly=yes ..." <jump>` instead of `-J <jump>`. Applied to all 8 jump sites in `crates/azcluster-cli/src/main.rs` (3 in `ssh()`, 3 in `exec()`, 1 in `scp()`, 1 in `bootstrap_probe()`). Live-validated: `status` probe now reports `login: READY` + `scheduler: READY`; `exec --scheduler` reaches scheduler and reports `slurmctld active`; `scp` round-trip (laptop ↔ login) succeeds.
+- **`azcluster status` bootstrap probe was not using the admin identity** — it invoked `ssh` without `-i`, relying on the operator's ssh-agent. Now resolves the admin identity via `resolve_identity(None, &state.name)` (lazily fetching from KV if needed) and injects `-i <key> -o IdentitiesOnly=yes` into the probe ssh. Silently prints `SKIP (no admin key: <reason>)` if the identity can't be resolved, so `status` remains best-effort.
+
 ## [0.22.0] - 2026-05-26
 
 ### Added
@@ -783,7 +790,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.21.4...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.1
+[0.22.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.0
 [0.21.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.4
 [0.21.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.3
 [0.21.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.2

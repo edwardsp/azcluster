@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.22.0)**: minor — per-cluster Azure Key Vault becomes the source of truth for the cluster manifest + secrets (LDAP + MySQL admin passwords + freshly-generated admin SSH ed25519 keypair). Cluster RGs get five `azcluster:*` tags so the CLI can rediscover any cluster from the subscription alone. Every command (`ssh`/`exec`/`scp`/`tunnel`/`status`/`delete`/`scale`/`logs`/`monitor`/`timings`/`validate`/`resume`/`user`) is now stateless — any operator with KV RBAC runs them from a fresh laptop after only `azcluster login`. Admin private key materialises lazily to `~/.azcluster/keys/<cluster>` (`0600`). New subcommands `azcluster list` (RG-tag discovery) and `azcluster purge-cache`. Global `--no-cache` flag. Live TTY deploy progress; `azcluster timings` preserved. **Clean break — pre-v0.22 clusters are not discoverable, no migration path.**
+> **Status (v0.22.1)**: patch — fixes two regressions found during v0.22.0 live-validation. (1) `finalize_deploy()` was overwriting the freshly-generated admin SSH keypair with empty strings before uploading `secrets-bundle` to Key Vault, leaving `azcluster ssh/exec/scp/tunnel` broken on fresh deploys. (2) OpenSSH `-J <jump>` does NOT propagate `-i <identity>` to the jump hop — `ssh --scheduler`, `exec --scheduler`, `exec --host <compute>`, `scp` to non-login targets, and the `status` bootstrap probe all silently failed with `Permission denied (publickey)` because v0.22's admin key lives in `~/.azcluster/keys/<name>` (not in the operator's ssh-agent). Fixed by emitting explicit `-o ProxyCommand="ssh -W %h:%p -i <key> -o IdentitiesOnly=yes ..." <jump>` at all 8 jump sites. Live-validated end-to-end on `v22b`/`southafricanorth`: `status` probe READY on both hops, `exec --scheduler` succeeds, `scp` bidirectional round-trip OK.
+
+> **Previous status (v0.22.0)**: minor — per-cluster Azure Key Vault becomes the source of truth for the cluster manifest + secrets (LDAP + MySQL admin passwords + freshly-generated admin SSH ed25519 keypair). Cluster RGs get five `azcluster:*` tags so the CLI can rediscover any cluster from the subscription alone. Every command (`ssh`/`exec`/`scp`/`tunnel`/`status`/`delete`/`scale`/`logs`/`monitor`/`timings`/`validate`/`resume`/`user`) is now stateless — any operator with KV RBAC runs them from a fresh laptop after only `azcluster login`. Admin private key materialises lazily to `~/.azcluster/keys/<cluster>` (`0600`). New subcommands `azcluster list` (RG-tag discovery) and `azcluster purge-cache`. Global `--no-cache` flag. Live TTY deploy progress; `azcluster timings` preserved. **Clean break — pre-v0.22 clusters are not discoverable, no migration path.**
 
 > **Previous status (v0.21.4)**: minor — exposes `--scheduler-sku` and `--login-sku` on `azcluster deploy` so operators can override scheduler/login VM SKUs without editing Bicep. Defaults unchanged (`Standard_D8as_v5` / `Standard_D4as_v5`). Carries forward v0.21.3 LDAP-user UX (`--host` + `--user/-u` on `ssh`/`exec`/`scp`, `-A` on `exec`).
 
@@ -147,7 +149,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.22.0
+VERSION=v0.22.1
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
