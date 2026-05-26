@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.6] - 2026-05-26
+
+### Fixed
+- `azcluster user {add,remove,list,sshkey {add,remove,list}}` no longer fails with `Permission denied (publickey)` on operators whose ssh-agent does not already hold the v0.22 KV-backed admin key. The two ssh wrappers in `crates/azcluster-cli/src/user.rs` (`ssh_run` and `flush_login_sssd_cache`) had been missed by the v0.22.1 sweep that fixed the OpenSSH `-J` non-propagation bug at the other 8 jump sites. They now resolve the admin identity via `~/.azcluster/keys/<cluster>` (materialised lazily from Key Vault) and use the same explicit `-o ProxyCommand="ssh -W %h:%p -i <key> -o IdentitiesOnly=yes ..." <login>` pattern. `resolve_identity` and `add_ssh_jump_with_identity` are now `pub(crate)` so `user.rs` can call them. Live-reproduced on `paul-eus-hb120-h100`; v0.22.6 build verified fix.
+
 ## [0.22.5] - 2026-05-26
 
 ### Fixed

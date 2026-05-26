@@ -125,24 +125,28 @@ fn ssh_run(state: &ClusterState, remote_cmd: &str) -> Result<String> {
             state.name
         )
     })?;
+    // v0.22.6: must use the admin key from KV (~/.azcluster/keys/<cluster>) +
+    // explicit ProxyCommand. OpenSSH `-J` does NOT propagate `-i` to the inner
+    // jump-hop ssh, so the bare `-J <login>` path fails Permission denied on
+    // any operator whose ssh-agent does not already hold the admin key.
+    let identity = crate::resolve_identity(None, &state.name)
+        .with_context(|| format!("resolve admin ssh identity for '{}'", state.name))?;
     let login_target = format!("{}@{}", state.admin_username, host);
     let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
-    let out = Command::new("ssh")
-        .args([
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "BatchMode=yes",
-            "-J",
-            &login_target,
-            &sched_target,
-            "--",
-            "bash",
-            "-lc",
-            remote_cmd,
-        ])
-        .output()
-        .context("spawn ssh -J")?;
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-i",
+        &identity.display().to_string(),
+    ]);
+    crate::add_ssh_jump_with_identity(&mut cmd, &identity, &login_target);
+    cmd.args([&sched_target, "--", "bash", "-lc", remote_cmd]);
+    let out = cmd.output().context("spawn ssh")?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!(
@@ -166,6 +170,18 @@ fn flush_login_sssd_cache(state: &ClusterState, username: &str) {
     let Some(host) = state.login_public_ip.as_deref() else {
         return;
     };
+    // v0.22.6: same fix as ssh_run — direct ssh to login (no jump) but with
+    // explicit -i so the agent-less admin key flow works.
+    let identity = match crate::resolve_identity(None, &state.name) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "==> warn: SSSD cache flush skipped (could not resolve admin ssh key: {}); key changes will propagate within ~60s via entry_cache_timeout",
+                e
+            );
+            return;
+        }
+    };
     let target = format!("{}@{}", state.admin_username, host);
     let cmd = build_sssd_flush_cmd(username);
     let out = Command::new("ssh")
@@ -176,6 +192,10 @@ fn flush_login_sssd_cache(state: &ClusterState, username: &str) {
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=5",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-i",
+            &identity.display().to_string(),
             &target,
             "--",
             "bash",

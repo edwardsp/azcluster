@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.22.5")]
+    #[arg(long, default_value = "v0.22.6")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -856,7 +856,10 @@ fn resolve_cluster(name: &str) -> Result<ClusterState> {
     Ok(resolved.state)
 }
 
-fn resolve_identity(explicit: Option<&Path>, cluster_name: &str) -> Result<std::path::PathBuf> {
+pub(crate) fn resolve_identity(
+    explicit: Option<&Path>,
+    cluster_name: &str,
+) -> Result<std::path::PathBuf> {
     if let Some(p) = explicit {
         return Ok(p.to_path_buf());
     }
@@ -922,7 +925,11 @@ fn fetch_admin_private_key(name: &str) -> Result<std::path::PathBuf> {
 /// `identity` key. Replaces `-J <jump_target>` because OpenSSH's `-J` does NOT propagate
 /// the outer `-i` to the inner ssh — the jump hop falls back to the agent / `~/.ssh/id_*`,
 /// which is empty in v0.22 (admin key lives in `~/.azcluster/keys/<cluster>`).
-fn add_ssh_jump_with_identity(cmd: &mut Command, identity: &std::path::Path, jump_target: &str) {
+pub(crate) fn add_ssh_jump_with_identity(
+    cmd: &mut Command,
+    identity: &std::path::Path,
+    jump_target: &str,
+) {
     let pc = format!(
         "ProxyCommand=ssh -W %h:%p -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR {}",
         identity.display(),
