@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.22.4)**: patch — `azcluster deploy` live TTY progress now shows the full nested resource tree instead of only the 2 top-level sub-scope ops. Each module deployment (`network`, `scheduler`, `login`, `compute-<pool>`, `keyvault`, `monitoring`, `anf`) and its leaf resources (NSGs, public IPs, NICs, VMs, VMSS, vaults, etc.) are rendered with indentation matching their depth in the deployment tree. Ops poll cadence relaxed from 5s to 10s to absorb the higher ARM call volume per tick. Live-validated on `v224b` / `southafricanorth`: 22 resources captured (RG + root nested + 5 module nested + 15 leaves), deploy completed in 238s. Also fixes a latent bug: ARM deployment-operation envelopes do NOT populate `targetResource.resourceGroup` — the recursive walker now parses the RG out of the ARM `id` path.
+> **Status (v0.22.5)**: patch — `azcluster deploy` live TTY progress no longer shows duplicate rows. The v0.22.4 recursive walker emitted each resource once per ARM provisioning-state transition (Accepted → Running → Succeeded), and when a nested module deployment had multiple state-transition ops it recursed into the module twice — duplicating the entire descendant subtree. Both classes are now fixed by deduping ops by `targetResource.id` at the walker level (keep latest-seen entry per target, before recursing).
+
+> **Previous status (v0.22.4)**: patch — `azcluster deploy` live TTY progress now shows the full nested resource tree instead of only the 2 top-level sub-scope ops. Each module deployment (`network`, `scheduler`, `login`, `compute-<pool>`, `keyvault`, `monitoring`, `anf`) and its leaf resources (NSGs, public IPs, NICs, VMs, VMSS, vaults, etc.) are rendered with indentation matching their depth in the deployment tree. Ops poll cadence relaxed from 5s to 10s to absorb the higher ARM call volume per tick. Live-validated on `v224b` / `southafricanorth`: 22 resources captured (RG + root nested + 5 module nested + 15 leaves), deploy completed in 238s. Also fixes a latent bug: ARM deployment-operation envelopes do NOT populate `targetResource.resourceGroup` — the recursive walker now parses the RG out of the ARM `id` path.
 
 > **Previous status (v0.22.3)**: patch — adds `azcluster purge-kv` for permanent recovery of soft-deleted azcluster Key Vaults (bypasses the 7-day retention) so operators can re-use cluster names within the same week without falling back to `az` CLI or the Azure Portal. Native ARM REST (`Microsoft.KeyVault/locations/{loc}/deletedVaults/{name}/purge`); handles both 200-sync and 202-async response shapes via the existing `wait_for_async_operation` LRO helper. Safety: `kv-azc-` prefix hardcoded as a non-configurable filter (impossible to touch non-azcluster vaults); refuses `--all` without explicit opt-in; interactive `'yes'` gate unless `--yes`. Also fixes a latent ARM-frontend bug surfaced by the first live invocation: bodyless POST requests now set `Content-Length: 0` explicitly to satisfy IIS-flavoured `HTTP 411 Length Required`. Live-validated end-to-end on the two orphan vaults from v22a/v22b in `southafricanorth` (~6 min per purge LRO).
 
@@ -155,7 +157,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.22.4
+VERSION=v0.22.5
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

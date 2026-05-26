@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.5] - 2026-05-26
+
+### Fixed
+- `azcluster deploy` live TTY progress no longer renders duplicate rows. Two distinct dup sources fixed at the walker level (`arm/client.rs`): (1) ARM returns one operation per provisioning-state transition (Accepted → Running → Succeeded) per target — the walker now dedupes by `targetResource.id` keeping the latest-seen entry, so each resource appears exactly once with its current state; (2) when a nested module deployment had multiple state-transition ops, the walker recursed into it twice, duplicating its entire descendant subtree — dedup before recursion now ensures each nested module is walked exactly once. Two regression tests added (`dedup_ops_by_target_keeps_latest_state_per_id_preserves_first_seen_order`, `dedup_ops_by_target_drops_ops_without_target_id`).
+
 ## [0.22.4] - 2026-05-26
 
 ### Changed
@@ -819,7 +824,8 @@ Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.2...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.5...HEAD
+[0.22.5]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.5
 [0.22.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.4
 [0.22.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.3
 [0.22.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.2

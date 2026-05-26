@@ -87,6 +87,27 @@ fn rg_from_resource_id(id: &str) -> Option<String> {
     None
 }
 
+fn dedup_ops_by_target(ops: Vec<Value>) -> Vec<Value> {
+    let mut order: Vec<String> = Vec::new();
+    let mut latest: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for op in ops {
+        let id = op
+            .pointer("/properties/targetResource/id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        if let Some(id) = id {
+            if !latest.contains_key(&id) {
+                order.push(id.clone());
+            }
+            latest.insert(id, op);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|id| latest.remove(&id))
+        .collect()
+}
+
 /// Azure Resource Manager REST client.
 pub struct ArmClient {
     client: reqwest::blocking::Client,
@@ -568,7 +589,7 @@ impl ArmClient {
             Ok(v) => v,
             Err(_) => return,
         };
-        for op in ops {
+        for op in dedup_ops_by_target(ops) {
             let nested = nested_module_target(&op);
             out.push(DeploymentOp {
                 parent: deployment.to_string(),
@@ -596,7 +617,7 @@ impl ArmClient {
             Ok(v) => v,
             Err(_) => return,
         };
-        for op in ops {
+        for op in dedup_ops_by_target(ops) {
             let nested = nested_module_target(&op);
             out.push(DeploymentOp {
                 parent: deployment.to_string(),
@@ -885,5 +906,59 @@ mod tests {
             }
         });
         assert_eq!(super::nested_module_target(&op), None);
+    }
+
+    #[test]
+    fn dedup_ops_by_target_keeps_latest_state_per_id_preserves_first_seen_order() {
+        let running = |id: &str| {
+            json!({
+                "properties": {
+                    "provisioningState": "Running",
+                    "targetResource": {"id": id, "resourceType": "X", "resourceName": "n"}
+                }
+            })
+        };
+        let succeeded = |id: &str| {
+            json!({
+                "properties": {
+                    "provisioningState": "Succeeded",
+                    "targetResource": {"id": id, "resourceType": "X", "resourceName": "n"}
+                }
+            })
+        };
+        let ops = vec![
+            running("/A"),
+            running("/B"),
+            succeeded("/A"),
+            succeeded("/B"),
+        ];
+        let deduped = super::dedup_ops_by_target(ops);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(
+            deduped[0].pointer("/properties/targetResource/id"),
+            Some(&json!("/A"))
+        );
+        assert_eq!(
+            deduped[0].pointer("/properties/provisioningState"),
+            Some(&json!("Succeeded"))
+        );
+        assert_eq!(
+            deduped[1].pointer("/properties/targetResource/id"),
+            Some(&json!("/B"))
+        );
+        assert_eq!(
+            deduped[1].pointer("/properties/provisioningState"),
+            Some(&json!("Succeeded"))
+        );
+    }
+
+    #[test]
+    fn dedup_ops_by_target_drops_ops_without_target_id() {
+        let ops = vec![
+            json!({"properties": {"provisioningState": "Running", "targetResource": null}}),
+            json!({"properties": {"provisioningState": "Succeeded"}}),
+        ];
+        let deduped = super::dedup_ops_by_target(ops);
+        assert!(deduped.is_empty());
     }
 }
