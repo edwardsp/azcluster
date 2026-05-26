@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.22.6")]
+    #[arg(long, default_value = "v0.22.7")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -866,6 +866,29 @@ pub(crate) fn resolve_identity(
     fetch_admin_private_key(cluster_name)
 }
 
+/// Identity resolution for commands with a `--user` flag.
+/// - explicit `-i`            → always honoured
+/// - connect_user == admin    → KV admin key (same as `resolve_identity`)
+/// - connect_user != admin    → `None`, letting ssh fall back to the agent /
+///   `~/.ssh/id_*`. The admin KV key would fail for LDAP users because their
+///   `authorized_keys` (via SSSD `sshPublicKey`) contains the pubkey the
+///   operator enrolled with `azcluster user {add,sshkey add} --ssh-key`,
+///   not the admin ed25519.
+pub(crate) fn resolve_identity_for_user(
+    explicit: Option<&Path>,
+    cluster_name: &str,
+    connect_user: &str,
+    admin_user: &str,
+) -> Result<Option<std::path::PathBuf>> {
+    if let Some(p) = explicit {
+        return Ok(Some(p.to_path_buf()));
+    }
+    if connect_user == admin_user {
+        return Ok(Some(fetch_admin_private_key(cluster_name)?));
+    }
+    Ok(None)
+}
+
 fn fetch_admin_private_key(name: &str) -> Result<std::path::PathBuf> {
     let dir = dirs::home_dir()
         .ok_or_else(|| anyhow!("could not determine HOME"))?
@@ -936,6 +959,23 @@ pub(crate) fn add_ssh_jump_with_identity(
         jump_target,
     );
     cmd.args(["-o", &pc]);
+}
+
+/// Append a jump hop. With an explicit identity, uses the v0.22.1 ProxyCommand
+/// pattern to propagate `-i` to the inner ssh (OpenSSH `-J` does NOT do that).
+/// Without an identity, bare `-J` is correct — the inner ssh falls back to the
+/// same default key discovery (agent / `~/.ssh/id_*`) the outer ssh uses.
+pub(crate) fn add_ssh_jump(
+    cmd: &mut Command,
+    identity: Option<&std::path::Path>,
+    jump_target: &str,
+) {
+    match identity {
+        Some(key) => add_ssh_jump_with_identity(cmd, key, jump_target),
+        None => {
+            cmd.args(["-J", jump_target]);
+        }
+    }
 }
 
 fn login(args: LoginArgs) -> Result<()> {
@@ -1741,8 +1781,15 @@ fn ssh(args: ConnectArgs) -> Result<()> {
     let jump_user = connect_user;
     let mut cmd = Command::new("ssh");
     cmd.args(["-A", "-L", &forward]);
-    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
-    cmd.args(["-i", &identity.display().to_string()]);
+    let identity = resolve_identity_for_user(
+        args.identity.as_deref(),
+        &args.name,
+        connect_user,
+        &state.admin_username,
+    )?;
+    if let Some(key) = identity.as_deref() {
+        cmd.args(["-i", &key.display().to_string()]);
+    }
     if use_bastion {
         let exe = self_exe_path()?;
         let (target_name, host_ip) = if args.scheduler {
@@ -1758,7 +1805,7 @@ fn ssh(args: ConnectArgs) -> Result<()> {
         if let Some(host) = &args.host {
             let jump_target = format!("{}@{}", jump_user, host_ip);
             let dest = format!("{}@{}", connect_user, host);
-            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_target);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_target);
             cmd.arg(&dest);
             eprintln!("==> ssh via Bastion -> {jump_target} -> {dest}");
         } else {
@@ -1777,12 +1824,12 @@ fn ssh(args: ConnectArgs) -> Result<()> {
         let jump_login = format!("{}@{}", jump_user, host);
         if let Some(hostname) = &args.host {
             let dest = format!("{}@{}", connect_user, hostname);
-            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_login);
             cmd.arg(&dest);
             eprintln!("==> ssh -J {jump_login} {dest}");
         } else if args.scheduler {
             let sched_target = format!("{}@{}", connect_user, state.scheduler_private_ip);
-            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_login);
             cmd.arg(&sched_target);
             eprintln!("==> ssh -J {jump_login} {sched_target}");
         } else {
@@ -2136,8 +2183,15 @@ fn exec(args: ExecArgs) -> Result<()> {
     if args.forward_agent {
         cmd.arg("-A");
     }
-    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
-    cmd.args(["-i", &identity.display().to_string()]);
+    let identity = resolve_identity_for_user(
+        args.identity.as_deref(),
+        &args.name,
+        connect_user,
+        &state.admin_username,
+    )?;
+    if let Some(key) = identity.as_deref() {
+        cmd.args(["-i", &key.display().to_string()]);
+    }
     if use_bastion {
         let exe = self_exe_path()?;
         let (target_name, host_ip) = if args.scheduler {
@@ -2152,7 +2206,7 @@ fn exec(args: ExecArgs) -> Result<()> {
         cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
         if let Some(host) = &args.host {
             let jump_target = format!("{}@{}", jump_user, host_ip);
-            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_target);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_target);
             cmd.arg(format!("{}@{}", connect_user, host));
         } else {
             cmd.arg(format!("{}@{}", connect_user, host_ip));
@@ -2167,10 +2221,10 @@ fn exec(args: ExecArgs) -> Result<()> {
         })?;
         let jump_login = format!("{}@{}", jump_user, host);
         if let Some(hostname) = &args.host {
-            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_login);
             cmd.arg(format!("{}@{}", connect_user, hostname));
         } else if args.scheduler {
-            add_ssh_jump_with_identity(&mut cmd, &identity, &jump_login);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_login);
             cmd.arg(format!("{}@{}", connect_user, state.scheduler_private_ip));
         } else {
             cmd.arg(format!("{}@{}", connect_user, host));
@@ -2252,8 +2306,15 @@ fn scp(args: ScpArgs) -> Result<()> {
     if args.preserve {
         cmd.arg("-p");
     }
-    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
-    cmd.args(["-i", &identity.display().to_string()]);
+    let identity = resolve_identity_for_user(
+        args.identity.as_deref(),
+        &args.name,
+        connect_user,
+        &state.admin_username,
+    )?;
+    if let Some(key) = identity.as_deref() {
+        cmd.args(["-i", &key.display().to_string()]);
+    }
     if let Some(target) = proxy_target.as_deref() {
         let exe = self_exe_path()?;
         let proxy = format!(
@@ -2264,7 +2325,7 @@ fn scp(args: ScpArgs) -> Result<()> {
     }
     if let Some(login) = jump_login_host.as_deref() {
         let jump = format!("{}@{}", connect_user, login);
-        add_ssh_jump_with_identity(&mut cmd, &identity, &jump);
+        add_ssh_jump(&mut cmd, identity.as_deref(), &jump);
     }
 
     let user_at_host = format!("{}@{}", connect_user, dest_host);

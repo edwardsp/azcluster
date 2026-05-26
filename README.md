@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.22.6)**: patch — `azcluster user {add,remove,list,sshkey ...}` no longer fails with `Permission denied (publickey)` on operators whose ssh-agent doesn't already hold the v0.22 KV-backed admin key. The two ssh wrappers in `crates/azcluster-cli/src/user.rs` (`ssh_run` and `flush_login_sssd_cache`) had been missed during the v0.22.1 sweep that fixed the OpenSSH `-J` non-propagation bug at the other 8 jump sites — both now resolve the admin identity via `~/.azcluster/keys/<cluster>` and use the same explicit `-o ProxyCommand="ssh -W %h:%p -i <key> -o IdentitiesOnly=yes ..." <login>` pattern. Live-reproduced on `paul-eus-hb120-h100` before the fix; same cluster works after.
+> **Status (v0.22.7)**: patch — `azcluster ssh|exec|scp <cluster> --user <ldap-user>` no longer fails with `Permission denied (publickey)`. The v0.22 admin SSH key (KV-backed, `~/.azcluster/keys/<cluster>`) only authenticates `azureuser`; an LDAP user's `authorized_keys` (via SSSD `sshPublicKey`) contains whatever pubkey was enrolled with `azcluster user {add,sshkey add} --ssh-key <file>` — typically the operator's `~/.ssh/id_*`. New `resolve_identity_for_user` returns `None` when `connect_user != admin_user` and no explicit `--identity` is passed, letting ssh fall back to its default key discovery (agent / `~/.ssh/id_*`). Live-reproduced on `paul-eus-hb120-h100` against LDAP user `paul`; v0.22.7 verified fix.
+
+> **Previous status (v0.22.6)**: patch — `azcluster user {add,remove,list,sshkey ...}` no longer fails with `Permission denied (publickey)` on operators whose ssh-agent doesn't already hold the v0.22 KV-backed admin key. The two ssh wrappers in `crates/azcluster-cli/src/user.rs` (`ssh_run` and `flush_login_sssd_cache`) had been missed during the v0.22.1 sweep that fixed the OpenSSH `-J` non-propagation bug at the other 8 jump sites — both now resolve the admin identity via `~/.azcluster/keys/<cluster>` and use the same explicit `-o ProxyCommand="ssh -W %h:%p -i <key> -o IdentitiesOnly=yes ..." <login>` pattern. Live-reproduced on `paul-eus-hb120-h100` before the fix; same cluster works after.
 
 > **Previous status (v0.22.5)**: patch — `azcluster deploy` live TTY progress no longer shows duplicate rows. The v0.22.4 recursive walker emitted each resource once per ARM provisioning-state transition (Accepted → Running → Succeeded), and when a nested module deployment had multiple state-transition ops it recursed into the module twice — duplicating the entire descendant subtree. Both classes are now fixed by deduping ops by `targetResource.id` at the walker level (keep latest-seen entry per target, before recursing).
 
@@ -159,7 +161,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.22.6
+VERSION=v0.22.7
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

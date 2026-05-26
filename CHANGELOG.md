@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.7] - 2026-05-26
+
+### Fixed
+- `azcluster ssh|exec|scp <cluster> --user <ldap-user>` no longer fails with `Permission denied (publickey)`. The v0.22 admin SSH key (KV-backed, `~/.azcluster/keys/<cluster>`) only authenticates `azureuser`; an LDAP user's `authorized_keys` (via SSSD `sshPublicKey`) contains whatever pubkey was enrolled with `azcluster user {add,sshkey add} --ssh-key <file>` — typically the operator's `~/.ssh/id_*`. The CLI was force-passing `-i <admin-key>` regardless of `--user`, so every LDAP-user invocation was rejected. New `resolve_identity_for_user` returns `None` when `connect_user != admin_user` and no explicit `--identity` is passed, letting ssh fall back to its default key discovery (agent / `~/.ssh/id_*`). New `add_ssh_jump` wrapper emits bare `-J <jump>` in that case (correct because the inner ssh uses the same default discovery). Applied to `ssh`, `exec`, `scp`. Admin-only paths (`tunnel`, `logs`, `validate`, `status` bootstrap probe, `user.rs` ssh wrappers) keep using `resolve_identity` + `add_ssh_jump_with_identity` unchanged. Live-reproduced on `paul-eus-hb120-h100` against LDAP user `paul`.
+
 ## [0.22.6] - 2026-05-26
 
 ### Fixed
