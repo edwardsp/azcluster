@@ -81,7 +81,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.21.3")]
+    #[arg(long, default_value = "v0.21.4")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -134,6 +134,12 @@ struct DeployArgs {
     /// Provision an Azure Bastion (Standard SKU with native client tunneling) for SSH access without a public IP on login. Opt-in (~$140/month). Enables `azcluster ssh/exec/tunnel` to auto-route via Bastion when login has no public IP.
     #[arg(long, default_value_t = false)]
     bastion: bool,
+    /// VM SKU for the scheduler (slurmctld + control daemon). Default `Standard_D8as_v5`.
+    #[arg(long, default_value = "Standard_D8as_v5")]
+    scheduler_sku: String,
+    /// VM SKU for the login VM (operator entry point). Default `Standard_D4as_v5`.
+    #[arg(long, default_value = "Standard_D4as_v5")]
+    login_sku: String,
 }
 
 #[derive(Args)]
@@ -907,6 +913,8 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ),
         ("extraPackages", json!(args.extra_packages.join(" "))),
         ("enableBastion", json!(args.bastion)),
+        ("schedulerSku", json!(args.scheduler_sku)),
+        ("loginSku", json!(args.login_sku)),
     ];
 
     if monitoring_enabled {
@@ -1064,6 +1072,8 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 no_wait: false,
                 extra_packages: pending.extra_packages.clone(),
                 bastion: pending.bastion_enabled,
+                scheduler_sku: String::new(),
+                login_sku: String::new(),
             };
             finalize_deploy(
                 &synthetic_args,

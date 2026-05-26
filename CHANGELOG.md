@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-05-25
+
+### Added
+- **`azcluster deploy --scheduler-sku <sku>` and `--login-sku <sku>`** — operator-facing CLI flags to override the VM SKU of the scheduler and login VMs. Defaults remain `Standard_D8as_v5` (scheduler) and `Standard_D4as_v5` (login), so existing invocations are unaffected. The underlying `schedulerSku` / `loginSku` Bicep parameters have existed since the initial template (`bicep/main.bicep`); v0.21.4 just exposes them. Useful for shrinking scheduler/login down to `Standard_D2as_v5` for rapid-test deploys, or scaling them up when the cluster reaches a few hundred compute nodes and slurmctld + control-plane overhead grows.
+
+### Changed
+- `DeployArgs` gains `scheduler_sku: String` and `login_sku: String` (both with sensible defaults). ARM parameter envelope adds `schedulerSku` and `loginSku` entries.
+
 ## [0.21.3] - 2026-05-25
 
 ### Added
@@ -745,7 +753,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.21.3...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.21.4...HEAD
+[0.21.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.4
 [0.21.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.3
 [0.21.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.2
 [0.21.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.21.1

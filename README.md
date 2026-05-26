@@ -2,7 +2,7 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.21.2)**: hygiene + UX polish on top of v0.21.1. Fixes three regressions surfaced during v0.21.1 live-validation: (1) `/etc/slurm/*.conf` at 0600 after a mid-bootstrap abort (defense-in-depth `EXIT trap` on install scripts); (2) `azcluster timings` reporting only the root deployment after the v0.20.0 native-ARM-REST switch (now falls back to parsing `targetResource.id` and recurses into sub-scope nested deployments); (3) `azcluster status` bootstrap probe showing misleading `curl 404` log buffer tails and bypassing bastion auto-route (now prefers `/var/log/azcluster/ready` marker, honors bastion). Carries forward v0.21.1 `azcluster scp` + login fast-path, v0.21.0 Azure Bastion no-plugin, v0.20.0 native ARM REST + OAuth2.
+> **Status (v0.21.4)**: minor — exposes `--scheduler-sku` and `--login-sku` on `azcluster deploy` so operators can override scheduler/login VM SKUs without editing Bicep. Defaults unchanged (`Standard_D8as_v5` / `Standard_D4as_v5`). Carries forward v0.21.3 LDAP-user UX (`--host` + `--user/-u` on `ssh`/`exec`/`scp`, `-A` on `exec`).
 
 > **Previous status (v0.21.1)**: adds `azcluster scp` (bastion-aware scp wrapper with first-class node selection — `login` default, `scheduler`, or any compute hostname) and a fast-path on `azcluster login --subscription <id>` that rebinds the cached principal to a new subscription in ~6 ms without re-auth (workaround for Microsoft tenants where Conditional Access blocks device-code flow). Carries forward v0.21.0 Azure Bastion no-plugin support live-validated on `paul-azcluster` / `southafricanorth` (auto-route through Bastion for `ssh`/`exec`/`tunnel` + new `scp`; hidden `bastion-proxy` stdio bridge as ssh `ProxyCommand`; hand-rolled WS framing on `tokio-rustls` because Azure Bastion's non-RFC WS upgrade breaks `tokio-tungstenite`). Carries forward v0.20.0 native ARM REST + OAuth2.
 
@@ -145,7 +145,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.21.2
+VERSION=v0.21.4
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
