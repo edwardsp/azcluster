@@ -574,6 +574,55 @@ impl ArmClient {
             .map(String::from)
             .ok_or_else(|| anyhow!("AMG {name} has no properties.endpoint"))
     }
+
+    /// List soft-deleted Key Vaults in the current subscription.
+    /// Returns the `value` array of `Microsoft.KeyVault/deletedVaults` resources;
+    /// each entry has `name`, `properties.location`, `properties.deletionDate`,
+    /// `properties.scheduledPurgeDate`, `properties.vaultId`.
+    pub fn list_deleted_vaults(&self) -> Result<Vec<Value>> {
+        const KV_API: &str = "2023-07-01";
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.KeyVault/deletedVaults?api-version={}",
+            self.subscription_id, KV_API
+        );
+        self.list_paginated(&url)
+    }
+
+    /// Purge a soft-deleted Key Vault (permanent — bypasses the 7-day retention).
+    /// Returns once the operation has reached a terminal state (handles both
+    /// 200-sync and 202-async response shapes).
+    pub fn purge_deleted_vault(&self, location: &str, name: &str) -> Result<()> {
+        const KV_API: &str = "2023-07-01";
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.KeyVault/locations/{}/deletedVaults/{}/purge?api-version={}",
+            self.subscription_id, location, name, KV_API
+        );
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .header(reqwest::header::CONTENT_LENGTH, "0")
+            .send()
+            .context("Failed to send Key Vault purge POST")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            bail!("Key Vault purge failed ({status}): {body}");
+        }
+        if status.as_u16() == 200 || status.as_u16() == 204 {
+            return Ok(());
+        }
+        let async_url = response
+            .headers()
+            .get("azure-asyncoperation")
+            .or_else(|| response.headers().get("location"))
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        match async_url {
+            Some(u) => self.wait_for_async_operation(&u),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Parse ISO8601 duration string (e.g., "PT1H30M45S") to seconds.

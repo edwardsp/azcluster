@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-05-26
+
+### Added
+- `azcluster purge-kv` permanently removes soft-deleted azcluster Key Vaults (bypasses the 7-day soft-delete retention). Flags: `--name <cluster> --location <loc>` to target a specific vault (derives `kv-azc-<hash(sub|name|location)>`), `--all` for every `kv-azc-*` in the subscription, `--location <loc>` to scope, `--dry-run` to list candidates without acting, `--yes` to skip the interactive `'yes'` prompt. Calls the ARM `Microsoft.KeyVault/locations/{loc}/deletedVaults/{name}/purge` endpoint natively (no `az` shell-out); handles both 200-sync and 202-async response shapes via the existing `wait_for_async_operation` LRO helper. Live-validated against both v22a + v22b orphan vaults in `southafricanorth` (purge LRO observed ~6 min per vault).
+
+### Fixed
+- ARM POST requests with no body now set an explicit `Content-Length: 0` header. Without it, Azure's ARM frontend returns `HTTP 411 Length Required` (HTML response). Surfaced by the first `azcluster purge-kv` live invocation. Affects `purge_deleted_vault` and any future bodyless POST on the ARM client.
+
+### Added
+- `azcluster purge-kv` permanently removes soft-deleted azcluster Key Vaults (bypasses the 7-day soft-delete retention). Flags: `--name <cluster> --location <loc>` to target a specific vault (derives `kv-azc-<hash(sub|name|location)>`), `--all` for every `kv-azc-*` in the subscription, `--location <loc>` to scope, `--dry-run` to list candidates without acting, `--yes` to skip the interactive `'yes'` prompt. Calls the ARM `Microsoft.KeyVault/locations/{loc}/deletedVaults/{name}/purge` endpoint natively (no `az` shell-out); handles both 200-sync and 202-async response shapes via the existing `wait_for_async_operation` LRO helper.
+
+### Fixed
+- ARM POST requests with no body now set an explicit `Content-Length: 0` header. Without it, Azure's ARM frontend returns `HTTP 411 Length Required`. Surfaced by the first `azcluster purge-kv` live invocation. Affects `purge_deleted_vault` and any future bodyless POST on the ARM client.
+
 ## [0.22.2] - 2026-05-26
 
 Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete+re-push race with the Actions trigger debouncer left no release published). Re-tagged as v0.22.2 to force a clean trigger.
@@ -798,6 +812,7 @@ Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
 [Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.2...HEAD
+[0.22.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.3
 [0.22.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.2
 [0.22.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.1
 [0.22.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.0

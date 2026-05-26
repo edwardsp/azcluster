@@ -52,6 +52,8 @@ enum CliCommand {
     List(ListArgs),
     /// Remove cached cluster manifests under ~/.config/azcluster/clusters/.
     PurgeCache(PurgeCacheArgs),
+    /// Permanently purge soft-deleted azcluster Key Vaults (bypasses the 7-day retention).
+    PurgeKv(PurgeKvArgs),
     /// Internal: stdio bridge through Azure Bastion (used as ssh ProxyCommand).
     #[command(hide = true)]
     BastionProxy(BastionProxyArgs),
@@ -69,6 +71,25 @@ struct PurgeCacheArgs {
     /// Only purge the cache entry for this cluster (default: purge all).
     #[arg(long)]
     name: Option<String>,
+}
+
+#[derive(Args)]
+struct PurgeKvArgs {
+    /// Cluster name whose KV to target (derives `kv-azc-<hash>`; requires --location).
+    #[arg(long)]
+    name: Option<String>,
+    /// Azure region of the soft-deleted vault (required with --name).
+    #[arg(long)]
+    location: Option<String>,
+    /// Purge every soft-deleted vault matching `kv-azc-*` in this subscription.
+    #[arg(long, conflicts_with = "name")]
+    all: bool,
+    /// Skip interactive confirmation.
+    #[arg(long)]
+    yes: bool,
+    /// List candidates and exit without purging.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Args)]
@@ -107,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.22.2")]
+    #[arg(long, default_value = "v0.22.3")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -432,6 +453,75 @@ mod tests {
         let s = fixture_state(None);
         assert!(resolve_scp_route(&s, "login", false).is_err());
     }
+
+    fn dv(name: &str, loc: &str) -> DeletedVault {
+        DeletedVault {
+            name: name.to_string(),
+            location: loc.to_string(),
+            deletion_date: String::new(),
+            scheduled_purge_date: String::new(),
+        }
+    }
+
+    #[test]
+    fn parse_deleted_vault_extracts_fields() {
+        let raw = serde_json::json!({
+            "name": "kv-azc-abcd1234",
+            "properties": {
+                "location": "southafricanorth",
+                "deletionDate": "2026-05-25T10:00:00Z",
+                "scheduledPurgeDate": "2026-06-01T10:00:00Z",
+                "vaultId": "/subscriptions/x/.../kv-azc-abcd1234"
+            }
+        });
+        let p = parse_deleted_vault(&raw).unwrap();
+        assert_eq!(p.name, "kv-azc-abcd1234");
+        assert_eq!(p.location, "southafricanorth");
+        assert_eq!(p.deletion_date, "2026-05-25T10:00:00Z");
+        assert_eq!(p.scheduled_purge_date, "2026-06-01T10:00:00Z");
+    }
+
+    #[test]
+    fn parse_deleted_vault_missing_name_rejected() {
+        let raw = serde_json::json!({ "properties": { "location": "x" } });
+        assert!(parse_deleted_vault(&raw).is_none());
+    }
+
+    #[test]
+    fn filter_purge_kv_keeps_only_azc_prefix() {
+        let all = vec![
+            dv("kv-azc-1111", "eastus"),
+            dv("kv-other-2222", "eastus"),
+            dv("kv-azc-3333", "westus"),
+        ];
+        let kept = filter_purge_kv_candidates(all, None, None);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|v| v.name.starts_with("kv-azc-")));
+    }
+
+    #[test]
+    fn filter_purge_kv_narrows_by_target_name() {
+        let all = vec![dv("kv-azc-1111", "eastus"), dv("kv-azc-2222", "eastus")];
+        let kept = filter_purge_kv_candidates(all, Some("kv-azc-2222"), None);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "kv-azc-2222");
+    }
+
+    #[test]
+    fn filter_purge_kv_narrows_by_location_case_insensitive() {
+        let all = vec![dv("kv-azc-1111", "eastus"), dv("kv-azc-2222", "westus")];
+        let kept = filter_purge_kv_candidates(all, None, Some("EASTUS"));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].location, "eastus");
+    }
+
+    #[test]
+    fn filter_purge_kv_name_and_location_both_required_to_match() {
+        let all = vec![dv("kv-azc-1111", "eastus"), dv("kv-azc-1111", "westus")];
+        let kept = filter_purge_kv_candidates(all, Some("kv-azc-1111"), Some("westus"));
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].location, "westus");
+    }
 }
 
 #[derive(Args)]
@@ -679,6 +769,7 @@ fn main() -> Result<()> {
         CliCommand::User(args) => user_dispatch(args),
         CliCommand::List(args) => list(args),
         CliCommand::PurgeCache(args) => purge_cache(args),
+        CliCommand::PurgeKv(args) => purge_kv(args),
         CliCommand::BastionProxy(args) => bastion_proxy(args),
     }
 }
@@ -831,11 +922,7 @@ fn fetch_admin_private_key(name: &str) -> Result<std::path::PathBuf> {
 /// `identity` key. Replaces `-J <jump_target>` because OpenSSH's `-J` does NOT propagate
 /// the outer `-i` to the inner ssh — the jump hop falls back to the agent / `~/.ssh/id_*`,
 /// which is empty in v0.22 (admin key lives in `~/.azcluster/keys/<cluster>`).
-fn add_ssh_jump_with_identity(
-    cmd: &mut Command,
-    identity: &std::path::Path,
-    jump_target: &str,
-) {
+fn add_ssh_jump_with_identity(cmd: &mut Command, identity: &std::path::Path, jump_target: &str) {
     let pc = format!(
         "ProxyCommand=ssh -W %h:%p -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR {}",
         identity.display(),
@@ -2432,6 +2519,148 @@ fn purge_cache(args: PurgeCacheArgs) -> Result<()> {
         (None, 0) => eprintln!("==> cache already empty"),
         (None, _) => eprintln!("==> purged {n} cached cluster manifest(s)"),
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeletedVault {
+    name: String,
+    location: String,
+    deletion_date: String,
+    scheduled_purge_date: String,
+}
+
+fn parse_deleted_vault(v: &serde_json::Value) -> Option<DeletedVault> {
+    let name = v.get("name").and_then(|s| s.as_str())?.to_string();
+    let props = v.get("properties")?;
+    Some(DeletedVault {
+        name,
+        location: props
+            .get("location")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        deletion_date: props
+            .get("deletionDate")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+        scheduled_purge_date: props
+            .get("scheduledPurgeDate")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
+fn filter_purge_kv_candidates(
+    all: Vec<DeletedVault>,
+    target_name: Option<&str>,
+    target_location: Option<&str>,
+) -> Vec<DeletedVault> {
+    all.into_iter()
+        .filter(|v| v.name.starts_with("kv-azc-"))
+        .filter(|v| match target_name {
+            Some(n) => v.name == n,
+            None => true,
+        })
+        .filter(|v| match target_location {
+            Some(l) => v.location.eq_ignore_ascii_case(l),
+            None => true,
+        })
+        .collect()
+}
+
+fn purge_kv(args: PurgeKvArgs) -> Result<()> {
+    if args.name.is_some() && args.location.is_none() {
+        anyhow::bail!("--name requires --location (KV name is derived from sub|name|location)");
+    }
+    let arm = arm_client()?;
+    let sub_id = arm.subscription_id().to_string();
+    let target_kv_name = match (args.name.as_deref(), args.location.as_deref()) {
+        (Some(n), Some(loc)) => Some(crypto::derive_kv_name(&sub_id, n, loc)),
+        _ => None,
+    };
+
+    let raw = arm.list_deleted_vaults()?;
+    let parsed: Vec<DeletedVault> = raw.iter().filter_map(parse_deleted_vault).collect();
+    let candidates =
+        filter_purge_kv_candidates(parsed, target_kv_name.as_deref(), args.location.as_deref());
+
+    println!("Subscription: {sub_id}");
+    if candidates.is_empty() {
+        println!("(no matching soft-deleted azcluster Key Vaults found)");
+        return Ok(());
+    }
+
+    let w_name = candidates.iter().map(|v| v.name.len()).max().unwrap_or(4);
+    let w_loc = candidates
+        .iter()
+        .map(|v| v.location.len())
+        .max()
+        .unwrap_or(8);
+    println!(
+        "{:<wn$}  {:<wl$}  DELETED                   SCHEDULED PURGE",
+        "NAME",
+        "LOCATION",
+        wn = w_name,
+        wl = w_loc,
+    );
+    for v in &candidates {
+        println!(
+            "{:<wn$}  {:<wl$}  {:<25}  {}",
+            v.name,
+            v.location,
+            v.deletion_date,
+            v.scheduled_purge_date,
+            wn = w_name,
+            wl = w_loc,
+        );
+    }
+
+    if args.dry_run {
+        return Ok(());
+    }
+
+    let needs_explicit_all = args.name.is_none() && !args.all;
+    if needs_explicit_all {
+        anyhow::bail!(
+            "refusing to purge {} vault(s) without --all or --name (re-run with --all to confirm scope)",
+            candidates.len()
+        );
+    }
+
+    if !args.yes {
+        eprintln!(
+            "\nAbout to PERMANENTLY purge {} Key Vault(s). This bypasses the 7-day soft-delete retention.",
+            candidates.len()
+        );
+        eprint!("Type 'yes' to continue: ");
+        use std::io::{stdin, stdout, Write};
+        stdout().flush().ok();
+        let mut buf = String::new();
+        stdin().read_line(&mut buf)?;
+        if buf.trim() != "yes" {
+            anyhow::bail!("aborted");
+        }
+    }
+
+    let mut failed = 0u32;
+    for v in &candidates {
+        eprintln!("==> purging {} ({})", v.name, v.location);
+        match arm.purge_deleted_vault(&v.location, &v.name) {
+            Ok(()) => eprintln!("    OK"),
+            Err(e) => {
+                failed += 1;
+                eprintln!("    ERR: {e:#}");
+            }
+        }
+    }
+
+    if failed > 0 {
+        anyhow::bail!("{failed} purge(s) failed");
+    }
+    eprintln!("==> purged {} vault(s)", candidates.len());
     Ok(())
 }
 
