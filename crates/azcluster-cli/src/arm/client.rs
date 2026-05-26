@@ -29,6 +29,64 @@ impl Default for ApiVersions {
     }
 }
 
+/// A single deployment operation tagged with its parent module deployment
+/// name and tree depth, produced by [`ArmClient::list_deployment_operations_recursive`].
+///
+/// `parent` is the deployment name the op was fetched from (the immediate
+/// parent in the deployment tree); `depth` is 0 for the root sub-scope
+/// deployment, 1 for its direct nested modules, and so on. `op` is the raw
+/// ARM `operations` envelope, preserved so callers can read any field
+/// without API churn.
+#[derive(Debug, Clone)]
+pub struct DeploymentOp {
+    pub parent: String,
+    pub depth: u8,
+    pub op: Value,
+}
+
+/// Inspect a deployment-operation envelope. If its target is itself a
+/// nested `Microsoft.Resources/deployments`, return `(resource_group, name)`.
+/// `resource_group` is empty for sub-scope nested deployments.
+fn nested_module_target(op: &Value) -> Option<(String, String)> {
+    let target = op.pointer("/properties/targetResource")?;
+    let rtype = target
+        .get("resourceType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !rtype.eq_ignore_ascii_case("Microsoft.Resources/deployments") {
+        return None;
+    }
+    let name = target
+        .get("resourceName")
+        .and_then(|v| v.as_str())
+        .map(String::from)?;
+    if name.is_empty() {
+        return None;
+    }
+    let rg = target
+        .get("resourceGroup")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| {
+            target
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(rg_from_resource_id)
+        })
+        .unwrap_or_default();
+    Some((rg, name))
+}
+
+fn rg_from_resource_id(id: &str) -> Option<String> {
+    let mut parts = id.split('/').skip(1);
+    while let Some(seg) = parts.next() {
+        if seg.eq_ignore_ascii_case("resourceGroups") {
+            return parts.next().map(String::from);
+        }
+    }
+    None
+}
+
 /// Azure Resource Manager REST client.
 pub struct ArmClient {
     client: reqwest::blocking::Client,
@@ -422,12 +480,12 @@ impl ArmClient {
     pub fn wait_for_deployment_completion_with_progress(
         &self,
         deployment_name: &str,
-        on_tick: &mut dyn FnMut(&[Value]),
+        on_tick: &mut dyn FnMut(&[DeploymentOp]),
     ) -> Result<Value> {
         use std::time::{Duration, Instant};
         const MAX_WAIT_SECS: u64 = 90 * 60;
         const STATE_POLL_SECS: u64 = 15;
-        const OPS_POLL_SECS: u64 = 5;
+        const OPS_POLL_SECS: u64 = 10;
         let started = Instant::now();
         let mut last_state_poll = Instant::now() - Duration::from_secs(STATE_POLL_SECS);
         loop {
@@ -441,9 +499,8 @@ impl ArmClient {
                     .and_then(|s| s.as_str())
                     .unwrap_or("");
                 if matches!(state, "Succeeded" | "Failed" | "Canceled") {
-                    if let Ok(ops) = self.list_subscription_deployment_operations(deployment_name) {
-                        on_tick(&ops);
-                    }
+                    let ops = self.list_deployment_operations_recursive(deployment_name);
+                    on_tick(&ops);
                     return Ok(v);
                 }
                 if started.elapsed().as_secs() > MAX_WAIT_SECS {
@@ -453,9 +510,8 @@ impl ArmClient {
                     );
                 }
             }
-            if let Ok(ops) = self.list_subscription_deployment_operations(deployment_name) {
-                on_tick(&ops);
-            }
+            let ops = self.list_deployment_operations_recursive(deployment_name);
+            on_tick(&ops);
             std::thread::sleep(Duration::from_secs(OPS_POLL_SECS));
         }
     }
@@ -499,6 +555,58 @@ impl ArmClient {
             self.subscription_id, resource_group, deployment_name, self.api_versions.deployment
         );
         self.list_paginated(&url)
+    }
+
+    pub fn list_deployment_operations_recursive(&self, deployment: &str) -> Vec<DeploymentOp> {
+        let mut out = Vec::new();
+        self.collect_sub_ops_into(&mut out, deployment, 0);
+        out
+    }
+
+    fn collect_sub_ops_into(&self, out: &mut Vec<DeploymentOp>, deployment: &str, depth: u8) {
+        let ops = match self.list_subscription_deployment_operations(deployment) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        for op in ops {
+            let nested = nested_module_target(&op);
+            out.push(DeploymentOp {
+                parent: deployment.to_string(),
+                depth,
+                op,
+            });
+            if let Some((rg, name)) = nested {
+                if rg.is_empty() {
+                    self.collect_sub_ops_into(out, &name, depth.saturating_add(1));
+                } else {
+                    self.collect_group_ops_into(out, &rg, &name, depth.saturating_add(1));
+                }
+            }
+        }
+    }
+
+    fn collect_group_ops_into(
+        &self,
+        out: &mut Vec<DeploymentOp>,
+        rg: &str,
+        deployment: &str,
+        depth: u8,
+    ) {
+        let ops = match self.list_resource_group_deployment_operations(rg, deployment) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        for op in ops {
+            let nested = nested_module_target(&op);
+            out.push(DeploymentOp {
+                parent: deployment.to_string(),
+                depth,
+                op,
+            });
+            if let Some((_, name)) = nested {
+                self.collect_group_ops_into(out, rg, &name, depth.saturating_add(1));
+            }
+        }
     }
 
     /// Get deployment operations with timing information.
@@ -729,5 +837,53 @@ mod tests {
     fn filter_rgs_by_tag_value_mismatch_excluded() {
         let rgs = vec![rg("a", json!({"azcluster:managed": "false"}))];
         assert!(filter_rgs_by_tag(rgs, "azcluster:managed", Some("true")).is_empty());
+    }
+
+    #[test]
+    fn nested_module_target_falls_back_to_id_when_resource_group_field_absent() {
+        let op = json!({
+            "properties": {
+                "targetResource": {
+                    "id": "/subscriptions/SUB/resourceGroups/rg-azcluster-demo/providers/Microsoft.Resources/deployments/cluster-demo",
+                    "resourceType": "Microsoft.Resources/deployments",
+                    "resourceName": "cluster-demo"
+                }
+            }
+        });
+        assert_eq!(
+            super::nested_module_target(&op),
+            Some(("rg-azcluster-demo".to_string(), "cluster-demo".to_string()))
+        );
+    }
+
+    #[test]
+    fn nested_module_target_sub_scope_has_empty_rg() {
+        let op = json!({
+            "properties": {
+                "targetResource": {
+                    "id": "/subscriptions/SUB/providers/Microsoft.Resources/deployments/sub-nested",
+                    "resourceType": "Microsoft.Resources/deployments",
+                    "resourceName": "sub-nested"
+                }
+            }
+        });
+        assert_eq!(
+            super::nested_module_target(&op),
+            Some((String::new(), "sub-nested".to_string()))
+        );
+    }
+
+    #[test]
+    fn nested_module_target_non_deployment_returns_none() {
+        let op = json!({
+            "properties": {
+                "targetResource": {
+                    "id": "/subscriptions/SUB/resourceGroups/rg-x/providers/Microsoft.Compute/virtualMachines/vm-x",
+                    "resourceType": "Microsoft.Compute/virtualMachines",
+                    "resourceName": "vm-x"
+                }
+            }
+        });
+        assert_eq!(super::nested_module_target(&op), None);
     }
 }

@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::arm::client::DeploymentOp;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 
@@ -27,14 +27,8 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, ops: &[Value]) {
-        let mut rows: Vec<Row> = ops.iter().filter_map(Row::from_op).collect();
-        rows.sort_by(|a, b| {
-            terminal_rank(&a.state)
-                .cmp(&terminal_rank(&b.state))
-                .then(a.resource_name.cmp(&b.resource_name))
-        });
-
+    pub fn render(&mut self, ops: &[DeploymentOp]) {
+        let rows: Vec<Row> = ops.iter().filter_map(Row::from_op).collect();
         if self.tty {
             self.render_tty(&rows);
         } else {
@@ -67,9 +61,10 @@ impl Renderer {
             .max(4);
         let mut emitted = 1usize;
         for r in rows {
+            let indent = "  ".repeat(r.depth as usize);
             let _ = writeln!(
                 out,
-                "  {:<ws$}  {:<wt$}  {}",
+                "  {indent}{:<ws$}  {:<wt$}  {}",
                 r.state,
                 r.resource_type,
                 r.resource_name,
@@ -86,12 +81,13 @@ impl Renderer {
         let mut out = std::io::stdout().lock();
         let elapsed = self.started.elapsed().as_secs();
         for r in rows {
-            let key = format!("{}/{}", r.resource_type, r.resource_name);
+            let key = format!("{}/{}/{}", r.parent, r.resource_type, r.resource_name);
             let prev = self.seen_states.get(&key).cloned();
             if prev.as_deref() != Some(r.state.as_str()) {
+                let indent = "  ".repeat(r.depth as usize);
                 let _ = writeln!(
                     out,
-                    "[T+{elapsed:>4}s] {:<10} {} {}",
+                    "[T+{elapsed:>4}s] {indent}{:<10} {} {}",
                     r.state, r.resource_type, r.resource_name
                 );
                 self.seen_states.insert(key, r.state.clone());
@@ -107,25 +103,17 @@ impl Renderer {
     }
 }
 
-fn terminal_rank(state: &str) -> u8 {
-    match state {
-        "Failed" | "Canceled" => 0,
-        "Running" => 1,
-        "Accepted" => 2,
-        "Succeeded" => 3,
-        _ => 4,
-    }
-}
-
 struct Row {
     state: String,
     resource_type: String,
     resource_name: String,
+    depth: u8,
+    parent: String,
 }
 
 impl Row {
-    fn from_op(op: &Value) -> Option<Self> {
-        let props = op.get("properties")?;
+    fn from_op(op: &DeploymentOp) -> Option<Self> {
+        let props = op.op.get("properties")?;
         let state = props
             .get("provisioningState")
             .and_then(|v| v.as_str())
@@ -149,6 +137,8 @@ impl Row {
             state,
             resource_type,
             resource_name,
+            depth: op.depth,
+            parent: op.parent.clone(),
         })
     }
 }
@@ -162,33 +152,47 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn row_extracts_state_type_name() {
-        let op = json!({
-            "properties": {
-                "provisioningState": "Running",
-                "targetResource": {
-                    "resourceType": "Microsoft.Network/virtualNetworks",
-                    "resourceName": "vnet-demo"
+    fn op(parent: &str, depth: u8, state: &str, rtype: &str, rname: &str) -> DeploymentOp {
+        DeploymentOp {
+            parent: parent.to_string(),
+            depth,
+            op: json!({
+                "properties": {
+                    "provisioningState": state,
+                    "targetResource": {
+                        "resourceType": rtype,
+                        "resourceName": rname,
+                    }
                 }
-            }
-        });
-        let r = Row::from_op(&op).unwrap();
+            }),
+        }
+    }
+
+    #[test]
+    fn row_extracts_state_type_name_depth_parent() {
+        let r = Row::from_op(&op(
+            "cluster-x",
+            2,
+            "Running",
+            "Microsoft.Network/virtualNetworks",
+            "vnet-demo",
+        ))
+        .unwrap();
         assert_eq!(r.state, "Running");
         assert_eq!(r.resource_type, "virtualNetworks");
         assert_eq!(r.resource_name, "vnet-demo");
+        assert_eq!(r.depth, 2);
+        assert_eq!(r.parent, "cluster-x");
     }
 
     #[test]
     fn row_filters_unnamed() {
-        let op = json!({"properties": {"provisioningState": "Running"}});
-        assert!(Row::from_op(&op).is_none());
-    }
-
-    #[test]
-    fn terminal_rank_orders_failed_first_then_running_then_done() {
-        assert!(terminal_rank("Failed") < terminal_rank("Running"));
-        assert!(terminal_rank("Running") < terminal_rank("Succeeded"));
+        let d = DeploymentOp {
+            parent: "x".into(),
+            depth: 0,
+            op: json!({"properties": {"provisioningState": "Running"}}),
+        };
+        assert!(Row::from_op(&d).is_none());
     }
 
     #[test]

@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-05-26
+
+### Changed
+- `azcluster deploy` live TTY progress now recursively walks the deployment tree and indents each module's child resources beneath its parent (`cluster-<name>` → `network` / `scheduler` / `login` / `compute-<pool>` / `keyvault` / `monitoring` / `anf` → individual leaf resources like `vnet-*`, `vm-*-scheduler`, `vmss-*-cpu`, `kv-azc-*`, etc.). Previously only the 2 sub-scope ops were visible (the root nested-deployment row and the RG row), giving the misleading `1/2 ops` summary even mid-deploy. Ops poll cadence relaxed from 5s to 10s to absorb the ~10-15× higher ARM call volume per tick (still well under read-throttle limits). Live-validated end-to-end on `v224b` / `southafricanorth`: 22 resources captured (RG + root nested + 5 module nested + 15 leaves) all rendered with correct indentation, deploy completed in 238s.
+
+### Fixed
+- ARM deployment-operation envelopes return `targetResource` with only `id` / `resourceType` / `resourceName`; the `resourceGroup` field is NOT populated. The new recursive walker fell back to sub-scope endpoint queries for RG-scoped nested deployments (which returned no operations), silently truncating the tree at depth 1. Fixed by parsing the resource group out of the ARM `id` path when the structured `resourceGroup` field is absent (same pattern as `timings::parse_target_id`). Three regression tests added pinning the ARM-shape behavior (`nested_module_target_falls_back_to_id_when_resource_group_field_absent`, `_sub_scope_has_empty_rg`, `_non_deployment_returns_none`).
+
 ## [0.22.3] - 2026-05-26
 
 ### Added
@@ -812,6 +820,7 @@ Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
 [Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.2...HEAD
+[0.22.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.4
 [0.22.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.3
 [0.22.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.2
 [0.22.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.1
