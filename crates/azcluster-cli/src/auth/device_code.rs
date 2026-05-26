@@ -92,6 +92,8 @@ pub fn login(tenant: Option<&str>) -> Result<CachedAccount> {
                 expires_at,
                 username,
                 auth_method: "device_code".to_string(),
+                vault_access_token: None,
+                vault_expires_at: None,
             });
         }
 

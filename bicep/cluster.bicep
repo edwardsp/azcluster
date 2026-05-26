@@ -21,8 +21,9 @@ param amlfsZone string
 param pools array
 param enableMonitoring bool
 param grafanaLocation string
-param deployerPrincipalId string = ''
+param deployerPrincipalId string
 param deployerPrincipalType string = 'User'
+param keyVaultName string
 param sharedStorageMode string = 'anf'
 param enableAccounting bool = false
 @secure()
@@ -51,6 +52,17 @@ module bastion 'modules/bastion.bicep' = if (enableBastion) {
     clusterName: clusterName
     location: location
     subnetId: network.outputs.bastionSubnetId
+    tags: tags
+  }
+}
+
+module keyvault 'modules/keyvault.bicep' = {
+  name: 'keyvault'
+  params: {
+    keyVaultName: keyVaultName
+    location: location
+    deployerPrincipalId: deployerPrincipalId
+    deployerPrincipalType: deployerPrincipalType
     tags: tags
   }
 }
@@ -225,4 +237,7 @@ output grafanaName string = enableMonitoring ? monitoring!.outputs.grafanaName :
 output bastionName string = enableBastion ? bastion!.outputs.bastionName : ''
 output bastionDnsName string = enableBastion ? bastion!.outputs.bastionDnsName : ''
 output bastionId string = enableBastion ? bastion!.outputs.bastionId : ''
+output keyVaultName string = keyvault.outputs.vaultName
+output keyVaultUri string = keyvault.outputs.vaultUri
+output keyVaultId string = keyvault.outputs.vaultId
 

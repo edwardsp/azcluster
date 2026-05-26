@@ -6,7 +6,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
-
 /// API versions for different Azure resource providers.
 pub struct ApiVersions {
     pub resource_group: String,
@@ -245,6 +244,19 @@ impl ArmClient {
         self.get(&url)
     }
 
+    /// PATCH the tags of a resource group (merge semantics on the server side).
+    pub fn patch_resource_group_tags(
+        &self,
+        name: &str,
+        tags: std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourcegroups/{}?api-version={}",
+            self.subscription_id, name, self.api_versions.resource_group
+        );
+        self.patch_and_wait(&url, json!({ "tags": tags }))
+    }
+
     /// Create or update a resource group.
     pub fn create_resource_group(
         &self,
@@ -275,6 +287,39 @@ impl ArmClient {
             self.subscription_id, name, self.api_versions.resource_group
         );
         self.delete(&url)
+    }
+
+    pub fn list_resource_groups(&self) -> Result<Vec<Value>> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourcegroups?api-version={}",
+            self.subscription_id, self.api_versions.resource_group
+        );
+        self.list_paginated(&url)
+    }
+
+    pub fn list_resource_groups_by_tag(
+        &self,
+        tag_name: &str,
+        tag_value: Option<&str>,
+    ) -> Result<Vec<Value>> {
+        let all = self.list_resource_groups()?;
+        Ok(filter_rgs_by_tag(all, tag_name, tag_value))
+    }
+
+    pub fn get_resource_group_tags(
+        &self,
+        name: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let rg = self.get_resource_group(name)?;
+        let mut out = std::collections::HashMap::new();
+        if let Some(tags) = rg.get("tags").and_then(|t| t.as_object()) {
+            for (k, v) in tags {
+                if let Some(s) = v.as_str() {
+                    out.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+        Ok(out)
     }
 
     // ARM REST subscription-level body shape: `location` at root,
@@ -371,29 +416,47 @@ impl ArmClient {
     }
 
     pub fn wait_for_deployment_completion(&self, deployment_name: &str) -> Result<Value> {
+        self.wait_for_deployment_completion_with_progress(deployment_name, &mut |_| {})
+    }
+
+    pub fn wait_for_deployment_completion_with_progress(
+        &self,
+        deployment_name: &str,
+        on_tick: &mut dyn FnMut(&[Value]),
+    ) -> Result<Value> {
         use std::time::{Duration, Instant};
         const MAX_WAIT_SECS: u64 = 90 * 60;
-        const POLL_INTERVAL_SECS: u64 = 15;
+        const STATE_POLL_SECS: u64 = 15;
+        const OPS_POLL_SECS: u64 = 5;
         let started = Instant::now();
+        let mut last_state_poll = Instant::now() - Duration::from_secs(STATE_POLL_SECS);
         loop {
-            let v = self.get_deployment(deployment_name)?;
-            let state = v
-                .get("properties")
-                .and_then(|p| p.get("provisioningState"))
-                .and_then(|s| s.as_str())
-                .unwrap_or("");
-            match state {
-                "Succeeded" | "Failed" | "Canceled" => return Ok(v),
-                _ => {
-                    if started.elapsed().as_secs() > MAX_WAIT_SECS {
-                        bail!(
-                            "deployment '{}' did not reach terminal state within 90 min (last: {state})",
-                            deployment_name
-                        );
+            let elapsed_since_state = last_state_poll.elapsed().as_secs();
+            if elapsed_since_state >= STATE_POLL_SECS {
+                let v = self.get_deployment(deployment_name)?;
+                last_state_poll = Instant::now();
+                let state = v
+                    .get("properties")
+                    .and_then(|p| p.get("provisioningState"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                if matches!(state, "Succeeded" | "Failed" | "Canceled") {
+                    if let Ok(ops) = self.list_subscription_deployment_operations(deployment_name) {
+                        on_tick(&ops);
                     }
-                    std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+                    return Ok(v);
+                }
+                if started.elapsed().as_secs() > MAX_WAIT_SECS {
+                    bail!(
+                        "deployment '{}' did not reach terminal state within 90 min (last: {state})",
+                        deployment_name
+                    );
                 }
             }
+            if let Ok(ops) = self.list_subscription_deployment_operations(deployment_name) {
+                on_tick(&ops);
+            }
+            std::thread::sleep(Duration::from_secs(OPS_POLL_SECS));
         }
     }
 
@@ -539,6 +602,19 @@ fn parse_iso8601_duration(s: &str) -> Option<f64> {
     Some(total)
 }
 
+fn filter_rgs_by_tag(rgs: Vec<Value>, tag_name: &str, tag_value: Option<&str>) -> Vec<Value> {
+    rgs.into_iter()
+        .filter(|rg| match rg.get("tags").and_then(|t| t.get(tag_name)) {
+            Some(v) => match (v.as_str(), tag_value) {
+                (Some(s), Some(want)) => s == want,
+                (Some(_), None) => true,
+                _ => false,
+            },
+            None => false,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +639,46 @@ mod tests {
         assert_eq!(parse_iso8601_duration("PT30S"), Some(30.0));
         assert_eq!(parse_iso8601_duration("PT1M"), Some(60.0));
         assert_eq!(parse_iso8601_duration("PT1H"), Some(3600.0));
+    }
+
+    fn rg(name: &str, tags: Value) -> Value {
+        json!({"name": name, "tags": tags})
+    }
+
+    #[test]
+    fn filter_rgs_by_tag_matches_name_and_value() {
+        let rgs = vec![
+            rg(
+                "a",
+                json!({"azcluster:managed": "true", "azcluster:name": "alpha"}),
+            ),
+            rg(
+                "b",
+                json!({"azcluster:managed": "true", "azcluster:name": "beta"}),
+            ),
+            rg("c", json!({"other": "x"})),
+            rg("d", json!({})),
+        ];
+        let by_managed = filter_rgs_by_tag(rgs.clone(), "azcluster:managed", Some("true"));
+        assert_eq!(by_managed.len(), 2);
+
+        let by_name = filter_rgs_by_tag(rgs.clone(), "azcluster:name", Some("beta"));
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].get("name").and_then(|v| v.as_str()), Some("b"));
+
+        let any_managed = filter_rgs_by_tag(rgs, "azcluster:managed", None);
+        assert_eq!(any_managed.len(), 2);
+    }
+
+    #[test]
+    fn filter_rgs_by_tag_missing_tag_excluded() {
+        let rgs = vec![rg("a", json!({}))];
+        assert!(filter_rgs_by_tag(rgs, "azcluster:managed", Some("true")).is_empty());
+    }
+
+    #[test]
+    fn filter_rgs_by_tag_value_mismatch_excluded() {
+        let rgs = vec![rg("a", json!({"azcluster:managed": "false"}))];
+        assert!(filter_rgs_by_tag(rgs, "azcluster:managed", Some("true")).is_empty());
     }
 }

@@ -29,6 +29,21 @@ pub struct CachedAccount {
     pub username: String,
     /// Auth method used (interactive, device_code, managed_identity, etc).
     pub auth_method: String,
+    /// Vault-scope access token. Cached separately from `access_token` because
+    /// Key Vault rejects management-scope tokens (different `aud` claim).
+    #[serde(default)]
+    pub vault_access_token: Option<String>,
+    #[serde(default)]
+    pub vault_expires_at: Option<DateTime<Utc>>,
+}
+
+impl CachedAccount {
+    pub fn is_vault_token_valid(&self) -> bool {
+        match (&self.vault_access_token, self.vault_expires_at) {
+            (Some(_), Some(exp)) => Utc::now() + chrono::Duration::minutes(5) < exp,
+            _ => false,
+        }
+    }
 }
 
 impl CachedAccount {
@@ -131,6 +146,8 @@ mod tests {
             expires_at: future,
             username: "user@example.com".to_string(),
             auth_method: "interactive".to_string(),
+            vault_access_token: None,
+            vault_expires_at: None,
         };
         assert!(account.is_valid());
         assert!(!account.is_expired());
@@ -147,6 +164,8 @@ mod tests {
             expires_at: past,
             username: "user@example.com".to_string(),
             auth_method: "interactive".to_string(),
+            vault_access_token: None,
+            vault_expires_at: None,
         };
         assert!(!account.is_valid());
         assert!(account.is_expired());
@@ -163,6 +182,8 @@ mod tests {
             expires_at: Utc::now() + chrono::Duration::hours(1),
             username: "user@example.com".to_string(),
             auth_method: "interactive".to_string(),
+            vault_access_token: None,
+            vault_expires_at: None,
         };
         cache.insert("sub-123".to_string(), account.clone());
         assert_eq!(cache.get("sub-123").unwrap().username, "user@example.com");

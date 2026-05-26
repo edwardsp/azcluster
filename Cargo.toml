@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.21.4"
+version = "0.22.0"
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"
@@ -40,6 +40,8 @@ base64 = "0.22"
 sha2 = "0.10"
 url = "2"
 rand = "0.8"
+blake3 = "1"
+ssh-key = { version = "0.6", features = ["ed25519", "alloc"] }
 
 [profile.release]
 strip = true

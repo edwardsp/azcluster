@@ -1,7 +1,11 @@
 mod arm;
 mod auth;
 mod bastion;
+mod cluster_resolver;
 mod cluster_state;
+mod crypto;
+mod deploy_progress;
+mod keyvault;
 mod timings;
 mod user;
 
@@ -9,12 +13,18 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use cluster_state::{ClusterState, PendingDeploy};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static NO_CACHE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Parser)]
 #[command(name = "azcluster", version = azcluster_core::VERSION, about = "Manage Slurm clusters on Azure")]
 struct Cli {
+    /// Bypass the local cluster manifest cache and force a Key Vault round-trip.
+    #[arg(long, global = true)]
+    no_cache: bool,
     #[command(subcommand)]
     command: CliCommand,
 }
@@ -38,9 +48,27 @@ enum CliCommand {
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
     User(UserArgs),
+    /// List azcluster-managed clusters in the current subscription (discovered by RG tag).
+    List(ListArgs),
+    /// Remove cached cluster manifests under ~/.config/azcluster/clusters/.
+    PurgeCache(PurgeCacheArgs),
     /// Internal: stdio bridge through Azure Bastion (used as ssh ProxyCommand).
     #[command(hide = true)]
     BastionProxy(BastionProxyArgs),
+}
+
+#[derive(Args)]
+struct ListArgs {
+    /// Emit JSON array instead of a plain-text table.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct PurgeCacheArgs {
+    /// Only purge the cache entry for this cluster (default: purge all).
+    #[arg(long)]
+    name: Option<String>,
 }
 
 #[derive(Args)]
@@ -75,13 +103,11 @@ struct DeployArgs {
     location: String,
     #[arg(long)]
     resource_group: Option<String>,
-    #[arg(long)]
-    ssh_key: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.21.4")]
+    #[arg(long, default_value = "v0.22.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -620,6 +646,7 @@ enum SshkeyCmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    NO_CACHE.store(cli.no_cache, Ordering::Relaxed);
     match cli.command {
         CliCommand::Version => {
             println!("azcluster {}", azcluster_core::VERSION);
@@ -650,6 +677,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         CliCommand::User(args) => user_dispatch(args),
+        CliCommand::List(args) => list(args),
+        CliCommand::PurgeCache(args) => purge_cache(args),
         CliCommand::BastionProxy(args) => bastion_proxy(args),
     }
 }
@@ -677,20 +706,6 @@ fn resolve_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
             .with_context(|| format!("parse ARM JSON {}", p.display()));
     }
     serde_json::from_str(EMBEDDED_MAIN_TEMPLATE).context("parse embedded main.json")
-}
-
-fn resolve_ssh_key(explicit: Option<PathBuf>) -> Result<PathBuf> {
-    if let Some(p) = explicit {
-        return Ok(p);
-    }
-    let home = std::env::var("HOME").context("HOME not set")?;
-    for candidate in [".ssh/id_ed25519.pub", ".ssh/id_rsa.pub"] {
-        let p = PathBuf::from(&home).join(candidate);
-        if p.exists() {
-            return Ok(p);
-        }
-    }
-    bail!("no SSH public key found. Pass --ssh-key PATH.")
 }
 
 /// Get a valid Azure access token from the cache populated by `azcluster login`.
@@ -721,6 +736,95 @@ fn arm_client() -> Result<arm::client::ArmClient> {
     let token = get_access_token()?;
     let sub_id = current_subscription_id()?;
     arm::client::ArmClient::new(token, sub_id)
+}
+
+fn get_vault_token() -> Result<String> {
+    let cache = auth::TokenCache::load()?;
+    let account = cache
+        .accounts
+        .values()
+        .max_by_key(|a| a.expires_at)
+        .ok_or_else(|| anyhow!("not logged in to Azure. Run: azcluster login"))?;
+    let mut provider =
+        auth::TokenProvider::new(account.subscription_id.clone(), account.tenant_id.clone())?;
+    provider.get_vault_token()
+}
+
+fn resolve_cluster(name: &str) -> Result<ClusterState> {
+    let arm = arm_client()?;
+    let vault_token = get_vault_token()?;
+    let no_cache = NO_CACHE.load(Ordering::Relaxed);
+    let resolver = cluster_resolver::Resolver::new(&arm, vault_token, no_cache);
+    let resolved = resolver.resolve(name)?;
+    if resolved.source == cluster_resolver::ResolveSource::KeyVault {
+        eprintln!(
+            "==> Using cluster '{name}' in subscription {} (from Key Vault)",
+            arm.subscription_id()
+        );
+    }
+    Ok(resolved.state)
+}
+
+fn resolve_identity(explicit: Option<&Path>, cluster_name: &str) -> Result<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        return Ok(p.to_path_buf());
+    }
+    fetch_admin_private_key(cluster_name)
+}
+
+fn fetch_admin_private_key(name: &str) -> Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("could not determine HOME"))?
+        .join(".azcluster")
+        .join("keys");
+    let key_path = dir.join(name);
+    if key_path.exists() {
+        return Ok(key_path);
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+    }
+
+    let arm = arm_client()?;
+    let vault_token = get_vault_token()?;
+    let resolver = cluster_resolver::Resolver::new(&arm, vault_token.clone(), false);
+    let resolved = resolver.resolve(name)?;
+    let kv_name = arm
+        .get_resource_group_tags(&resolved.state.resource_group)?
+        .get(cluster_resolver::TAG_KV)
+        .ok_or_else(|| {
+            anyhow!(
+                "RG '{}' missing tag {}; cluster predates v0.22",
+                resolved.state.resource_group,
+                cluster_resolver::TAG_KV
+            )
+        })?
+        .clone();
+    let kv = keyvault::client::KeyVaultClient::new(keyvault::vault_uri(&kv_name), vault_token)?;
+    let bundle = kv
+        .get_secret(cluster_resolver::SECRETS_BUNDLE)
+        .with_context(|| format!("fetch {} from {kv_name}", cluster_resolver::SECRETS_BUNDLE))?;
+    let secrets: cluster_state::ClusterSecrets =
+        serde_json::from_str(&bundle.value).context("parse secrets-bundle JSON")?;
+    if secrets.admin_ssh_private_key.is_empty() {
+        bail!("secrets-bundle in vault '{kv_name}' has no admin_ssh_private_key");
+    }
+    std::fs::write(&key_path, &secrets.admin_ssh_private_key)
+        .with_context(|| format!("write {}", key_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", key_path.display()))?;
+    }
+    eprintln!(
+        "==> materialised admin ssh key for cluster '{name}' -> {}",
+        key_path.display()
+    );
+    Ok(key_path)
 }
 
 fn login(args: LoginArgs) -> Result<()> {
@@ -789,11 +893,14 @@ fn login(args: LoginArgs) -> Result<()> {
 
 fn deploy(args: DeployArgs) -> Result<()> {
     let template = resolve_template(args.template.clone())?;
-    let ssh_key_path = resolve_ssh_key(args.ssh_key.clone())?;
-    let ssh_key = std::fs::read_to_string(&ssh_key_path)
-        .with_context(|| format!("read {}", ssh_key_path.display()))?;
 
     let sub_id = current_subscription_id()?;
+    let key_vault_name = crypto::derive_kv_name(&sub_id, &args.name, &args.location);
+    let (deployer_oid, deployer_ptype) = current_principal()?;
+    eprintln!(
+        "==> deployer principal: {deployer_oid} ({deployer_ptype}) -> will receive Key Vault Secrets Officer + (when monitoring) Grafana Admin"
+    );
+    eprintln!("==> per-cluster Key Vault: {key_vault_name}");
 
     let allowed_cidrs_json: serde_json::Value = match args.allowed_ssh_cidrs.as_deref() {
         Some(csv) if !csv.is_empty() => serde_json::Value::Array(
@@ -866,6 +973,21 @@ fn deploy(args: DeployArgs) -> Result<()> {
         None => gen_mysql_password()?,
     };
 
+    let (admin_ssh_public_key, admin_ssh_private_key) = match existing_secrets.as_ref() {
+        Some(s) if !s.admin_ssh_public_key.is_empty() && !s.admin_ssh_private_key.is_empty() => (
+            s.admin_ssh_public_key.clone(),
+            s.admin_ssh_private_key.clone(),
+        ),
+        _ => {
+            let kp = crypto::generate_admin_keypair(&format!("azcluster-{}", args.name))?;
+            eprintln!(
+                "==> generated fresh ed25519 admin keypair for cluster '{}'",
+                args.name
+            );
+            (kp.public_openssh, kp.private_openssh_pem)
+        }
+    };
+
     let secrets_to_save = cluster_state::ClusterSecrets {
         ldap_admin_password: ldap_password.clone(),
         mysql_admin_password: if accounting_enabled {
@@ -875,15 +997,17 @@ fn deploy(args: DeployArgs) -> Result<()> {
                 .as_ref()
                 .and_then(|s| s.mysql_admin_password.clone())
         },
+        admin_ssh_public_key: admin_ssh_public_key.clone(),
+        admin_ssh_private_key: admin_ssh_private_key.clone(),
     };
     let secrets_path = secrets_to_save.save(&args.name)?;
     eprintln!("==> saved cluster secrets -> {}", secrets_path.display());
 
     use serde_json::{json, Value};
-    let mut params: Vec<(&str, Value)> = vec![
+    let params: Vec<(&str, Value)> = vec![
         ("clusterName", json!(args.name)),
         ("location", json!(args.location)),
-        ("sshPublicKey", json!(ssh_key.trim())),
+        ("sshPublicKey", json!(admin_ssh_public_key.trim())),
         ("loginPublicIp", json!(args.login_public_ip)),
         ("allowedSshCidrs", allowed_cidrs_json),
         ("azclusterVersion", json!(args.azcluster_version)),
@@ -915,13 +1039,13 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("enableBastion", json!(args.bastion)),
         ("schedulerSku", json!(args.scheduler_sku)),
         ("loginSku", json!(args.login_sku)),
+        ("keyVaultName", json!(key_vault_name)),
+        ("deployerPrincipalId", json!(deployer_oid)),
+        ("deployerPrincipalType", json!(deployer_ptype)),
     ];
 
     if monitoring_enabled {
-        let (oid, ptype) = current_principal()?;
-        eprintln!("==> deployer principal: {oid} ({ptype}) -> will receive Grafana Admin on AMG");
-        params.push(("deployerPrincipalId", json!(oid)));
-        params.push(("deployerPrincipalType", json!(ptype)));
+        eprintln!("==> monitoring enabled: AMG Grafana Admin role will be granted via ARM");
     }
 
     let mut params_obj = serde_json::Map::new();
@@ -979,9 +1103,13 @@ fn deploy(args: DeployArgs) -> Result<()> {
         "==> waiting for ARM deployment '{}' to complete...",
         deployment_name
     );
+    let mut progress = deploy_progress::Renderer::new();
     let final_state = client
-        .wait_for_deployment_completion(&deployment_name)
+        .wait_for_deployment_completion_with_progress(&deployment_name, &mut |ops| {
+            progress.render(ops);
+        })
         .context("polling ARM deployment")?;
+    progress.finish();
     let state_str = final_state
         .get("properties")
         .and_then(|p| p.get("provisioningState"))
@@ -1049,7 +1177,6 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 name: args.name.clone(),
                 location,
                 resource_group: Some(pending.resource_group.clone()),
-                ssh_key: None,
                 login_public_ip: false,
                 allowed_ssh_cidrs: None,
                 azcluster_version: String::new(),
@@ -1097,6 +1224,59 @@ fn resume(args: ResumeArgs) -> Result<()> {
             )
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upload_cluster_to_keyvault(
+    kv_name: &str,
+    state: &ClusterState,
+    secrets: &cluster_state::ClusterSecrets,
+) -> Result<()> {
+    let vault_uri = format!("https://{kv_name}.vault.azure.net");
+    let token = get_vault_token()?;
+    let kv = keyvault::client::KeyVaultClient::new(vault_uri, token)?;
+    let manifest = serde_json::to_string(state).context("serialize cluster manifest")?;
+    let bundle = serde_json::to_string(secrets).context("serialize secrets bundle")?;
+    kv.set_secret(
+        cluster_resolver::MANIFEST_SECRET,
+        &manifest,
+        Some("application/json"),
+    )?;
+    kv.set_secret(
+        cluster_resolver::SECRETS_BUNDLE,
+        &bundle,
+        Some("application/json"),
+    )?;
+    Ok(())
+}
+
+fn tag_resource_group_for_cluster(
+    arm: &arm::client::ArmClient,
+    rg_name: &str,
+    cluster_name: &str,
+    kv_name: &str,
+    version: &str,
+) -> Result<()> {
+    let mut tags = std::collections::HashMap::new();
+    tags.insert(
+        cluster_resolver::TAG_MANAGED.to_string(),
+        "true".to_string(),
+    );
+    tags.insert(
+        cluster_resolver::TAG_NAME.to_string(),
+        cluster_name.to_string(),
+    );
+    tags.insert(cluster_resolver::TAG_KV.to_string(), kv_name.to_string());
+    tags.insert(
+        cluster_resolver::TAG_VERSION.to_string(),
+        version.to_string(),
+    );
+    tags.insert(
+        cluster_resolver::TAG_DEPLOYED_AT.to_string(),
+        chrono::Utc::now().to_rfc3339(),
+    );
+    arm.patch_resource_group_tags(rg_name, tags)
+        .with_context(|| format!("patch tags on {rg_name}"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1166,9 +1346,40 @@ fn finalize_deploy(
         } else {
             existing_secrets.and_then(|s| s.mysql_admin_password.clone())
         },
+        admin_ssh_public_key: existing_secrets
+            .map(|s| s.admin_ssh_public_key.clone())
+            .unwrap_or_default(),
+        admin_ssh_private_key: existing_secrets
+            .map(|s| s.admin_ssh_private_key.clone())
+            .unwrap_or_default(),
     };
     let secrets_path = secrets.save(&args.name)?;
     eprintln!("==> saved cluster secrets -> {}", secrets_path.display());
+
+    if let Some(kv_name) = pick("keyVaultName") {
+        match upload_cluster_to_keyvault(&kv_name, &state, &secrets) {
+            Ok(()) => eprintln!("==> uploaded cluster manifest + secrets bundle to Key Vault '{kv_name}'"),
+            Err(e) => eprintln!("==> WARNING: Key Vault upload to '{kv_name}' failed: {e:#}. Local state intact; re-run `azcluster deploy --name {}` to retry.", args.name),
+        }
+        match tag_resource_group_for_cluster(
+            &arm_client()?,
+            &state.resource_group,
+            &args.name,
+            &kv_name,
+            &args.azcluster_version,
+        ) {
+            Ok(()) => eprintln!(
+                "==> tagged RG '{}' with azcluster:* discovery tags",
+                state.resource_group
+            ),
+            Err(e) => eprintln!(
+                "==> WARNING: RG tag PATCH on '{}' failed: {e:#}. Cluster will be invisible to `azcluster list`; re-run deploy to retry.",
+                state.resource_group
+            ),
+        }
+    } else {
+        eprintln!("==> WARNING: deployment did not return keyVaultName output; skipping KV upload");
+    }
 
     if let Err(e) = timings::capture(
         &arm_client()?,
@@ -1192,39 +1403,21 @@ fn finalize_deploy(
 }
 
 fn poll_deployment_until_terminal(deployment_name: &str) -> Result<String> {
-    const POLL_INTERVAL_SECS: u64 = 30;
-    const MAX_WAIT_SECS: u64 = 90 * 60;
     let client = arm_client()?;
-    let started = std::time::Instant::now();
-    loop {
-        let v = client
-            .get_deployment(deployment_name)
-            .with_context(|| format!("poll {}", deployment_name))?;
-        let state = v
-            .get("properties")
-            .and_then(|p| p.get("provisioningState"))
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-        let elapsed = started.elapsed().as_secs();
-        eprintln!(
-            "==> deployment {} state={} elapsed={}s",
-            deployment_name, state, elapsed
-        );
-        match state.as_str() {
-            "Succeeded" | "Failed" | "Canceled" => return Ok(state),
-            _ => {}
-        }
-        if elapsed > MAX_WAIT_SECS {
-            bail!(
-                "deployment {} still in state '{}' after {}s; aborting poll",
-                deployment_name,
-                state,
-                elapsed
-            );
-        }
-        std::thread::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS));
-    }
+    let mut progress = deploy_progress::Renderer::new();
+    let v = client
+        .wait_for_deployment_completion_with_progress(deployment_name, &mut |ops| {
+            progress.render(ops);
+        })
+        .with_context(|| format!("poll {}", deployment_name))?;
+    progress.finish();
+    let state = v
+        .get("properties")
+        .and_then(|p| p.get("provisioningState"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(state)
 }
 
 fn current_principal() -> Result<(String, String)> {
@@ -1401,7 +1594,7 @@ fn self_exe_path() -> Result<String> {
 }
 
 fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
-    let state = ClusterState::load(&args.cluster)?;
+    let state = resolve_cluster(&args.cluster)?;
     if !state.bastion_enabled {
         bail!("cluster '{}' was not deployed with --bastion", args.cluster);
     }
@@ -1425,16 +1618,15 @@ fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
 }
 
 fn ssh(args: ConnectArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
     let jump_user = connect_user;
     let mut cmd = Command::new("ssh");
     cmd.args(["-A", "-L", &forward]);
-    if let Some(id) = &args.identity {
-        cmd.args(["-i", &id.display().to_string()]);
-    }
+    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
+    cmd.args(["-i", &identity.display().to_string()]);
     if use_bastion {
         let exe = self_exe_path()?;
         let (target_name, host_ip) = if args.scheduler {
@@ -1485,7 +1677,7 @@ fn ssh(args: ConnectArgs) -> Result<()> {
 }
 
 fn tunnel(args: ConnectArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
@@ -1498,9 +1690,8 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
         "-o",
         "ExitOnForwardFailure=yes",
     ]);
-    if let Some(id) = &args.identity {
-        cmd.args(["-i", &id.display().to_string()]);
-    }
+    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
+    cmd.args(["-i", &identity.display().to_string()]);
     if use_bastion {
         let exe = self_exe_path()?;
         let target = format!("{}@127.0.0.1", state.admin_username);
@@ -1534,7 +1725,7 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
 }
 
 fn scale(args: ScaleArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let vmss_name = format!("vmss-{}-{}", state.name, args.pool);
     if !state.compute_vmss_names.is_empty() && !state.compute_vmss_names.contains(&vmss_name) {
         bail!(
@@ -1566,7 +1757,7 @@ fn scale(args: ScaleArgs) -> Result<()> {
 
 fn status(args: StatusArgs) -> Result<()> {
     let pending = PendingDeploy::load_optional(&args.name)?;
-    let state_opt = ClusterState::load(&args.name).ok();
+    let state_opt = resolve_cluster(&args.name).ok();
 
     if state_opt.is_none() && pending.is_none() {
         bail!(
@@ -1767,7 +1958,7 @@ fn bootstrap_probe(state: &ClusterState) {
 }
 
 fn delete(args: DeleteArgs) -> Result<()> {
-    let (cluster_name, resource_group) = match ClusterState::load(&args.name) {
+    let (cluster_name, resource_group) = match resolve_cluster(&args.name) {
         Ok(s) => (s.name, s.resource_group),
         Err(_) => match PendingDeploy::load_optional(&args.name)? {
             Some(p) => (p.cluster, p.resource_group),
@@ -1806,7 +1997,7 @@ fn delete(args: DeleteArgs) -> Result<()> {
 }
 
 fn exec(args: ExecArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
     let jump_user = connect_user;
@@ -1814,9 +2005,8 @@ fn exec(args: ExecArgs) -> Result<()> {
     if args.forward_agent {
         cmd.arg("-A");
     }
-    if let Some(id) = &args.identity {
-        cmd.args(["-i", &id.display().to_string()]);
-    }
+    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
+    cmd.args(["-i", &identity.display().to_string()]);
     if use_bastion {
         let exe = self_exe_path()?;
         let (target_name, host_ip) = if args.scheduler {
@@ -1889,7 +2079,7 @@ fn scp(args: ScpArgs) -> Result<()> {
     if args.paths.len() < 2 {
         bail!("scp requires at least one source and one destination");
     }
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let use_bastion = should_use_bastion(&state, args.no_bastion);
 
     let parsed: Vec<ScpPath> = args.paths.iter().map(|s| parse_scp_path(s)).collect();
@@ -1932,9 +2122,8 @@ fn scp(args: ScpArgs) -> Result<()> {
     if args.preserve {
         cmd.arg("-p");
     }
-    if let Some(id) = &args.identity {
-        cmd.args(["-i", &id.display().to_string()]);
-    }
+    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
+    cmd.args(["-i", &identity.display().to_string()]);
     if let Some(target) = proxy_target.as_deref() {
         let exe = self_exe_path()?;
         let proxy = format!(
@@ -2011,7 +2200,7 @@ fn resolve_scp_route(
 }
 
 fn logs(args: LogsArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let host = state.login_public_ip.as_deref().ok_or_else(|| {
         anyhow!(
             "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
@@ -2044,9 +2233,8 @@ fn logs(args: LogsArgs) -> Result<()> {
     };
     let mut cmd = Command::new("ssh");
     cmd.args(["-A"]);
-    if let Some(id) = &args.identity {
-        cmd.args(["-i", &id.display().to_string()]);
-    }
+    let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
+    cmd.args(["-i", &identity.display().to_string()]);
     cmd.arg(&login_target).arg(&remote_cmd);
     let status = cmd.status().context("spawn ssh logs")?;
     std::process::exit(status.code().unwrap_or(1));
@@ -2057,7 +2245,7 @@ fn shell_quote(s: &str) -> String {
 }
 
 fn validate(args: ValidateArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let host = state.login_public_ip.as_deref().ok_or_else(|| {
         anyhow!(
             "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
@@ -2142,9 +2330,8 @@ fn validate(args: ValidateArgs) -> Result<()> {
         eprintln!("==> [{label}] {remote}");
         let mut cmd = Command::new("ssh");
         cmd.args(["-A", "-o", "StrictHostKeyChecking=accept-new"]);
-        if let Some(id) = &args.identity {
-            cmd.args(["-i", &id.display().to_string()]);
-        }
+        let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
+        cmd.args(["-i", &identity.display().to_string()]);
         cmd.arg(&login_target).arg(remote);
         let st = cmd.status().context("spawn ssh validate")?;
         if !st.success() {
@@ -2162,7 +2349,7 @@ fn validate(args: ValidateArgs) -> Result<()> {
 }
 
 fn monitor(args: MonitorArgs) -> Result<()> {
-    let state = ClusterState::load(&args.name)?;
+    let state = resolve_cluster(&args.name)?;
     let grafana_name = format!("amg-{}", state.name);
     match arm_client()?.get_grafana_endpoint(&state.resource_group, &grafana_name) {
         Ok(url) if !url.is_empty() => {
@@ -2201,6 +2388,112 @@ fn timings(args: TimingsArgs) -> Result<()> {
     Ok(())
 }
 
+fn purge_cache(args: PurgeCacheArgs) -> Result<()> {
+    let n = cluster_resolver::purge_cache(args.name.as_deref())?;
+    match (&args.name, n) {
+        (Some(name), 0) => eprintln!("==> no cached entry for cluster '{name}'"),
+        (Some(name), _) => eprintln!("==> purged cache for cluster '{name}'"),
+        (None, 0) => eprintln!("==> cache already empty"),
+        (None, _) => eprintln!("==> purged {n} cached cluster manifest(s)"),
+    }
+    Ok(())
+}
+
+fn list(args: ListArgs) -> Result<()> {
+    let arm = arm_client()?;
+    let sub_id = arm.subscription_id().to_string();
+    let rgs = arm.list_resource_groups_by_tag(cluster_resolver::TAG_MANAGED, Some("true"))?;
+
+    let mut rows: Vec<(String, String, String, String, String)> = Vec::with_capacity(rgs.len());
+    for rg in &rgs {
+        let rg_name = rg
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let location = rg
+            .get("location")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let tags = rg.get("tags").cloned().unwrap_or(serde_json::json!({}));
+        let cluster_name = tags
+            .get(cluster_resolver::TAG_NAME)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let version = tags
+            .get(cluster_resolver::TAG_VERSION)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let deployed_at = tags
+            .get(cluster_resolver::TAG_DEPLOYED_AT)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if cluster_name.is_empty() {
+            continue;
+        }
+        rows.push((cluster_name, location, rg_name, version, deployed_at));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if args.json {
+        let arr: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(n, loc, rg, ver, ts)| {
+                serde_json::json!({
+                    "subscription": sub_id,
+                    "name": n,
+                    "location": loc,
+                    "resource_group": rg,
+                    "version": ver,
+                    "deployed_at": ts,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr)?);
+        return Ok(());
+    }
+
+    println!("Subscription: {sub_id}");
+    if rows.is_empty() {
+        println!("(no azcluster-managed clusters found)");
+        return Ok(());
+    }
+    let w_name = rows.iter().map(|r| r.0.len()).max().unwrap_or(4).max(4);
+    let w_loc = rows.iter().map(|r| r.1.len()).max().unwrap_or(8).max(8);
+    let w_rg = rows.iter().map(|r| r.2.len()).max().unwrap_or(14).max(14);
+    let w_ver = rows.iter().map(|r| r.3.len()).max().unwrap_or(7).max(7);
+    println!(
+        "{:<wn$}  {:<wl$}  {:<wr$}  {:<wv$}  DEPLOYED AT",
+        "NAME",
+        "LOCATION",
+        "RESOURCE GROUP",
+        "VERSION",
+        wn = w_name,
+        wl = w_loc,
+        wr = w_rg,
+        wv = w_ver,
+    );
+    for (n, loc, rg, ver, ts) in &rows {
+        println!(
+            "{:<wn$}  {:<wl$}  {:<wr$}  {:<wv$}  {}",
+            n,
+            loc,
+            rg,
+            ver,
+            ts,
+            wn = w_name,
+            wl = w_loc,
+            wr = w_rg,
+            wv = w_ver,
+        );
+    }
+    Ok(())
+}
+
 fn user_dispatch(args: UserArgs) -> Result<()> {
     match args.cmd {
         UserCmd::Add {
@@ -2212,15 +2505,15 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
             shell,
             ssh_keys,
         } => {
-            let state = ClusterState::load(&cluster)?;
+            let state = resolve_cluster(&cluster)?;
             user::user_add(&state, &username, uid, gid, &gecos, &shell, &ssh_keys)
         }
         UserCmd::Remove { cluster, username } => {
-            let state = ClusterState::load(&cluster)?;
+            let state = resolve_cluster(&cluster)?;
             user::user_remove(&state, &username)
         }
         UserCmd::List { cluster } => {
-            let state = ClusterState::load(&cluster)?;
+            let state = resolve_cluster(&cluster)?;
             user::user_list(&state)
         }
         UserCmd::Sshkey { cmd } => match cmd {
@@ -2229,7 +2522,7 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
                 username,
                 key_file,
             } => {
-                let state = ClusterState::load(&cluster)?;
+                let state = resolve_cluster(&cluster)?;
                 user::sshkey_add(&state, &username, &key_file)
             }
             SshkeyCmd::Remove {
@@ -2237,11 +2530,11 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
                 username,
                 key_file,
             } => {
-                let state = ClusterState::load(&cluster)?;
+                let state = resolve_cluster(&cluster)?;
                 user::sshkey_remove(&state, &username, &key_file)
             }
             SshkeyCmd::List { cluster, username } => {
-                let state = ClusterState::load(&cluster)?;
+                let state = resolve_cluster(&cluster)?;
                 user::sshkey_list(&state, &username)
             }
         },

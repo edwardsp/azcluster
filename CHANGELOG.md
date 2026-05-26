@@ -5,6 +5,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-05-26
+
+### Added
+- **Per-cluster Azure Key Vault as source of truth for cluster manifests + secrets.** Every `azcluster deploy` now provisions a per-cluster Key Vault (`kv-azc-<8-hex-blake3(sub|name|location)>`, ≤24 chars) in the cluster RG with RBAC enabled, and writes two secrets at finalize-time: `cluster-manifest` (full `ClusterState` as JSON) and `secrets-bundle` (LDAP admin password + MySQL admin password if accounting + admin SSH ed25519 keypair). The cluster RG gets five `azcluster:*` tags (`managed=true`, `name=<cluster>`, `kv=<vault>`, `version=<crate-version>`, `deployed-at=<ISO-8601>`) so the CLI can rediscover any cluster from the subscription alone.
+- **Stateless CLI.** `azcluster {ssh,exec,scp,tunnel,status,delete,scale,logs,monitor,timings,validate,resume,user}` all resolve cluster state via `cluster_resolver::Resolver` — local cache hit (`~/.config/azcluster/clusters/<name>.toml`, 24h TTL) → RG tag lookup → Key Vault fetch → cache write. Any operator with KV RBAC can run every command from a fresh laptop after `azcluster login`. Pre-v0.22 clusters (no `azcluster:managed` tag) are not discoverable; clean break, no migration path.
+- **Admin SSH keypair generated fresh per deploy and stored in Key Vault.** `azcluster deploy` now mints a brand-new ed25519 keypair via `ssh-key` 0.6 (no read of `~/.ssh/*`) and stamps it into the `secrets-bundle` secret alongside other secrets. The private key materialises lazily to `~/.azcluster/keys/<cluster>` (file `0600`, parent dir `0700`) on first `azcluster ssh/exec/scp/tunnel` invocation, fetched directly from Key Vault. The `--ssh-key` flag has been removed from `azcluster deploy`.
+- **`azcluster list`** subcommand: enumerates all `azcluster:managed=true` resource groups in the current subscription via ARM REST `GET /subscriptions/{}/resourcegroups?$filter=tagName eq 'azcluster:managed' and tagValue eq 'true'`. Plain-text table by default, JSON via `--json`. Header includes the resolved subscription id for clarity.
+- **`azcluster purge-cache [--name <cluster>]`** subcommand: clears entries under `~/.config/azcluster/clusters/`. With `--name`, only that cluster's `<name>.toml` is removed. `-pending` and `-secrets` markers are preserved.
+- **Global `--no-cache` flag.** `azcluster --no-cache <subcommand>` bypasses the local cache and forces a Key Vault round-trip on every cluster resolution. Useful when the cache is suspected stale or when validating that KV is the authoritative source.
+- **Live TTY deploy progress.** `azcluster deploy` (without `--no-wait`) now renders an in-place ANSI table of ARM resource provisioning states (Creating/Running/Succeeded/Failed) that updates every poll cycle. Non-TTY environments (CI, redirected stdout) automatically fall back to plain-line streaming so logs remain greppable. `azcluster timings <name>` is unaffected and continues to work.
+
+### Changed
+- All 16 `ClusterState::load(...)` call sites in `azcluster-cli/src/main.rs` swapped to `resolve_cluster(...)`.
+- All 6 `if let Some(id) = &args.identity { -i ... }` blocks (ssh, tunnel, exec, scp, logs, validate) replaced with unconditional `resolve_identity(args.identity.as_deref(), &args.name)?` + `-i <path>` injection. User-supplied `--identity` still wins; default is the lazily-materialised admin key.
+- `ClusterSecrets` schema extended with `admin_ssh_public_key: Option<String>` + `admin_ssh_private_key: Option<String>` (both `#[serde(default)]`, OpenSSH PEM-encoded). Round-trip serialisation test updated.
+- `finalize_deploy()` now (a) re-persists `ClusterSecrets` with the admin keypair, (b) uploads `cluster-manifest` + `secrets-bundle` to the per-cluster Key Vault via `KeyVaultClient::set_secret`, (c) calls `ArmClient::patch_resource_group_tags()` to stamp the five `azcluster:*` tags onto the RG. All three side-effects warn-not-fail so a transient KV/ARM blip doesn't strand a freshly-deployed cluster.
+- `ArmClient` gains `patch_resource_group_tags(rg, tags)` (RG `PATCH` is 200-sync per ARM contract) and a new `get_vault_token()` helper that mints a `https://vault.azure.net/.default` access token from the cached auth principal.
+- ARM deployment parameters now include `keyVaultName` (computed CLI-side via `derive_kv_name()`) and `deployerPrincipalId` + `deployerPrincipalType` (previously optional; now unconditional so the Bicep `keyvault.bicep` module can grant the deployer Key Vault Secrets Officer at create time).
+- Bicep `cluster.bicep` now provisions `bicep/modules/keyvault.bicep` and outputs `keyVaultName`, `keyVaultUri`, `keyVaultId`.
+
+### Removed
+- `azcluster deploy --ssh-key <path>` (kept v0.21.x invariant of "use the operator's local pubkey" broken; admin key is now always generated fresh server-side and lives in Key Vault).
+
+### Notes
+- **Clean break — no migration.** Pre-v0.22 clusters lack the `azcluster:managed` RG tag and the Key Vault. They can still be torn down via `azcluster delete <name>` (which falls back to the local state file when KV resolution returns 0 RGs), but every other subcommand requires a v0.22+ deploy.
+- **Auth audience.** Vault tokens are cached separately from ARM management tokens (different audience: `https://vault.azure.net/.default` vs `https://management.azure.com/.default`). Both are minted from the same cached auth principal via the existing OAuth2 PKCE/device-code flow.
+- **Dependencies added.** `blake3 = "1"` (KV name derivation), `ssh-key = { version = "0.6", features = ["ed25519", "alloc"] }` (admin keypair generation + OpenSSH PEM encoding).
+- **Test discipline.** All 114 workspace tests pass under `cargo test --workspace -- --test-threads=1`. The `arm::config::tests::test_api_version_*_env` parallel-env-var race documented in earlier releases still applies; AGENTS.md mandates `--test-threads=1`.
+- **Live-validation.** Gates green at commit time (`cargo build --workspace`, `cargo test --workspace -- --test-threads=1` → 114 pass, `cargo clippy --workspace --all-targets -- -D warnings`). End-to-end live-validation against `southafricanorth` deploy + fresh-laptop scenario follows tagging.
+
 ## [0.21.4] - 2026-05-25
 
 ### Added

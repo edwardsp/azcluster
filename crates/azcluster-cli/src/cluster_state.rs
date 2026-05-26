@@ -107,6 +107,10 @@ pub struct ClusterSecrets {
     pub ldap_admin_password: String,
     #[serde(default)]
     pub mysql_admin_password: Option<String>,
+    #[serde(default)]
+    pub admin_ssh_public_key: String,
+    #[serde(default)]
+    pub admin_ssh_private_key: String,
 }
 
 impl ClusterSecrets {
@@ -178,11 +182,17 @@ mod tests {
         let s = ClusterSecrets {
             ldap_admin_password: "ldap-pw".into(),
             mysql_admin_password: Some("mysql-pw".into()),
+            admin_ssh_public_key: "ssh-ed25519 AAAA test".into(),
+            admin_ssh_private_key:
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n"
+                    .into(),
         };
         let ser = toml::to_string(&s).unwrap();
         let de: ClusterSecrets = toml::from_str(&ser).unwrap();
         assert_eq!(de.ldap_admin_password, "ldap-pw");
         assert_eq!(de.mysql_admin_password.as_deref(), Some("mysql-pw"));
+        assert!(de.admin_ssh_public_key.starts_with("ssh-ed25519 "));
+        assert!(de.admin_ssh_private_key.contains("OPENSSH PRIVATE KEY"));
     }
 
     #[test]

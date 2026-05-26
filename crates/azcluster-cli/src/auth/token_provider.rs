@@ -9,7 +9,7 @@
 use super::cache::{CachedAccount, TokenCache};
 use super::{
     device_code, interactive, token_endpoint, OAuthErrorResponse, OAuthTokenResponse,
-    AZURE_CLI_CLIENT_ID, MANAGEMENT_SCOPE,
+    AZURE_CLI_CLIENT_ID, MANAGEMENT_SCOPE, VAULT_SCOPE,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
@@ -53,6 +53,72 @@ impl TokenProvider {
             "No cached Azure credentials for subscription {}. Run: azcluster login",
             self.subscription_id
         );
+    }
+
+    pub fn get_vault_token(&mut self) -> Result<String> {
+        if let Some(acc) = self.cache.get(&self.subscription_id) {
+            if acc.is_vault_token_valid() {
+                return Ok(acc.vault_access_token.clone().unwrap());
+            }
+        }
+
+        let refresh_token = self
+            .cache
+            .get(&self.subscription_id)
+            .and_then(|acc| acc.refresh_token.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "No cached Azure credentials for subscription {}. Run: azcluster login",
+                    self.subscription_id
+                )
+            })?;
+
+        self.mint_scoped_token(&refresh_token, VAULT_SCOPE)
+    }
+
+    fn mint_scoped_token(&mut self, refresh_token: &str, scope: &str) -> Result<String> {
+        let client = reqwest::blocking::Client::new();
+        let url = token_endpoint(&self.tenant_id);
+
+        let resp = client
+            .post(&url)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", AZURE_CLI_CLIENT_ID),
+                ("refresh_token", refresh_token),
+                ("scope", scope),
+            ])
+            .send()
+            .context("Failed to mint scoped Azure token")?;
+
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            if let Ok(err) = serde_json::from_str::<OAuthErrorResponse>(&body) {
+                bail!(
+                    "Scoped token mint failed: {}: {}. Run: azcluster login",
+                    err.error,
+                    err.error_description.unwrap_or_default()
+                );
+            }
+            bail!("Scoped token mint failed ({status}): {body}");
+        }
+
+        let token_resp: OAuthTokenResponse =
+            serde_json::from_str(&body).context("Failed to parse scoped token response")?;
+        let expires_in = token_resp.expires_in.unwrap_or(3600);
+        let expires_at = Utc::now() + Duration::seconds(expires_in);
+
+        if let Some(acc) = self.cache.get_mut(&self.subscription_id) {
+            acc.vault_access_token = Some(token_resp.access_token.clone());
+            acc.vault_expires_at = Some(expires_at);
+            if let Some(new_rt) = token_resp.refresh_token {
+                acc.refresh_token = Some(new_rt);
+            }
+        }
+        self.cache.save()?;
+
+        Ok(token_resp.access_token)
     }
 
     fn refresh_with_token(&mut self, refresh_token: &str) -> Result<String> {
@@ -103,6 +169,8 @@ impl TokenProvider {
             expires_at,
             username,
             auth_method: "refresh".to_string(),
+            vault_access_token: None,
+            vault_expires_at: None,
         };
 
         self.cache.insert(self.subscription_id.clone(), account);

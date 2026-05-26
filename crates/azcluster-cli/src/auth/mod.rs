@@ -21,6 +21,8 @@ pub const AZURE_CLI_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 /// ARM scope. `offline_access` is REQUIRED to get a refresh_token back.
 pub const MANAGEMENT_SCOPE: &str = "https://management.azure.com/.default offline_access";
 
+pub const VAULT_SCOPE: &str = "https://vault.azure.net/.default offline_access";
+
 /// Default tenant for first-time login. `organizations` = any Entra ID tenant.
 pub const COMMON_TENANT: &str = "organizations";
 
