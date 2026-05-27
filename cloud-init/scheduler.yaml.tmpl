@@ -760,8 +760,10 @@ write_files:
         systemctl restart slurmctld
       fi
 
-      chmod 0755 /shared
+      chmod 1777 /shared
       install -d -m 0755 -o root -g root /shared/home
+      install -d -m 1777 -o root -g root /shared/dgxc
+      install -d -m 1777 -o root -g root /shared/jobs
 
       touch /var/log/azcluster/ready
 

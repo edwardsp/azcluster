@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.2] - 2026-05-27
+
+### Added
+- **DCGM thermal-limit + ECC + HBM3 row-remap + NVLink-error metrics** (live-validated v24walk2). Counters CSV now ships 15 additional fields all confirmed accepted by dcgm-exporter 4.4.0 talking to DCGM 4.5.2 on `microsoft-dsvm:ubuntu-hpc:2404`:
+  - Thermal: `DCGM_FI_DEV_GPU_MAX_OP_TEMP` (= 87°C constant on H100 SXM5, matches the "tlimit" name used by Azure host-side telemetry), `DCGM_FI_DEV_GPU_TEMP_LIMIT` (dynamic margin), `DCGM_FI_DEV_SLOWDOWN_TEMP`, `DCGM_FI_DEV_SHUTDOWN_TEMP` — last three are best-effort and may emit empty on some H100 firmwares.
+  - ECC: `DCGM_FI_DEV_ECC_{SBE,DBE}_{VOL,AGG}_TOTAL` quartet (volatile + aggregate single/double-bit).
+  - HBM3 row remap: `DCGM_FI_DEV_RETIRED_{SBE,DBE,PENDING}` + `DCGM_FI_DEV_{CORRECTABLE,UNCORRECTABLE}_REMAPPED_ROWS` + `DCGM_FI_DEV_ROW_REMAP_FAILURE`.
+  - NVLink errors: `DCGM_FI_DEV_NVLINK_{CRC_FLIT,CRC_DATA,REPLAY,RECOVERY}_ERROR_COUNT_TOTAL` quartet (aggregate; per-link variants deferred to a future release due to cardinality).
+  - `DCGM_FI_DEV_FB_RESERVED` (per-process VRAM accounting).
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.1` to `v0.24.2`.
+
+### Removed
+- DCGM counters `DCGM_FI_DEV_ENC_UTIL` + `DCGM_FI_DEV_DEC_UTIL` (NVENC/NVDEC video codec utilisation — always ~0 on H100 SXM5 training clusters; pure noise).
+
+### Fixed
+- **N-17a `/shared` is now `chmod 1777`** in scheduler bootstrap, not `0755`. The v0.18.1 fix that set `/shared` to 0755 (to let LDAP users TRAVERSE the dir to reach their home) accidentally prevented them from creating sibling dirs like `/shared/dgxc`, breaking every DGXC example sbatch with `mkdir: cannot create directory '/shared/dgxc': Permission denied`. Live-reproduced today on `v24walk2`. The new layout: `/shared` 1777 (sticky world-write, like `/tmp`), `/shared/home` 0755 (root-managed), pre-created `/shared/dgxc` + `/shared/jobs` 1777 for examples. Individual home dirs under `/shared/home/<user>` keep their 0700 perms from `pam_mkhomedir` (v0.18.2 umask fix).
+
 ## [0.24.1] - 2026-05-27
 
 ### Fixed
