@@ -177,7 +177,7 @@ write_files:
         external_labels:
           subscription: ${SUBSCRIPTION_ID}
           cluster: ${RG_NAME}/{{CLUSTER_NAME}}
-          instance: ${INSTANCE_NAME}
+          nodename: ${INSTANCE_NAME}
           role: login
       remote_write:
         - url: "${AMW_INGEST_URL}"

@@ -466,7 +466,7 @@ write_files:
       if [ -n "{{STORAGE_ACCOUNT_NAME}}" ]; then
         cat > "${EXAMPLES_DIR}/azcp-upload-user-data.sbatch" <<'EOF'
       #!/bin/bash -l
-      #SBATCH --partition=cpu --nodes=1 --ntasks=1 --time=00:30:00
+      #SBATCH --nodes=1 --ntasks=1 --time=00:30:00
       #SBATCH --output=/shared/home/%u/azcp-upload-%j.out
       set -euo pipefail
       azcp copy "/shared/home/${USER}/datasets/" \
@@ -477,7 +477,7 @@ write_files:
 
         cat > "${EXAMPLES_DIR}/azcp-build-and-publish-sqsh.sbatch" <<'EOF'
       #!/bin/bash -l
-      #SBATCH --partition=cpu --nodes=1 --ntasks=1 --time=03:00:00
+      #SBATCH --nodes=1 --ntasks=1 --time=03:00:00
       #SBATCH --output=/shared/home/%u/build-sqsh-%j.out
       set -euo pipefail
       SQSH_NAME="${1:?usage: sbatch <script> <sqsh-name> <docker-url>}"

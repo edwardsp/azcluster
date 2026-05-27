@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.23.1")]
+    #[arg(long, default_value = "v0.23.2")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -1706,6 +1706,10 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
         .build()
         .context("build Grafana HTTP client")?;
 
+    const MAX_WAIT_SECS: u64 = 60 * 60;
+    const POLL_INTERVAL_SECS: u64 = 30;
+    let started = std::time::Instant::now();
+
     for (slug, body) in DASHBOARDS {
         let dashboard: serde_json::Value =
             serde_json::from_str(body).with_context(|| format!("parse dashboard {slug}"))?;
@@ -1715,8 +1719,8 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
             "folderId": 0,
         });
         let url = format!("{endpoint}/api/dashboards/db");
-        let mut imported = false;
-        for attempt in 1..=20u32 {
+        let mut last_status_line_len = 0usize;
+        loop {
             let resp = http
                 .post(&url)
                 .bearer_auth(&token)
@@ -1725,8 +1729,12 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
                 .with_context(|| format!("POST grafana dashboard {slug}"))?;
             let status = resp.status();
             if status.is_success() {
-                eprintln!("    imported {slug} (attempt {attempt})");
-                imported = true;
+                let elapsed = started.elapsed().as_secs();
+                eprintln!(
+                    "\r{:width$}\r    imported {slug} (after {elapsed}s)",
+                    "",
+                    width = last_status_line_len
+                );
                 break;
             }
             let body_text = resp.text().unwrap_or_default();
@@ -1734,20 +1742,38 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
                 || status.as_u16() == 403
                 || body_text.contains("NoRoleAssignedException")
                 || body_text.contains("Unauthorized");
-            if !propagating || attempt == 20 {
+            let elapsed = started.elapsed().as_secs();
+            if !propagating {
                 eprintln!(
                     "    FAILED {slug} ({status}): {}",
                     body_text.lines().last().unwrap_or("")
                 );
-                bail!("dashboard import {slug} failed after {attempt} attempt(s)");
+                bail!("dashboard import {slug} failed (non-retryable {status})");
             }
-            eprintln!(
-                "    waiting for Grafana Admin propagation (attempt {attempt}/20, sleeping 60s)..."
-            );
-            std::thread::sleep(std::time::Duration::from_secs(60));
-        }
-        if !imported {
-            bail!("dashboard {slug} not imported");
+            if elapsed >= MAX_WAIT_SECS {
+                eprintln!(
+                    "\r{:width$}\r==> Grafana Admin role still propagating after {}m. \
+                     Cluster IS fully usable; dashboards not auto-imported. \
+                     Re-run `azcluster monitor` (or this deploy) later to retry.",
+                    "",
+                    elapsed / 60,
+                    width = last_status_line_len,
+                );
+                return Ok(());
+            }
+            last_status_line_len = {
+                let s = format!(
+                    "    waiting for Grafana Admin role propagation: {}m{}s elapsed (cap {}m), last response: {} {}",
+                    elapsed / 60,
+                    elapsed % 60,
+                    MAX_WAIT_SECS / 60,
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                );
+                eprint!("\r{s}");
+                s.len()
+            };
+            std::thread::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS));
         }
     }
     Ok(())
@@ -1948,9 +1974,9 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
     cmd.args(["-i", &identity.display().to_string()]);
     if use_bastion {
         let exe = self_exe_path()?;
-        let target = format!("{}@127.0.0.1", state.admin_username);
+        let target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
         let proxy = format!(
-            "{} bastion-proxy --cluster {} --target login",
+            "{} bastion-proxy --cluster {} --target scheduler",
             exe, args.name
         );
         cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);

@@ -524,11 +524,43 @@ write_files:
       systemctl enable --now node_exporter
 
       GPU_COUNT=$(nvidia-smi -L 2>/dev/null | grep -cE '^GPU [0-9]+:' || true)
-      if [ "${GPU_COUNT:-0}" -gt 0 ] && command -v docker >/dev/null 2>&1; then
-        docker run -d --restart=unless-stopped --gpus all --cap-add SYS_ADMIN \
-          --publish 127.0.0.1:9400:9400 \
-          --name dcgm-exporter \
-          nvcr.io/nvidia/k8s/dcgm-exporter:3.3.7-3.4.1-ubuntu22.04 || true
+      if [ "${GPU_COUNT:-0}" -gt 0 ]; then
+        # The microsoft-dsvm:ubuntu-hpc image ships nvidia-dcgm (`nv-hostengine`
+        # listening on TCP localhost:5555) but NOT docker. Use enroot to run
+        # the NVIDIA-published dcgm-exporter container, talking to nv-hostengine
+        # over TCP. Install once into /opt as a squashfs, then run as a systemd
+        # unit.
+        DCGM_EXPORTER_IMG=/opt/dcgm-exporter.sqsh
+        if [ ! -f "${DCGM_EXPORTER_IMG}" ]; then
+          enroot import -o "${DCGM_EXPORTER_IMG}" \
+            docker://nvcr.io#nvidia/k8s/dcgm-exporter:4.4.0-4.5.0-ubuntu22.04 \
+            2>&1 | tail -5 || true
+        fi
+        cat > /etc/systemd/system/dcgm-exporter.service <<'EOF'
+      [Unit]
+      Description=NVIDIA DCGM Prometheus exporter (via enroot)
+      After=nvidia-dcgm.service network-online.target
+      Requires=nvidia-dcgm.service
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStartPre=-/usr/bin/enroot remove -f dcgm-exporter
+      ExecStartPre=/usr/bin/enroot create --name dcgm-exporter /opt/dcgm-exporter.sqsh
+      ExecStart=/usr/bin/enroot start --rw \
+        -e DCGM_EXPORTER_LISTEN=127.0.0.1:9400 \
+        -e DCGM_REMOTE_HOSTENGINE_INFO=localhost:5555 \
+        dcgm-exporter
+      ExecStopPost=-/usr/bin/enroot remove -f dcgm-exporter
+      Restart=on-failure
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+        chmod 0644 /etc/systemd/system/dcgm-exporter.service
+        systemctl daemon-reload
+        systemctl enable --now dcgm-exporter
       fi
 
       MON_UAI_CLIENT_ID="{{MON_UAI_CLIENT_ID}}"
@@ -553,7 +585,7 @@ write_files:
         external_labels:
           subscription: ${SUBSCRIPTION_ID}
           cluster: ${RG_NAME}/{{CLUSTER_NAME}}
-          instance: ${INSTANCE_NAME}
+          nodename: ${INSTANCE_NAME}
           role: compute
           pool: {{POOL_NAME}}
       remote_write:
@@ -574,7 +606,6 @@ write_files:
             - targets: ['127.0.0.1:9400']
       EOF
         fi
-        sed -i 's|^      ||' /opt/prometheus/prometheus.yml
         chmod 0644 /opt/prometheus/prometheus.yml
         cat > /etc/systemd/system/prometheus.service <<'EOF'
       [Unit]

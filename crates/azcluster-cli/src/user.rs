@@ -119,19 +119,9 @@ pub fn b64_encode(data: &[u8]) -> String {
 }
 
 fn ssh_run(state: &ClusterState, remote_cmd: &str) -> Result<String> {
-    let host = state.login_public_ip.as_deref().ok_or_else(|| {
-        anyhow!(
-            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
-            state.name
-        )
-    })?;
-    // v0.22.6: must use the admin key from KV (~/.azcluster/keys/<cluster>) +
-    // explicit ProxyCommand. OpenSSH `-J` does NOT propagate `-i` to the inner
-    // jump-hop ssh, so the bare `-J <login>` path fails Permission denied on
-    // any operator whose ssh-agent does not already hold the admin key.
+    let use_bastion = crate::should_use_bastion(state, false);
     let identity = crate::resolve_identity(None, &state.name)
         .with_context(|| format!("resolve admin ssh identity for '{}'", state.name))?;
-    let login_target = format!("{}@{}", state.admin_username, host);
     let sched_target = format!("{}@{}", state.admin_username, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
     cmd.args([
@@ -144,8 +134,26 @@ fn ssh_run(state: &ClusterState, remote_cmd: &str) -> Result<String> {
         "-i",
         &identity.display().to_string(),
     ]);
-    crate::add_ssh_jump_with_identity(&mut cmd, &identity, &login_target);
-    cmd.args([&sched_target, "--", "bash", "-lc", remote_cmd]);
+    if use_bastion {
+        let exe = crate::self_exe_path()?;
+        let proxy = format!(
+            "{} bastion-proxy --cluster {} --target scheduler",
+            exe, state.name
+        );
+        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        cmd.args([&sched_target, "--", "bash", "-lc", remote_cmd]);
+    } else {
+        let host = state.login_public_ip.as_deref().ok_or_else(|| {
+            anyhow!(
+                "cluster '{}' has no login public IP and bastion is not enabled. \
+                 Redeploy with --login-public-ip or --bastion.",
+                state.name
+            )
+        })?;
+        let login_target = format!("{}@{}", state.admin_username, host);
+        crate::add_ssh_jump_with_identity(&mut cmd, &identity, &login_target);
+        cmd.args([&sched_target, "--", "bash", "-lc", remote_cmd]);
+    }
     let out = cmd.output().context("spawn ssh")?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -167,11 +175,7 @@ fn build_sssd_flush_cmd(username: &str) -> String {
 }
 
 fn flush_login_sssd_cache(state: &ClusterState, username: &str) {
-    let Some(host) = state.login_public_ip.as_deref() else {
-        return;
-    };
-    // v0.22.6: same fix as ssh_run — direct ssh to login (no jump) but with
-    // explicit -i so the agent-less admin key flow works.
+    let use_bastion = crate::should_use_bastion(state, false);
     let identity = match crate::resolve_identity(None, &state.name) {
         Ok(p) => p,
         Err(e) => {
@@ -182,27 +186,40 @@ fn flush_login_sssd_cache(state: &ClusterState, username: &str) {
             return;
         }
     };
+    let host = if use_bastion {
+        "127.0.0.1".to_string()
+    } else {
+        match state.login_public_ip.as_deref() {
+            Some(h) => h.to_string(),
+            None => return,
+        }
+    };
     let target = format!("{}@{}", state.admin_username, host);
     let cmd = build_sssd_flush_cmd(username);
-    let out = Command::new("ssh")
-        .args([
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=5",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-i",
-            &identity.display().to_string(),
-            &target,
-            "--",
-            "bash",
-            "-lc",
-            &cmd,
-        ])
-        .output();
+    let mut sshcmd = Command::new("ssh");
+    sshcmd.args([
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-i",
+        &identity.display().to_string(),
+    ]);
+    if use_bastion {
+        if let Ok(exe) = crate::self_exe_path() {
+            let proxy = format!(
+                "{} bastion-proxy --cluster {} --target login",
+                exe, state.name
+            );
+            sshcmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        }
+    }
+    sshcmd.args([&target, "--", "bash", "-lc", &cmd]);
+    let out = sshcmd.output();
     match out {
         Ok(o) if o.status.success() => {
             eprintln!("==> flushed SSSD cache on login for '{}'", username);
@@ -266,6 +283,12 @@ fn build_sacctmgr_add_cmd(username: &str) -> String {
          sacctmgr_run 'add account {u}' add account '{u}' \
            Description='azcluster user {u}' Organization=azcluster\n\
          sacctmgr_run 'add user {u}' add user '{u}' DefaultAccount='{u}'\n\
+         # Add a per-partition association so AccountingStorageEnforce=associations\n\
+         # accepts jobs from this user on every existing partition. Without this,\n\
+         # sbatch returns 'Invalid account or account/partition combination'.\n\
+         for p in $(sinfo -h -o '%R' 2>/dev/null | sort -u); do\n\
+           sacctmgr_run \"associate {u} <-> $p\" add user '{u}' Account='{u}' Partition=\"$p\"\n\
+         done\n\
          sudo -n sss_cache -u '{u}' >/dev/null 2>&1 || true\n\
          sudo -n sss_cache -E >/dev/null 2>&1 || true\n\
          sudo -n systemctl restart slurmctld >/dev/null 2>&1 || true\n\

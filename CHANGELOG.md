@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-05-27
+
+### Fixed
+- **`azcluster user {add,remove,sshkey ...}` now Bastion-aware.** Previously these commands shelled out via login's public IP and failed with `cluster X has no login public IP` on `--bastion` deploys. Now they auto-route through `bastion-proxy --target scheduler` (direct, skipping login since the LDAP server is on scheduler). Same pattern as `ssh`/`exec`/`scp`/`tunnel`/`validate` already use.
+- **`azcluster tunnel <cluster> <local>:8443` now goes direct via Bastion** (`--target scheduler`) instead of through login. Saves a hop.
+- **Grafana Admin RBAC propagation: never fails deploy.** Replaced the 20-attempt × 60s = 20 min hard-fail loop with a 60 min soft-cap that prints a single rolling status line (`waiting for Grafana Admin role propagation: 12m34s elapsed (cap 60m), last response: 401 Unauthorized`). On timeout, logs a clean "cluster IS fully usable; re-run `azcluster monitor` later" message and returns success. Deploy no longer errors-out on slow Azure RBAC propagation.
+- **DCGM exporter actually works on compute nodes.** Pre-v0.23.2 used `docker run` which silently no-op'd because the `microsoft-dsvm:ubuntu-hpc` image ships pyxis+enroot but NOT docker. v0.23.2 imports the `nvcr.io/nvidia/k8s/dcgm-exporter` container via `enroot import` and runs it as a systemd unit talking to nv-hostengine over TCP `localhost:5555`. GPU metrics (`DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_PROF_GR_ENGINE_ACTIVE`, etc.) now flow to AMW.
+- **Example sbatch templates no longer hardcode `--partition=cpu`.** A default azcluster deploy has only a `gpu` pool; the cpu specifier made every example sbatch fail with `Invalid partition specified: cpu` until manually patched. Removed the partition spec so Slurm picks the default partition.
+- **`azcluster user add` now creates partition associations for every existing partition.** Slurm with `AccountingStorageEnforce=associations,limits,qos` (our default) requires explicit per-partition association in sacctmgr, otherwise sbatch returns `Invalid account or account/partition combination`. v0.23.2's user-add loop iterates `sinfo -h -o '%R'` and runs `sacctmgr add user <u> Account=<u> Partition=<p>` for each.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.23.1` to `v0.23.2`.
+- `bicep/main.json` regenerated.
+
 ## [0.23.1] - 2026-05-27
 
 ### Fixed
@@ -869,7 +883,8 @@ Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.23.2...HEAD
+[0.23.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.2
 [0.23.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.1
 [0.23.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.0
 [0.22.5]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.5
