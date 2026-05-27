@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.24.2)**: patch — DCGM metrics expansion + `/shared` permission fix from v24walk2 live-validation. The counters CSV now includes thermal limits (`DCGM_FI_DEV_GPU_MAX_OP_TEMP` = 87°C "tlimit" on H100), ECC quartet (volatile + aggregate, single+double-bit), HBM3 row remap (retired pages + remap failure), and aggregate NVLink error counters (CRC FLIT/DATA, replay, recovery). `/shared` now mounts `chmod 1777` (sticky world-write) — fixes the regression where LDAP users couldn't `mkdir /shared/dgxc` to run the example DGXC sbatches.
+> **Status (v0.24.3)**: patch — fixes `azcluster ssh|exec|scp --host <compute>` under `--bastion`. The two stacked `-o ProxyCommand=` calls collapsed to one (last-wins) and the connection landed on the login VM instead of the requested compute hostname. Fixed by building one composite ProxyCommand. Live-validated end-to-end on `v24walk2`.
+
+> **Previous status (v0.24.2)**: patch — DCGM metrics expansion + `/shared` permission fix from v24walk2 live-validation. The counters CSV now includes thermal limits (`DCGM_FI_DEV_GPU_MAX_OP_TEMP` = 87°C "tlimit" on H100), ECC quartet (volatile + aggregate, single+double-bit), HBM3 row remap (retired pages + remap failure), and aggregate NVLink error counters (CRC FLIT/DATA, replay, recovery). `/shared` now mounts `chmod 1777` (sticky world-write) — fixes the regression where LDAP users couldn't `mkdir /shared/dgxc` to run the example DGXC sbatches.
 
 > **Previous status (v0.24.1)**: patch — four fixes from the v0.24.0 walkthrough. (N-12) Default LDAP users `clusteradmin` + `clusteruser` now get sacctmgr account + per-partition associations during scheduler bootstrap, so `sbatch` works out-of-box. (N-13) `ArmClient` transparently refreshes the OAuth2 access token on 401 `ExpiredAuthenticationToken` during long polls — `azcluster deploy` no longer fails mid-poll after ~60 min. (N-14) Dashboard import status line detects non-TTY stderr and emits one line per 5 min instead of carriage-return refresh, keeping piped logs readable. (N-16) dcgm-exporter ships a custom counters CSV with `DCGM_FI_PROF_*` profile metrics (SM_ACTIVE, PIPE_TENSOR_ACTIVE, NVLINK_TX/RX_BYTES, etc.) bind-mounted into the enroot container — enables tensor-core utilization charts in Grafana.
 
@@ -173,7 +175,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.24.2
+VERSION=v0.24.3
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

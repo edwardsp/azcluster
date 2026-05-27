@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.2")]
+    #[arg(long, default_value = "v0.24.3")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -1913,6 +1913,21 @@ fn self_exe_path() -> Result<String> {
     Ok(p.to_string_lossy().into_owned())
 }
 
+fn bastion_compute_proxy_command(
+    cluster: &str,
+    admin_user: &str,
+    admin_key: &std::path::Path,
+) -> Result<String> {
+    let exe = self_exe_path()?;
+    let inner = format!("{} bastion-proxy --cluster {} --target login", exe, cluster);
+    Ok(format!(
+        "ssh -W %h:%p -i {} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ProxyCommand='{}' {}@127.0.0.1",
+        admin_key.display(),
+        inner,
+        admin_user,
+    ))
+}
+
 fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
     let state = resolve_cluster(&args.cluster)?;
     if !state.bastion_enabled {
@@ -1956,23 +1971,25 @@ fn ssh(args: ConnectArgs) -> Result<()> {
     }
     if use_bastion {
         let exe = self_exe_path()?;
-        let (target_name, host_ip) = if args.scheduler {
-            ("scheduler", state.scheduler_private_ip.clone())
-        } else {
-            ("login", "127.0.0.1".to_string())
-        };
-        let proxy = format!(
-            "{} bastion-proxy --cluster {} --target {}",
-            exe, args.name, target_name
-        );
-        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
         if let Some(host) = &args.host {
-            let jump_target = format!("{}@{}", jump_user, host_ip);
+            let inner_id = resolve_identity(None, &args.name)?;
+            let outer_proxy =
+                bastion_compute_proxy_command(&args.name, &state.admin_username, &inner_id)?;
+            cmd.args(["-o", &format!("ProxyCommand={}", outer_proxy)]);
             let dest = format!("{}@{}", connect_user, host);
-            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_target);
             cmd.arg(&dest);
-            eprintln!("==> ssh via Bastion -> {jump_target} -> {dest}");
+            eprintln!("==> ssh via Bastion -> login -> {dest}");
         } else {
+            let (target_name, host_ip) = if args.scheduler {
+                ("scheduler", state.scheduler_private_ip.clone())
+            } else {
+                ("login", "127.0.0.1".to_string())
+            };
+            let proxy = format!(
+                "{} bastion-proxy --cluster {} --target {}",
+                exe, args.name, target_name
+            );
+            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
             let target = format!("{}@{}", connect_user, host_ip);
             cmd.arg(&target);
             eprintln!("==> ssh via Bastion -> {target}");
@@ -2358,21 +2375,23 @@ fn exec(args: ExecArgs) -> Result<()> {
     }
     if use_bastion {
         let exe = self_exe_path()?;
-        let (target_name, host_ip) = if args.scheduler {
-            ("scheduler", state.scheduler_private_ip.clone())
-        } else {
-            ("login", "127.0.0.1".to_string())
-        };
-        let proxy = format!(
-            "{} bastion-proxy --cluster {} --target {}",
-            exe, args.name, target_name
-        );
-        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
         if let Some(host) = &args.host {
-            let jump_target = format!("{}@{}", jump_user, host_ip);
-            add_ssh_jump(&mut cmd, identity.as_deref(), &jump_target);
+            let inner_id = resolve_identity(None, &args.name)?;
+            let outer_proxy =
+                bastion_compute_proxy_command(&args.name, &state.admin_username, &inner_id)?;
+            cmd.args(["-o", &format!("ProxyCommand={}", outer_proxy)]);
             cmd.arg(format!("{}@{}", connect_user, host));
         } else {
+            let (target_name, host_ip) = if args.scheduler {
+                ("scheduler", state.scheduler_private_ip.clone())
+            } else {
+                ("login", "127.0.0.1".to_string())
+            };
+            let proxy = format!(
+                "{} bastion-proxy --cluster {} --target {}",
+                exe, args.name, target_name
+            );
+            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
             cmd.arg(format!("{}@{}", connect_user, host_ip));
         }
     } else {
@@ -2479,17 +2498,26 @@ fn scp(args: ScpArgs) -> Result<()> {
     if let Some(key) = identity.as_deref() {
         cmd.args(["-i", &key.display().to_string()]);
     }
-    if let Some(target) = proxy_target.as_deref() {
-        let exe = self_exe_path()?;
-        let proxy = format!(
-            "{} bastion-proxy --cluster {} --target {}",
-            exe, args.name, target
-        );
-        cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
-    }
-    if let Some(login) = jump_login_host.as_deref() {
-        let jump = format!("{}@{}", connect_user, login);
-        add_ssh_jump(&mut cmd, identity.as_deref(), &jump);
+    match (proxy_target.as_deref(), jump_login_host.as_deref()) {
+        (Some("login"), Some(_)) => {
+            let inner_id = resolve_identity(None, &args.name)?;
+            let outer_proxy =
+                bastion_compute_proxy_command(&args.name, &state.admin_username, &inner_id)?;
+            cmd.args(["-o", &format!("ProxyCommand={}", outer_proxy)]);
+        }
+        (Some(target), _) => {
+            let exe = self_exe_path()?;
+            let proxy = format!(
+                "{} bastion-proxy --cluster {} --target {}",
+                exe, args.name, target
+            );
+            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        }
+        (None, Some(login)) => {
+            let jump = format!("{}@{}", connect_user, login);
+            add_ssh_jump(&mut cmd, identity.as_deref(), &jump);
+        }
+        (None, None) => {}
     }
 
     let user_at_host = format!("{}@{}", connect_user, dest_host);

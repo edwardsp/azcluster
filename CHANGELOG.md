@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.3] - 2026-05-27
+
+### Fixed
+- **N-17c `azcluster ssh|exec|scp --host <compute>` lands on login under `--bastion`** (live-reproduced + fixed on v24walk2). OpenSSH `ProxyCommand` cannot be chained on a single invocation — when both `-o ProxyCommand=bastion-proxy ...` and a `-o ProxyCommand=ssh -W ...` jump were set on the SAME ssh command, the LAST one wins, silently dropping the bastion routing and forcing the connection through what would-be the local 127.0.0.1 (which isn't reachable). Result: every `--host <compute>` invocation under `--bastion` ended up on the login VM because that's where the final destination resolved to. Fixed by introducing a new helper `bastion_compute_proxy_command()` that builds ONE composite ProxyCommand of the form `ssh -W %h:%p -o ProxyCommand='<bastion-proxy> --target login' azureuser@127.0.0.1`, with the inner ssh using the admin key + `IdentitiesOnly=yes` for the login hop. Applied to `ssh`, `exec`, and `scp`. Live-validated end-to-end: `exec --host v24walk2-gpu-0002 -- "hostname; nproc; nvidia-smi -L"` now returns the compute node (96 CPUs, 8× H100). scp roundtrip also works.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.2` to `v0.24.3`.
+
 ## [0.24.2] - 2026-05-27
 
 ### Added
