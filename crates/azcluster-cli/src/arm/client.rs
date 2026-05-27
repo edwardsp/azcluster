@@ -782,15 +782,30 @@ fn parse_iso8601_duration(s: &str) -> Option<f64> {
 
 fn filter_rgs_by_tag(rgs: Vec<Value>, tag_name: &str, tag_value: Option<&str>) -> Vec<Value> {
     rgs.into_iter()
-        .filter(|rg| match rg.get("tags").and_then(|t| t.get(tag_name)) {
-            Some(v) => match (v.as_str(), tag_value) {
-                (Some(s), Some(want)) => s == want,
-                (Some(_), None) => true,
-                _ => false,
-            },
-            None => false,
+        .filter(|rg| {
+            if let Some(name) = rg.get("name").and_then(|n| n.as_str()) {
+                if is_azure_managed_rg(name) {
+                    return false;
+                }
+            }
+            match rg.get("tags").and_then(|t| t.get(tag_name)) {
+                Some(v) => match (v.as_str(), tag_value) {
+                    (Some(s), Some(want)) => s == want,
+                    (Some(_), None) => true,
+                    _ => false,
+                },
+                None => false,
+            }
         })
         .collect()
+}
+
+fn is_azure_managed_rg(name: &str) -> bool {
+    name.starts_with("MA_")
+        || name.starts_with("MC_")
+        || name.starts_with("AzureBackupRG_")
+        || name.starts_with("NetworkWatcherRG")
+        || name.starts_with("databricks-rg-")
 }
 
 #[cfg(test)]
@@ -858,6 +873,45 @@ mod tests {
     fn filter_rgs_by_tag_value_mismatch_excluded() {
         let rgs = vec![rg("a", json!({"azcluster:managed": "false"}))];
         assert!(filter_rgs_by_tag(rgs, "azcluster:managed", Some("true")).is_empty());
+    }
+
+    #[test]
+    fn filter_rgs_by_tag_excludes_azure_managed_rgs_even_when_tagged() {
+        let rgs = vec![
+            rg(
+                "rg-azcluster-demo",
+                json!({"azcluster:managed": "true", "azcluster:name": "demo"}),
+            ),
+            rg(
+                "MA_amw-demo_eastus_managed",
+                json!({"azcluster:managed": "true", "azcluster:name": "demo"}),
+            ),
+            rg(
+                "MC_demo_aks_eastus",
+                json!({"azcluster:managed": "true", "azcluster:name": "demo"}),
+            ),
+            rg(
+                "NetworkWatcherRG",
+                json!({"azcluster:managed": "true", "azcluster:name": "demo"}),
+            ),
+        ];
+        let by_name = filter_rgs_by_tag(rgs, "azcluster:name", Some("demo"));
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(
+            by_name[0].get("name").and_then(|v| v.as_str()),
+            Some("rg-azcluster-demo")
+        );
+    }
+
+    #[test]
+    fn is_azure_managed_rg_recognises_known_prefixes() {
+        assert!(is_azure_managed_rg("MA_amw_eastus_managed"));
+        assert!(is_azure_managed_rg("MC_aks_cluster_eastus"));
+        assert!(is_azure_managed_rg("AzureBackupRG_eastus_1"));
+        assert!(is_azure_managed_rg("NetworkWatcherRG"));
+        assert!(is_azure_managed_rg("databricks-rg-workspace-id"));
+        assert!(!is_azure_managed_rg("rg-azcluster-demo"));
+        assert!(!is_azure_managed_rg("rg-ma-confusing"));
     }
 
     #[test]

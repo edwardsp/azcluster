@@ -26,10 +26,14 @@ param mysqlAdminPassword string = ''
 @secure()
 param ldapAdminPassword string
 param extraPackages string = ''
+param storageAccountName string = ''
+param storageBlobEndpoint string = ''
+param storageDataContainerUrl string = ''
+param azcpVersion string = 'v0.4.5'
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -48,7 +52,11 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{ACCT_MYSQL_DB}}', accountingMysqlDatabase),
     '{{ACCT_MYSQL_PASSWORD}}', mysqlAdminPassword),
     '{{LDAP_ADMIN_PASSWORD}}', ldapAdminPassword),
-    '{{EXTRA_PACKAGES}}', extraPackages)
+    '{{EXTRA_PACKAGES}}', extraPackages),
+    '{{STORAGE_ACCOUNT_NAME}}', storageAccountName),
+    '{{STORAGE_BLOB_ENDPOINT}}', storageBlobEndpoint),
+    '{{STORAGE_DATA_CONTAINER_URL}}', storageDataContainerUrl),
+    '{{AZCP_VERSION}}', azcpVersion)
 
 var userIdentities = empty(monUaiId) ? {
   '${userAssignedIdentityId}': {}

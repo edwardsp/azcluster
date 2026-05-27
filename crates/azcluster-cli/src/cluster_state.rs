@@ -27,6 +27,22 @@ pub struct ClusterState {
     pub bastion_dns_name: Option<String>,
     #[serde(default)]
     pub bastion_resource_id: Option<String>,
+    #[serde(default)]
+    pub storage_enabled: bool,
+    #[serde(default)]
+    pub storage_account_name: Option<String>,
+    #[serde(default)]
+    pub storage_blob_endpoint: Option<String>,
+    #[serde(default)]
+    pub storage_dfs_endpoint: Option<String>,
+    #[serde(default)]
+    pub storage_data_container_url: Option<String>,
+    #[serde(default)]
+    pub storage_hns: bool,
+    #[serde(default)]
+    pub storage_public_access: bool,
+    #[serde(default)]
+    pub azcp_version: Option<String>,
 }
 
 fn project_dirs() -> Result<ProjectDirs> {
@@ -70,6 +86,16 @@ pub struct PendingDeploy {
     pub extra_packages: Vec<String>,
     #[serde(default)]
     pub bastion_enabled: bool,
+    #[serde(default)]
+    pub storage_enabled: bool,
+    #[serde(default)]
+    pub storage_account_name: Option<String>,
+    #[serde(default)]
+    pub storage_hns: bool,
+    #[serde(default)]
+    pub storage_public_access: bool,
+    #[serde(default)]
+    pub azcp_version: Option<String>,
 }
 
 impl PendingDeploy {
@@ -208,6 +234,11 @@ mod tests {
             grafana_location: Some("uksouth".into()),
             extra_packages: vec!["git-lfs".into(), "python3.12-venv".into()],
             bastion_enabled: true,
+            storage_enabled: true,
+            storage_account_name: Some("stazc89a3f12c".into()),
+            storage_hns: false,
+            storage_public_access: false,
+            azcp_version: Some("v0.4.5".into()),
         };
         let ser = toml::to_string(&p).unwrap();
         let de: PendingDeploy = toml::from_str(&ser).unwrap();
@@ -217,6 +248,9 @@ mod tests {
         assert!(!de.accounting_enabled);
         assert_eq!(de.extra_packages, vec!["git-lfs", "python3.12-venv"]);
         assert!(de.bastion_enabled);
+        assert!(de.storage_enabled);
+        assert_eq!(de.storage_account_name.as_deref(), Some("stazc89a3f12c"));
+        assert_eq!(de.azcp_version.as_deref(), Some("v0.4.5"));
     }
 
     #[test]

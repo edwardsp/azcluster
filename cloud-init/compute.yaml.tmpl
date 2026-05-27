@@ -1,6 +1,10 @@
 #cloud-config
 manage_etc_hosts: false
 
+bootcmd:
+  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 package_update: true
 package_upgrade: false
 
@@ -32,6 +36,9 @@ write_files:
       SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
       EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"
+      STORAGE_ACCOUNT_NAME={{STORAGE_ACCOUNT_NAME}}
+      STORAGE_DATA_CONTAINER_URL={{STORAGE_DATA_CONTAINER_URL}}
+      AZCP_VERSION={{AZCP_VERSION}}
       ENROOT_VERSION=4.0.1
   - path: /etc/apt/preferences.d/slurm-repository-pin-990
     permissions: '0644'
@@ -222,17 +229,20 @@ write_files:
       apt-get -o DPkg::Lock::Timeout=600 install -y ./enroot.deb ./enroot-caps.deb
 
       mkdir -p /etc/enroot /etc/enroot/environ.d
-      cat > /etc/enroot/enroot.conf <<'EOF'
-      ENROOT_RUNTIME_PATH    /var/lib/enroot/runtime/user-$(id -u)
-      ENROOT_CACHE_PATH      /var/lib/enroot-data/cache/user-$(id -u)
-      ENROOT_DATA_PATH       /var/lib/enroot-data/user-$(id -u)
-      ENROOT_TEMP_PATH       /run/enroot
+      mkdir -p "${ENROOT_BASE}/enroot-temp"
+      chmod 1777 "${ENROOT_BASE}/enroot-temp"
+      cat > /etc/enroot/enroot.conf <<EOF
+      ENROOT_RUNTIME_PATH    /var/lib/enroot/runtime/user-\$(id -u)
+      ENROOT_CACHE_PATH      /var/lib/enroot-data/cache/user-\$(id -u)
+      ENROOT_DATA_PATH       /var/lib/enroot-data/user-\$(id -u)
+      ENROOT_TEMP_PATH       ${ENROOT_BASE}/enroot-temp
       ENROOT_SQUASH_OPTIONS  -comp lzo -noI
       ENROOT_MOUNT_HOME      yes
       ENROOT_RESTRICT_DEV    yes
       ENROOT_ROOTFS_WRITABLE yes
       ENROOT_REMAP_ROOT      yes
       EOF
+      chmod 0644 /etc/enroot/enroot.conf
 
       BASE="https://github.com/${AZCLUSTER_REPO}/releases/download/${AZCLUSTER_VERSION}"
       curl -fsSL --retry 8 --retry-delay 5 -o /opt/pyxis/spank_pyxis.so "${BASE}/spank_pyxis-${AZCLUSTER_VERSION}-x86_64-linux.so"
@@ -536,10 +546,6 @@ write_files:
         INSTANCE_NAME=$(hostname)
         SUBSCRIPTION_ID="{{SUBSCRIPTION_ID}}"
         RG_NAME=$(curl -fsSL -H Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
-        SCRAPE_GPU=""
-        if [ "${GPU_COUNT:-0}" -gt 0 ]; then
-          SCRAPE_GPU=$'\n        - job_name: dcgm_exporter\n          static_configs:\n            - targets: [\'127.0.0.1:9400\']'
-        fi
         cat > /opt/prometheus/prometheus.yml <<EOF
       global:
         scrape_interval: 15s
@@ -559,8 +565,16 @@ write_files:
       scrape_configs:
         - job_name: node_exporter
           static_configs:
-            - targets: ['127.0.0.1:9100']${SCRAPE_GPU}
+            - targets: ['127.0.0.1:9100']
       EOF
+        if [ "${GPU_COUNT:-0}" -gt 0 ]; then
+          cat >> /opt/prometheus/prometheus.yml <<'EOF'
+        - job_name: dcgm_exporter
+          static_configs:
+            - targets: ['127.0.0.1:9400']
+      EOF
+        fi
+        sed -i 's|^      ||' /opt/prometheus/prometheus.yml
         chmod 0644 /opt/prometheus/prometheus.yml
         cat > /etc/systemd/system/prometheus.service <<'EOF'
       [Unit]
@@ -611,6 +625,42 @@ write_files:
       fi
       systemctl enable --now sssd
       systemctl restart ssh
+
+      if [ -n "${AZCP_VERSION:-}" ]; then
+        AZCP_URL="https://github.com/edwardsp/azcp/releases/download/${AZCP_VERSION}/azcp-x86_64-unknown-linux-gnu.tar.gz"
+        curl -fsSL -o /tmp/azcp.tar.gz "${AZCP_URL}"
+        tar -xzf /tmp/azcp.tar.gz --strip-components=1 -C /usr/local/bin/ azcp-x86_64-unknown-linux-gnu/azcp
+        chmod 0755 /usr/local/bin/azcp
+        rm -f /tmp/azcp.tar.gz
+      fi
+
+      if [ -n "${STORAGE_ACCOUNT_NAME:-}" ]; then
+        cat > /etc/profile.d/azcluster-storage.sh <<'PROFILE_EOF'
+      export AZCLUSTER_STORAGE_ACCOUNT="{{STORAGE_ACCOUNT_NAME}}"
+      export AZCLUSTER_STORAGE_URL="{{STORAGE_DATA_CONTAINER_URL}}"
+      export AZCLUSTER_USER_BLOB_URL="${AZCLUSTER_STORAGE_URL}/users/${USER}"
+      export AZCLUSTER_USER_NVME="/mnt/nvme/users/${USER}"
+      export AZCLUSTER_SHARED_BLOB_URL="${AZCLUSTER_STORAGE_URL}/shared"
+      export AZURE_CLIENT_ID="{{UAI_CLIENT_ID}}"
+      PROFILE_EOF
+        sed -i 's|^      ||' /etc/profile.d/azcluster-storage.sh
+        chmod 0644 /etc/profile.d/azcluster-storage.sh
+      fi
+
+      mkdir -p /etc/slurm/prolog.d
+      cat > /etc/slurm/prolog.d/10-azcluster-user-nvme.sh <<'PROLOG_EOF'
+      #!/bin/bash
+      set -euo pipefail
+      [ -d /mnt/nvme ] || exit 0
+      [ -z "${SLURM_JOB_USER:-}" ] && exit 0
+      [ -z "${SLURM_JOB_UID:-}" ] && exit 0
+      [ -z "${SLURM_JOB_GID:-}" ] && exit 0
+      install -d -o "${SLURM_JOB_UID}" -g "${SLURM_JOB_GID}" -m 0700 \
+        "/mnt/nvme/users/${SLURM_JOB_USER}"
+      exit 0
+      PROLOG_EOF
+      sed -i 's|^      ||' /etc/slurm/prolog.d/10-azcluster-user-nvme.sh
+      chmod 0755 /etc/slurm/prolog.d/10-azcluster-user-nvme.sh
 
       touch /var/log/azcluster/ready
 

@@ -18,10 +18,16 @@ param monUaiId string = ''
 param monUaiClientId string = ''
 param amwIngestionEndpoint string = ''
 param extraPackages string = ''
+param storageAccountName string = ''
+param storageBlobEndpoint string = ''
+param storageDataContainerUrl string = ''
+param azcpVersion string = 'v0.4.5'
+param clusterUaiId string = ''
+param clusterUaiClientId string = ''
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/compute.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -34,19 +40,28 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{MON_UAI_CLIENT_ID}}', monUaiClientId),
     '{{AMW_INGEST_URL}}', amwIngestionEndpoint),
     '{{SUBSCRIPTION_ID}}', subscription().subscriptionId),
-    '{{EXTRA_PACKAGES}}', extraPackages)
+    '{{EXTRA_PACKAGES}}', extraPackages),
+    '{{STORAGE_ACCOUNT_NAME}}', storageAccountName),
+    '{{STORAGE_BLOB_ENDPOINT}}', storageBlobEndpoint),
+    '{{STORAGE_DATA_CONTAINER_URL}}', storageDataContainerUrl),
+    '{{AZCP_VERSION}}', azcpVersion),
+    '{{UAI_CLIENT_ID}}', clusterUaiClientId)
 
 var hasMonUai = !empty(monUaiId)
+var hasClusterUai = !empty(clusterUaiId)
+var combinedUaiIds = union(
+  hasMonUai ? { '${monUaiId}': {} } : {},
+  hasClusterUai ? { '${clusterUaiId}': {} } : {}
+)
+var anyUai = hasMonUai || hasClusterUai
 
 resource vmss 'Microsoft.Compute/virtualMachineScaleSets@2024-07-01' = {
   name: 'vmss-${clusterName}-${poolName}'
   location: location
   tags: tags
-  identity: hasMonUai ? {
+  identity: anyUai ? {
     type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${monUaiId}': {}
-    }
+    userAssignedIdentities: combinedUaiIds
   } : null
   sku: {
     name: vmSku

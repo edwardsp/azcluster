@@ -24,6 +24,13 @@ param grafanaLocation string
 param deployerPrincipalId string
 param deployerPrincipalType string = 'User'
 param keyVaultName string
+param enableStorage bool = true
+param storageAccountName string = ''
+param storageHns bool = false
+param storagePublicAccess bool = false
+param storageSku string = 'Standard_LRS'
+param storageAccessTier string = 'Hot'
+param azcpVersion string = 'v0.4.5'
 param sharedStorageMode string = 'anf'
 param enableAccounting bool = false
 @secure()
@@ -82,6 +89,22 @@ resource schedulerContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
     principalId: uai.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: contributorRoleId
+  }
+}
+
+module storage 'modules/storage.bicep' = if (enableStorage) {
+  name: 'storage'
+  params: {
+    storageAccountName: storageAccountName
+    location: location
+    enableHns: storageHns
+    sku: storageSku
+    accessTier: storageAccessTier
+    allowPublicAccess: storagePublicAccess
+    uaiPrincipalId: uai.properties.principalId
+    peSubnetId: network.outputs.computeSubnetId
+    vnetId: network.outputs.vnetId
+    tags: tags
   }
 }
 
@@ -168,6 +191,10 @@ module scheduler 'modules/scheduler.bicep' = {
     mysqlAdminPassword: mysqlAdminPassword
     ldapAdminPassword: ldapAdminPassword
     extraPackages: extraPackages
+    storageAccountName: enableStorage ? storage!.outputs.storageAccountName : ''
+    storageBlobEndpoint: enableStorage ? storage!.outputs.blobEndpoint : ''
+    storageDataContainerUrl: enableStorage ? storage!.outputs.dataContainerUrl : ''
+    azcpVersion: azcpVersion
     tags: tags
   }
 }
@@ -196,6 +223,12 @@ module login 'modules/login.bicep' = {
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
     amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
     extraPackages: extraPackages
+    storageAccountName: enableStorage ? storage!.outputs.storageAccountName : ''
+    storageBlobEndpoint: enableStorage ? storage!.outputs.blobEndpoint : ''
+    storageDataContainerUrl: enableStorage ? storage!.outputs.dataContainerUrl : ''
+    azcpVersion: azcpVersion
+    clusterUaiId: uai.id
+    clusterUaiClientId: uai.properties.clientId
     tags: tags
   }
 }
@@ -222,6 +255,12 @@ module compute 'modules/compute.bicep' = [for pool in pools: {
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
     amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
     extraPackages: extraPackages
+    storageAccountName: enableStorage ? storage!.outputs.storageAccountName : ''
+    storageBlobEndpoint: enableStorage ? storage!.outputs.blobEndpoint : ''
+    storageDataContainerUrl: enableStorage ? storage!.outputs.dataContainerUrl : ''
+    azcpVersion: azcpVersion
+    clusterUaiId: uai.id
+    clusterUaiClientId: uai.properties.clientId
     tags: tags
   }
 }]
@@ -240,4 +279,8 @@ output bastionId string = enableBastion ? bastion!.outputs.bastionId : ''
 output keyVaultName string = keyvault.outputs.vaultName
 output keyVaultUri string = keyvault.outputs.vaultUri
 output keyVaultId string = keyvault.outputs.vaultId
+output storageAccountName string = enableStorage ? storage!.outputs.storageAccountName : ''
+output storageBlobEndpoint string = enableStorage ? storage!.outputs.blobEndpoint : ''
+output storageDfsEndpoint string = enableStorage ? storage!.outputs.dfsEndpoint : ''
+output storageDataContainerUrl string = enableStorage ? storage!.outputs.dataContainerUrl : ''
 

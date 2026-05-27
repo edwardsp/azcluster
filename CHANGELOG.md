@@ -5,6 +5,41 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-05-27
+
+### Fixed
+- **azcp tarball extraction**: `cloud-init/{login,compute}.yaml.tmpl` now uses `tar -xzf … --strip-components=1 -C /usr/local/bin/ azcp-x86_64-unknown-linux-gnu/azcp` because the v0.4.5 azcp release archive nests the binary one directory deep. Previously aborted install-{login,compute}.sh under `set -e` because tar exited non-zero — silently skipped every step after azcp install (including `touch /var/log/azcluster/ready`).
+- **Storage URL composition missing slash**: `/etc/profile.d/azcluster-storage.sh` had `AZCLUSTER_USER_BLOB_URL="${AZCLUSTER_STORAGE_URL}users/${USER}"` (no `/`). Fixed to `${AZCLUSTER_STORAGE_URL}/users/${USER}` so `azcp copy` paths resolve correctly.
+- **Enroot temp path on tmpfs**: `ENROOT_TEMP_PATH /run/enroot` (tmpfs, RAM-backed) caused large container imports (NeMo ~16 GiB, plus mksquashfs scratch on `/tmp` which is on the 61 GB root disk) to fail with "No space left on device". Fixed to `ENROOT_TEMP_PATH ${ENROOT_BASE}/enroot-temp` (so `/mnt/nvme/enroot-temp` when NVMe RAID is present, ~28 TB capacity).
+- **apt-daily race on first boot**: cloud-init's `package_update: true` raced with `unattended-upgrades` on first boot and hit `Could not get lock /var/lib/dpkg/lock-frontend`, killing the bootstrap before our runcmd could disable unattended-upgrades. Now disabled in `bootcmd:` (which runs before `package_update`) on all 3 templates.
+- **Prometheus compute config malformed YAML**: the `SCRAPE_GPU` shell variable that appended a `dcgm_exporter` block inline into `static_configs:` produced wrong indentation (`- job_name: dcgm_exporter` at column 8 under `- targets:` at column 6, instead of at scrape_configs level). Compute Prometheus restarted 1000+ times with `parsing YAML file: yaml: did not find expected key`. Replaced with a separate `cat >>` block after the main config; indent is now correct.
+- **Example sbatch templates lost storage env**: `#!/bin/bash` + `set -u` non-login shell didn't source `/etc/profile.d/azcluster-storage.sh`, so `$AZCLUSTER_USER_BLOB_URL` and `$AZCLUSTER_USER_NVME` were unbound. Templates now use `#!/bin/bash -l` (login shell).
+- **azcp-cluster distribute prefix vs single-file**: azcp-cluster treats the source URL as a prefix; a single-file source ending in `.sqsh` matched as a directory marker and transferred 0 bytes. Example template now uploads to `users/<u>/sqsh/<name>/<name>.sqsh` (per-sqsh subdir) and `azcp-cluster` source points to `users/<u>/sqsh/<name>/`. `srun --export=` now propagates `AZCLUSTER_USER_BLOB_URL` and `AZCLUSTER_USER_NVME` into the pyxis container so the inner azcp-cluster has them.
+- **Grafana Admin RBAC propagation retry budget too short**: 10 × 30 s = 5 min was tight. Bumped to 20 × 60 s = 20 min.
+- **`azcluster validate` did not auto-route via Bastion**: when login has no public IP, validate now uses the same `bastion-proxy` ProxyCommand as `ssh`/`exec`/`scp`.
+- **`azcluster list` included Azure-managed sister RGs** (the `MA_<amwName>_<location>_managed` group that Azure Monitor auto-creates). These get tagged with our `azcluster:*` tags because ARM propagates tags from the parent deployment. `list` now filters out RGs whose name matches Azure-managed prefixes (`MA_`, `MC_`, `AzureBackupRG_`, `NetworkWatcherRG`, `databricks-rg-`).
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.23.0` to `v0.23.1`.
+- `bicep/main.json` regenerated to reflect the Bicep template-hash bump from the storage module finalisation.
+
+## [0.23.0] - 2026-05-26
+
+### Added
+- Per-cluster Azure Storage account with a single container `data`, provisioned by default. Disable via `--no-storage`. `StorageV2` SKU configurable via `--storage-sku` (default `Standard_LRS`); access tier configurable via `--storage-tier` (default `Hot`). `allowSharedKeyAccess: false` is hardcoded — all data-plane auth is AAD via the cluster UAI (which gets Storage Blob Data Contributor on the account). Soft-delete: 7-day blob + container retention by default.
+- Storage account name is deterministic: `stazc<8-hex-blake3(subscription_id|cluster_name|location)>` (13 chars, lowercase alphanumeric, well under the Azure 24-char limit). Override via `--storage-name`; validates against the Azure naming grammar (3-24 chars, lowercase ASCII letters + digits).
+- Storage Private Endpoint (PE) on by default — PE NIC lives in the cluster's compute subnet (`10.42.4.0/22`), Private DNS zone `privatelink.blob.core.windows.net` linked to the cluster VNet. When `--storage-hns` is set, a second PE + DNS zone is provisioned for the `dfs` sub-resource (ADLS Gen2 hierarchical operations). Disable via `--storage-public-access` to skip PE/DNS provisioning entirely (exposes the account to operator laptop).
+- `azcp` (https://github.com/edwardsp/azcp) installed on login + compute via cloud-init, version pinned by `--azcp-version` (default `v0.4.5`). Binary at `/usr/local/bin/azcp`; authenticates via IMDS using the cluster UAI (`AZURE_CLIENT_ID` set in `/etc/profile.d/azcluster-storage.sh`).
+- User-scoped storage path convention: `/data/users/<user>/` under the cluster blob container, mirrored by `/mnt/nvme/users/<user>/` on each compute node. Login + compute shells get env vars (`AZCLUSTER_STORAGE_URL`, `AZCLUSTER_USER_BLOB_URL`, `AZCLUSTER_USER_NVME`, `AZCLUSTER_SHARED_BLOB_URL`) via `/etc/profile.d/azcluster-storage.sh`. A common `/data/shared/` area is available by convention (Contributor RBAC is cluster-wide, not per-path).
+- Slurm prolog `/etc/slurm/prolog.d/10-azcluster-user-nvme.sh` (mode 0755, written by compute cloud-init) lazily creates `/mnt/nvme/users/${SLURM_JOB_USER}` with `${SLURM_JOB_UID}:${SLURM_JOB_GID} 0700` before any job step starts. Wired into scheduler `slurm.conf` via `Prolog=...` + `PrologFlags=Alloc,Contain`. Skips silently when `/mnt/nvme` doesn't exist (non-NVMe-RAID SKUs).
+- Example sbatch templates dropped in `/shared/examples/` when storage is enabled: `azcp-upload-user-data.sbatch` (single-node upload from `/shared/home/${USER}/` to user blob path), `azcp-build-and-publish-sqsh.sbatch` (build sqsh on compute, publish to user blob), `azcp-cluster-distribute-sqsh.sbatch` (multi-node `azcp-cluster` broadcast of a user sqsh to per-node NVMe via pyxis `--container-image=docker://ghcr.io/edwardsp/azcp/azcp-cluster:<azcp-version>`).
+- 7 new clap flags on `azcluster deploy`: `--storage` / `--no-storage`, `--storage-name`, `--storage-hns`, `--storage-public-access`, `--storage-sku`, `--storage-tier`, `--azcp-version`. All persist into `ClusterState` (Key Vault manifest) + `PendingDeploy` (resume marker). All have `#[serde(default)]` on the state fields so pre-v0.23 clusters deserialize cleanly.
+- The cluster UAI (`uai-<cluster>-scheduler`) is now attached to compute + login VMs/VMSS in addition to scheduler, so `azcp` on any node authenticates as the principal that holds Storage Blob Data Contributor. Pre-v0.23, compute + login only had the monitoring UAI (when monitoring was on) or no UAI at all.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.22.7` to `v0.23.0`.
+- `bicep/main.json` regenerated to reflect storage module, 4 new substitution placeholders threaded through compute/login/scheduler modules, and the dual-UAI attachment on compute + login.
+
 ## [0.22.7] - 2026-05-26
 
 ### Fixed
@@ -834,7 +869,9 @@ Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.22.5...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.1
+[0.23.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.0
 [0.22.5]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.5
 [0.22.4]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.4
 [0.22.3]: https://github.com/edwardsp/azcluster/releases/tag/v0.22.3

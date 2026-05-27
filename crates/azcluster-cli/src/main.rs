@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.22.7")]
+    #[arg(long, default_value = "v0.23.1")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -187,6 +187,30 @@ struct DeployArgs {
     /// VM SKU for the login VM (operator entry point). Default `Standard_D4as_v5`.
     #[arg(long, default_value = "Standard_D4as_v5")]
     login_sku: String,
+    /// Provision a per-cluster storage account with a single container `data` (default: on). Private Endpoint on by default; disable via --storage-public-access. Compute + login VMs authenticate via the cluster UAI through IMDS (Storage Blob Data Contributor).
+    #[arg(long, default_value_t = true, overrides_with = "no_storage", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    storage: bool,
+    /// Disable storage account provisioning (skips ~2 min provision time).
+    #[arg(long, default_value_t = false, overrides_with = "storage")]
+    no_storage: bool,
+    /// Override the auto-generated storage account name (3-24 lowercase alphanumeric, globally unique). Default is deterministic stazc<8-hex-blake3(sub|name|location)>.
+    #[arg(long)]
+    storage_name: Option<String>,
+    /// Enable Hierarchical Namespace (ADLS Gen2) on the storage account. Default off. When true, a `dfs` Private Endpoint sub-resource is also provisioned.
+    #[arg(long, default_value_t = false)]
+    storage_hns: bool,
+    /// Allow public network access on the storage account (skips Private Endpoint + Private DNS provisioning). Default off (PE-only).
+    #[arg(long, default_value_t = false)]
+    storage_public_access: bool,
+    /// Storage account SKU.
+    #[arg(long, default_value = "Standard_LRS", value_parser = ["Standard_LRS", "Standard_ZRS", "Standard_GRS", "Standard_RAGRS", "Premium_LRS"])]
+    storage_sku: String,
+    /// Storage account default access tier. Ignored for Premium SKUs.
+    #[arg(long, default_value = "Hot", value_parser = ["Hot", "Cool"])]
+    storage_tier: String,
+    /// azcp version to install on login + compute (https://github.com/edwardsp/azcp). Pinned per release; override for testing newer azcp builds.
+    #[arg(long, default_value = "v0.4.5")]
+    azcp_version: String,
 }
 
 #[derive(Args)]
@@ -391,6 +415,14 @@ mod tests {
             bastion_name: None,
             bastion_dns_name: None,
             bastion_resource_id: None,
+            storage_enabled: false,
+            storage_account_name: None,
+            storage_blob_endpoint: None,
+            storage_dfs_endpoint: None,
+            storage_data_container_url: None,
+            storage_hns: false,
+            storage_public_access: false,
+            azcp_version: None,
         }
     }
 
@@ -1053,6 +1085,25 @@ fn deploy(args: DeployArgs) -> Result<()> {
     );
     eprintln!("==> per-cluster Key Vault: {key_vault_name}");
 
+    let storage_enabled = args.storage && !args.no_storage;
+    let storage_account_name = if storage_enabled {
+        match args.storage_name.as_deref() {
+            Some(name) => {
+                crypto::validate_storage_account_name(name)?;
+                name.to_string()
+            }
+            None => crypto::derive_storage_account_name(&sub_id, &args.name, &args.location),
+        }
+    } else {
+        String::new()
+    };
+    if storage_enabled {
+        eprintln!(
+            "==> per-cluster storage account: {storage_account_name} (hns={}, public_access={})",
+            args.storage_hns, args.storage_public_access
+        );
+    }
+
     let allowed_cidrs_json: serde_json::Value = match args.allowed_ssh_cidrs.as_deref() {
         Some(csv) if !csv.is_empty() => serde_json::Value::Array(
             csv.split(',')
@@ -1191,6 +1242,13 @@ fn deploy(args: DeployArgs) -> Result<()> {
         ("schedulerSku", json!(args.scheduler_sku)),
         ("loginSku", json!(args.login_sku)),
         ("keyVaultName", json!(key_vault_name)),
+        ("enableStorage", json!(storage_enabled)),
+        ("storageAccountName", json!(storage_account_name)),
+        ("storageHns", json!(args.storage_hns)),
+        ("storagePublicAccess", json!(args.storage_public_access)),
+        ("storageSku", json!(args.storage_sku)),
+        ("storageAccessTier", json!(args.storage_tier)),
+        ("azcpVersion", json!(args.azcp_version)),
         ("deployerPrincipalId", json!(deployer_oid)),
         ("deployerPrincipalType", json!(deployer_ptype)),
     ];
@@ -1228,6 +1286,15 @@ fn deploy(args: DeployArgs) -> Result<()> {
         grafana_location: args.grafana_location.clone(),
         extra_packages: args.extra_packages.clone(),
         bastion_enabled: args.bastion,
+        storage_enabled,
+        storage_account_name: if storage_enabled {
+            Some(storage_account_name.clone())
+        } else {
+            None
+        },
+        storage_hns: args.storage_hns,
+        storage_public_access: args.storage_public_access,
+        azcp_version: Some(args.azcp_version.clone()),
     };
     let pending_path = pending.save()?;
     eprintln!("==> saved pending deploy -> {}", pending_path.display());
@@ -1352,6 +1419,17 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 bastion: pending.bastion_enabled,
                 scheduler_sku: String::new(),
                 login_sku: String::new(),
+                storage: pending.storage_enabled,
+                no_storage: !pending.storage_enabled,
+                storage_name: pending.storage_account_name.clone(),
+                storage_hns: pending.storage_hns,
+                storage_public_access: pending.storage_public_access,
+                storage_sku: "Standard_LRS".into(),
+                storage_tier: "Hot".into(),
+                azcp_version: pending
+                    .azcp_version
+                    .clone()
+                    .unwrap_or_else(|| "v0.4.5".into()),
             };
             finalize_deploy(
                 &synthetic_args,
@@ -1486,6 +1564,16 @@ fn finalize_deploy(
         bastion_name: pick("bastionName").filter(|s| !s.is_empty()),
         bastion_dns_name: pick("bastionDnsName").filter(|s| !s.is_empty()),
         bastion_resource_id: pick("bastionId").filter(|s| !s.is_empty()),
+        storage_enabled: pick("storageAccountName")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+        storage_account_name: pick("storageAccountName").filter(|s| !s.is_empty()),
+        storage_blob_endpoint: pick("storageBlobEndpoint").filter(|s| !s.is_empty()),
+        storage_dfs_endpoint: pick("storageDfsEndpoint").filter(|s| !s.is_empty()),
+        storage_data_container_url: pick("storageDataContainerUrl").filter(|s| !s.is_empty()),
+        storage_hns: args.storage_hns,
+        storage_public_access: args.storage_public_access,
+        azcp_version: Some(args.azcp_version.clone()),
     };
     let saved = state.save()?;
     eprintln!("==> saved cluster state -> {}", saved.display());
@@ -1628,7 +1716,7 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
         });
         let url = format!("{endpoint}/api/dashboards/db");
         let mut imported = false;
-        for attempt in 1..=10u32 {
+        for attempt in 1..=20u32 {
             let resp = http
                 .post(&url)
                 .bearer_auth(&token)
@@ -1646,7 +1734,7 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
                 || status.as_u16() == 403
                 || body_text.contains("NoRoleAssignedException")
                 || body_text.contains("Unauthorized");
-            if !propagating || attempt == 10 {
+            if !propagating || attempt == 20 {
                 eprintln!(
                     "    FAILED {slug} ({status}): {}",
                     body_text.lines().last().unwrap_or("")
@@ -1654,9 +1742,9 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
                 bail!("dashboard import {slug} failed after {attempt} attempt(s)");
             }
             eprintln!(
-                "    waiting for Grafana Admin propagation (attempt {attempt}/10, sleeping 30s)..."
+                "    waiting for Grafana Admin propagation (attempt {attempt}/20, sleeping 60s)..."
             );
-            std::thread::sleep(std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_secs(60));
         }
         if !imported {
             bail!("dashboard {slug} not imported");
@@ -2437,13 +2525,19 @@ fn shell_quote(s: &str) -> String {
 
 fn validate(args: ValidateArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
-    let host = state.login_public_ip.as_deref().ok_or_else(|| {
-        anyhow!(
-            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
-            args.name
-        )
-    })?;
-    let login_target = format!("{}@{}", state.admin_username, host);
+    let use_bastion = should_use_bastion(&state, false);
+    let login_target = if use_bastion {
+        format!("{}@127.0.0.1", state.admin_username)
+    } else {
+        let host = state.login_public_ip.as_deref().ok_or_else(|| {
+            anyhow!(
+                "cluster '{}' has no login public IP and bastion is not enabled. \
+                 Redeploy with --login-public-ip or --bastion.",
+                args.name
+            )
+        })?;
+        format!("{}@{}", state.admin_username, host)
+    };
 
     let part = args
         .partition
@@ -2523,6 +2617,14 @@ fn validate(args: ValidateArgs) -> Result<()> {
         cmd.args(["-A", "-o", "StrictHostKeyChecking=accept-new"]);
         let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
         cmd.args(["-i", &identity.display().to_string()]);
+        if use_bastion {
+            let exe = self_exe_path()?;
+            let proxy = format!(
+                "{} bastion-proxy --cluster {} --target login",
+                exe, args.name
+            );
+            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        }
         cmd.arg(&login_target).arg(remote);
         let st = cmd.status().context("spawn ssh validate")?;
         if !st.success() {

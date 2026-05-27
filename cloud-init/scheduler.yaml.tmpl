@@ -3,6 +3,10 @@ hostname: {{CLUSTER_NAME}}-scheduler
 manage_etc_hosts: true
 fqdn: {{CLUSTER_NAME}}-scheduler
 
+bootcmd:
+  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 package_update: true
 package_upgrade: false
 
@@ -200,6 +204,8 @@ write_files:
       HealthCheckProgram=/usr/local/sbin/azcluster-healthcheck
       HealthCheckInterval=300
       HealthCheckNodeState=ANY,CYCLE
+      Prolog=/etc/slurm/prolog.d/10-azcluster-user-nvme.sh
+      PrologFlags=Alloc,Contain
       JobAcctGatherType=jobacct_gather/cgroup
       JobAcctGatherFrequency=30
       {{PARTITIONS}}
@@ -457,6 +463,58 @@ write_files:
         --export=ALL,NCCL_DEBUG=INFO \
         bash -c 'set -euo pipefail; cd /; python /shared/dgxc/nccl_allreduce_smoke.py'
       EOF
+      if [ -n "{{STORAGE_ACCOUNT_NAME}}" ]; then
+        cat > "${EXAMPLES_DIR}/azcp-upload-user-data.sbatch" <<'EOF'
+      #!/bin/bash -l
+      #SBATCH --partition=cpu --nodes=1 --ntasks=1 --time=00:30:00
+      #SBATCH --output=/shared/home/%u/azcp-upload-%j.out
+      set -euo pipefail
+      azcp copy "/shared/home/${USER}/datasets/" \
+        "${AZCLUSTER_USER_BLOB_URL}/datasets/" --recursive \
+        --workers 4 --concurrency 32 --block-size 16777216
+      EOF
+        sed -i 's|^      ||' "${EXAMPLES_DIR}/azcp-upload-user-data.sbatch"
+
+        cat > "${EXAMPLES_DIR}/azcp-build-and-publish-sqsh.sbatch" <<'EOF'
+      #!/bin/bash -l
+      #SBATCH --partition=cpu --nodes=1 --ntasks=1 --time=03:00:00
+      #SBATCH --output=/shared/home/%u/build-sqsh-%j.out
+      set -euo pipefail
+      SQSH_NAME="${1:?usage: sbatch <script> <sqsh-name> <docker-url>}"
+      DOCKER_URL="${2:?usage: sbatch <script> <sqsh-name> <docker-url>}"
+      mkdir -p "${AZCLUSTER_USER_NVME}/sqsh"
+      time enroot import -o "${AZCLUSTER_USER_NVME}/sqsh/${SQSH_NAME}.sqsh" "docker://${DOCKER_URL}"
+      # Upload into a per-sqsh subdir so azcp-cluster (prefix-based) sees this
+      # as a single-file directory and bcasts cleanly.
+      azcp copy "${AZCLUSTER_USER_NVME}/sqsh/${SQSH_NAME}.sqsh" \
+        "${AZCLUSTER_USER_BLOB_URL}/sqsh/${SQSH_NAME}/${SQSH_NAME}.sqsh" --no-progress
+      EOF
+        sed -i 's|^      ||' "${EXAMPLES_DIR}/azcp-build-and-publish-sqsh.sbatch"
+
+        cat > "${EXAMPLES_DIR}/azcp-cluster-distribute-sqsh.sbatch" <<'EOF'
+      #!/bin/bash -l
+      #SBATCH --partition=gpu --nodes=2 --ntasks-per-node=1 --time=01:00:00
+      #SBATCH --output=/shared/home/%u/distribute-%j.out
+      set -euo pipefail
+      SQSH_NAME="${1:?usage: sbatch <script> <sqsh-name>}"
+      mkdir -p "${AZCLUSTER_USER_NVME}/sqsh"
+      # azcp-cluster treats source as a prefix; stage by uploading to a
+      # per-sqsh subdir then point the source at that subdir.
+      SRC="${AZCLUSTER_USER_BLOB_URL}/sqsh/${SQSH_NAME}/"
+      DST="${AZCLUSTER_USER_NVME}/sqsh/${SQSH_NAME}/"
+      mkdir -p "${DST}"
+      srun --mpi=pmix \
+        --container-image="docker://ghcr.io/edwardsp/azcp/azcp-cluster:{{AZCP_VERSION}}" \
+        --container-mounts=/dev/infiniband:/dev/infiniband,${AZCLUSTER_USER_NVME}:${AZCLUSTER_USER_NVME} \
+        --export=ALL,AZURE_CLIENT_ID,AZCLUSTER_USER_BLOB_URL,AZCLUSTER_USER_NVME \
+        azcp-cluster \
+          "${SRC}" "${DST}" \
+          --concurrency 32 --block-size 16777216 \
+          --bcast-chunk 67108864 --bcast-pipeline 4 \
+          --compare size --no-progress
+      EOF
+        sed -i 's|^      ||' "${EXAMPLES_DIR}/azcp-cluster-distribute-sqsh.sbatch"
+      fi
       chmod 0755 "${EXAMPLES_DIR}"
       chmod 0644 "${EXAMPLES_DIR}"/*.sbatch
       chown -R azureuser:azureuser "${EXAMPLES_DIR}"

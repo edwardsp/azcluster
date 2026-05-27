@@ -2,6 +2,10 @@
 hostname: {{CLUSTER_NAME}}-login
 manage_etc_hosts: true
 
+bootcmd:
+  - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+
 package_update: true
 package_upgrade: false
 
@@ -26,6 +30,9 @@ write_files:
       SHARED_EXPORT_PATH={{SHARED_EXPORT_PATH}}
       AMLFS_MOUNT_CMD={{AMLFS_MOUNT_CMD}}
       EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"
+      STORAGE_ACCOUNT_NAME={{STORAGE_ACCOUNT_NAME}}
+      STORAGE_DATA_CONTAINER_URL={{STORAGE_DATA_CONTAINER_URL}}
+      AZCP_VERSION={{AZCP_VERSION}}
   - path: /etc/profile.d/azcluster.sh
     permissions: '0644'
     content: |
@@ -235,6 +242,27 @@ write_files:
       fi
       systemctl enable --now sssd
       systemctl restart ssh
+
+      if [ -n "${AZCP_VERSION:-}" ]; then
+        AZCP_URL="https://github.com/edwardsp/azcp/releases/download/${AZCP_VERSION}/azcp-x86_64-unknown-linux-gnu.tar.gz"
+        curl -fsSL -o /tmp/azcp.tar.gz "${AZCP_URL}"
+        tar -xzf /tmp/azcp.tar.gz --strip-components=1 -C /usr/local/bin/ azcp-x86_64-unknown-linux-gnu/azcp
+        chmod 0755 /usr/local/bin/azcp
+        rm -f /tmp/azcp.tar.gz
+      fi
+
+      if [ -n "${STORAGE_ACCOUNT_NAME:-}" ]; then
+        cat > /etc/profile.d/azcluster-storage.sh <<'PROFILE_EOF'
+      export AZCLUSTER_STORAGE_ACCOUNT="{{STORAGE_ACCOUNT_NAME}}"
+      export AZCLUSTER_STORAGE_URL="{{STORAGE_DATA_CONTAINER_URL}}"
+      export AZCLUSTER_USER_BLOB_URL="${AZCLUSTER_STORAGE_URL}/users/${USER}"
+      export AZCLUSTER_USER_NVME="/mnt/nvme/users/${USER}"
+      export AZCLUSTER_SHARED_BLOB_URL="${AZCLUSTER_STORAGE_URL}/shared"
+      export AZURE_CLIENT_ID="{{UAI_CLIENT_ID}}"
+      PROFILE_EOF
+        sed -i 's|^      ||' /etc/profile.d/azcluster-storage.sh
+        chmod 0644 /etc/profile.d/azcluster-storage.sh
+      fi
 
       touch /var/log/azcluster/ready
 
