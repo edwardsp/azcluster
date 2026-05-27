@@ -3,7 +3,6 @@ param location string
 param vmSku string
 param ubuntuSku string
 param subnetId string
-@secure()
 param sshPublicKey string
 param adminUsername string
 param azclusterVersion string
@@ -33,7 +32,7 @@ param azcpVersion string = 'v0.4.5'
 param tags object
 
 var cloudInitTemplate = loadTextContent('../../cloud-init/scheduler.yaml.tmpl')
-var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
+var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(cloudInitTemplate,
     '{{AZCLUSTER_VERSION}}', azclusterVersion),
     '{{AZCLUSTER_REPO}}', azclusterRepo),
     '{{ADMIN_USER}}', adminUsername),
@@ -56,7 +55,8 @@ var cloudInit = replace(replace(replace(replace(replace(replace(replace(replace(
     '{{STORAGE_ACCOUNT_NAME}}', storageAccountName),
     '{{STORAGE_BLOB_ENDPOINT}}', storageBlobEndpoint),
     '{{STORAGE_DATA_CONTAINER_URL}}', storageDataContainerUrl),
-    '{{AZCP_VERSION}}', azcpVersion)
+    '{{AZCP_VERSION}}', azcpVersion),
+    '{{ADMIN_SSH_PUBLIC_KEY}}', sshPublicKey)
 
 var userIdentities = empty(monUaiId) ? {
   '${userAssignedIdentityId}': {}

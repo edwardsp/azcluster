@@ -37,6 +37,7 @@ write_files:
       ACCT_MYSQL_DB={{ACCT_MYSQL_DB}}
       LDAP_BASE_DN=dc=azcluster,dc=local
       EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"
+      ADMIN_SSH_PUBLIC_KEY="{{ADMIN_SSH_PUBLIC_KEY}}"
   - path: /etc/azcluster/accounting.password
     permissions: '0600'
     owner: 'root:root'
@@ -77,11 +78,49 @@ write_files:
       cn: azusers
       gidNumber: 20000
 
+      dn: cn=cluster-admins,ou=groups,__BASE_DN__
+      objectClass: posixGroup
+      cn: cluster-admins
+      gidNumber: 20100
+
       dn: cn=uidNext,__BASE_DN__
       objectClass: device
       objectClass: extensibleObject
       cn: uidNext
+      uidNumber: 20003
+
+      dn: uid=clusteradmin,ou=people,__BASE_DN__
+      objectClass: inetOrgPerson
+      objectClass: posixAccount
+      objectClass: shadowAccount
+      objectClass: ldapPublicKey
+      cn: clusteradmin
+      sn: clusteradmin
+      uid: clusteradmin
       uidNumber: 20001
+      gidNumber: 20100
+      homeDirectory: /shared/home/clusteradmin
+      loginShell: /bin/bash
+      sshPublicKey: __ADMIN_SSH_PUBLIC_KEY__
+
+      dn: cn=cluster-admins,ou=groups,__BASE_DN__
+      changetype: modify
+      add: memberUid
+      memberUid: clusteradmin
+
+      dn: uid=clusteruser,ou=people,__BASE_DN__
+      objectClass: inetOrgPerson
+      objectClass: posixAccount
+      objectClass: shadowAccount
+      objectClass: ldapPublicKey
+      cn: clusteruser
+      sn: clusteruser
+      uid: clusteruser
+      uidNumber: 20002
+      gidNumber: 20000
+      homeDirectory: /shared/home/clusteruser
+      loginShell: /bin/bash
+      sshPublicKey: __ADMIN_SSH_PUBLIC_KEY__
   - path: /etc/systemd/system/azcluster-server.service
     permissions: '0644'
     content: |
@@ -664,7 +703,9 @@ write_files:
       fi
 
       BASE_LDIF=/etc/azcluster/ldap-base.ldif
-      sed 's|__BASE_DN__|dc=azcluster,dc=local|g' /etc/azcluster/ldap-base.ldif.tmpl > ${BASE_LDIF}
+      sed -e 's|__BASE_DN__|dc=azcluster,dc=local|g' \
+          -e "s|__ADMIN_SSH_PUBLIC_KEY__|${ADMIN_SSH_PUBLIC_KEY}|g" \
+          /etc/azcluster/ldap-base.ldif.tmpl > ${BASE_LDIF}
       set +e
       ldapadd -x -D "cn=admin,dc=azcluster,dc=local" -w "${LDAP_ADMIN_PW}" -H ldap://127.0.0.1 -c -f ${BASE_LDIF}
       rc=$?

@@ -243,6 +243,12 @@ write_files:
       systemctl enable --now sssd
       systemctl restart ssh
 
+      cat > /etc/sudoers.d/cluster-admins <<'SUDOERS'
+      %cluster-admins ALL=(ALL) NOPASSWD: ALL
+      SUDOERS
+      chmod 0440 /etc/sudoers.d/cluster-admins
+      visudo -cf /etc/sudoers.d/cluster-admins
+
       if [ -n "${AZCP_VERSION:-}" ]; then
         AZCP_URL="https://github.com/edwardsp/azcp/releases/download/${AZCP_VERSION}/azcp-x86_64-unknown-linux-gnu.tar.gz"
         curl -fsSL -o /tmp/azcp.tar.gz "${AZCP_URL}"

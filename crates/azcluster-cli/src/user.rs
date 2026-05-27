@@ -70,6 +70,20 @@ pub fn render_uid_bump_ldif(current_uid: u32) -> String {
     )
 }
 
+pub fn render_admin_grant_ldif(username: &str) -> String {
+    format!(
+        "dn: cn=cluster-admins,ou=groups,{}\nchangetype: modify\nadd: memberUid\nmemberUid: {}\n",
+        BASE_DN, username
+    )
+}
+
+pub fn render_admin_revoke_ldif(username: &str) -> String {
+    format!(
+        "dn: cn=cluster-admins,ou=groups,{}\nchangetype: modify\ndelete: memberUid\nmemberUid: {}\n",
+        BASE_DN, username
+    )
+}
+
 pub fn validate_username(name: &str) -> Result<()> {
     if name.is_empty() || name.len() > 32 {
         return Err(anyhow!("username must be 1-32 chars"));
@@ -359,6 +373,15 @@ fn build_ldap_write_cmd(password: &str, ldif: &str, tool: &str, extra_args: &str
     )
 }
 
+fn build_admin_set_cmd(password: &str, username: &str, grant: bool) -> String {
+    let ldif = if grant {
+        render_admin_grant_ldif(username)
+    } else {
+        render_admin_revoke_ldif(username)
+    };
+    build_ldap_write_cmd(password, &ldif, "ldapmodify", "-c")
+}
+
 fn build_ldap_search_cmd(
     password: &str,
     base: &str,
@@ -404,6 +427,7 @@ fn fetch_next_uid(state: &ClusterState, password: &str) -> Result<u32> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn user_add(
     state: &ClusterState,
     username: &str,
@@ -412,6 +436,8 @@ pub fn user_add(
     gecos: &str,
     shell: &str,
     ssh_key_files: &[std::path::PathBuf],
+    admin: bool,
+    generate_keypair: bool,
 ) -> Result<()> {
     validate_username(username)?;
     let password = read_ldap_password(&state.name)?;
@@ -426,6 +452,38 @@ pub fn user_add(
             }
         }
     }
+
+    if generate_keypair {
+        let comment = format!("azcluster-{}-{}", state.name, username);
+        let kp = crate::crypto::generate_admin_keypair(&comment)
+            .with_context(|| format!("generate ssh keypair for user '{}'", username))?;
+        let key_dir = dirs::home_dir()
+            .ok_or_else(|| anyhow!("could not determine HOME"))?
+            .join(".azcluster")
+            .join("keys");
+        std::fs::create_dir_all(&key_dir)
+            .with_context(|| format!("mkdir {}", key_dir.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_dir, std::fs::Permissions::from_mode(0o700)).ok();
+        }
+        let priv_path = key_dir.join(format!("{}-{}", state.name, username));
+        std::fs::write(&priv_path, &kp.private_openssh_pem)
+            .with_context(|| format!("write {}", priv_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&priv_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", priv_path.display()))?;
+        }
+        eprintln!(
+            "==> generated user keypair -> {} (private, 0600)",
+            priv_path.display()
+        );
+        keys.push(kp.public_openssh.trim().to_string());
+    }
+
     let uid = match explicit_uid {
         Some(u) => u,
         None => fetch_next_uid(state, &password)?,
@@ -447,10 +505,35 @@ pub fn user_add(
     let cmd = build_ldap_write_cmd(&password, &ldif, "ldapadd", "-c");
     ssh_run(state, &cmd)?;
     eprintln!("==> added user '{}' (uid={}, gid={})", username, uid, gid);
+
+    if admin {
+        let cmd = build_admin_set_cmd(&password, username, true);
+        ssh_run(state, &cmd).context("add user to cluster-admins group")?;
+        eprintln!(
+            "==> granted admin privileges (member of cn=cluster-admins) to '{}'",
+            username
+        );
+    }
+
     flush_login_sssd_cache(state, username);
     if state.accounting_enabled {
         register_slurm_account(state, username);
     }
+    Ok(())
+}
+
+pub fn user_setadmin(state: &ClusterState, username: &str, grant: bool) -> Result<()> {
+    validate_username(username)?;
+    let password = read_ldap_password(&state.name)?;
+    let cmd = build_admin_set_cmd(&password, username, grant);
+    ssh_run(state, &cmd).context("modify cn=cluster-admins membership")?;
+    eprintln!(
+        "==> {} '{}' {} cn=cluster-admins",
+        if grant { "added" } else { "removed" },
+        username,
+        if grant { "to" } else { "from" },
+    );
+    flush_login_sssd_cache(state, username);
     Ok(())
 }
 
@@ -523,46 +606,6 @@ fn parse_ldif_user_rows(ldif: &str) -> Vec<LdapUserRow> {
     rows
 }
 
-fn render_user_table(rows: &[LdapUserRow]) -> String {
-    let headers = ["USERNAME", "UID", "GID", "SHELL", "GECOS"];
-    let mut widths = headers.map(|h| h.len());
-    for r in rows {
-        for (i, v) in [&r.uid, &r.uid_number, &r.gid_number, &r.shell, &r.gecos]
-            .iter()
-            .enumerate()
-        {
-            widths[i] = widths[i].max(v.len());
-        }
-    }
-    let mut out = String::new();
-    for (i, h) in headers.iter().enumerate() {
-        if i > 0 {
-            out.push_str("  ");
-        }
-        if i == headers.len() - 1 {
-            out.push_str(h);
-        } else {
-            out.push_str(&format!("{:<width$}", h, width = widths[i]));
-        }
-    }
-    out.push('\n');
-    for r in rows {
-        let cells = [&r.uid, &r.uid_number, &r.gid_number, &r.shell, &r.gecos];
-        for (i, v) in cells.iter().enumerate() {
-            if i > 0 {
-                out.push_str("  ");
-            }
-            if i == cells.len() - 1 {
-                out.push_str(v);
-            } else {
-                out.push_str(&format!("{:<width$}", v, width = widths[i]));
-            }
-        }
-        out.push('\n');
-    }
-    out
-}
-
 pub fn user_list(state: &ClusterState) -> Result<()> {
     let password = read_ldap_password(&state.name)?;
     let cmd = build_ldap_search_cmd(
@@ -578,8 +621,38 @@ pub fn user_list(state: &ClusterState) -> Result<()> {
         eprintln!("(no users)");
         return Ok(());
     }
-    print!("{}", render_user_table(&rows));
+    let admins_cmd = build_ldap_search_cmd(
+        &password,
+        &format!("cn=cluster-admins,ou=groups,{}", BASE_DN),
+        "base",
+        "(objectClass=posixGroup)",
+        "memberUid",
+    );
+    let admins_out = ssh_run(state, &admins_cmd).unwrap_or_default();
+    let admins: std::collections::BTreeSet<String> = admins_out
+        .lines()
+        .filter_map(|l| l.strip_prefix("memberUid: ").map(|s| s.trim().to_string()))
+        .collect();
+    print!("{}", render_user_table_with_admin(&rows, &admins));
     Ok(())
+}
+
+fn render_user_table_with_admin(
+    rows: &[LdapUserRow],
+    admins: &std::collections::BTreeSet<String>,
+) -> String {
+    let mut s = format!(
+        "{:<24} {:>8} {:>8} {:<6} {:<24} {}\n",
+        "USERNAME", "UID", "GID", "ADMIN", "SHELL", "GECOS"
+    );
+    for r in rows {
+        let admin = if admins.contains(&r.uid) { "yes" } else { "" };
+        s.push_str(&format!(
+            "{:<24} {:>8} {:>8} {:<6} {:<24} {}\n",
+            r.uid, r.uid_number, r.gid_number, admin, r.shell, r.gecos
+        ));
+    }
+    s
 }
 
 pub fn sshkey_add(state: &ClusterState, username: &str, key_file: &std::path::Path) -> Result<()> {
@@ -903,12 +976,14 @@ gecos: Alice A
                 gecos: "Bob".into(),
             },
         ];
-        let table = render_user_table(&rows);
+        let admins = std::collections::BTreeSet::new();
+        let table = render_user_table_with_admin(&rows, &admins);
         let lines: Vec<&str> = table.lines().collect();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with("USERNAME"));
         assert!(lines[0].contains("UID"));
         assert!(lines[0].contains("GID"));
+        assert!(lines[0].contains("ADMIN"));
         assert!(lines[0].contains("SHELL"));
         assert!(lines[0].contains("GECOS"));
         let user_col = lines[1].split_whitespace().next().unwrap();

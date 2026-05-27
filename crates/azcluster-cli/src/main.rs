@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.23.2")]
+    #[arg(long, default_value = "v0.24.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -711,7 +711,7 @@ struct UserArgs {
 
 #[derive(Subcommand)]
 enum UserCmd {
-    /// Add a POSIX user to the cluster directory (LDAP).
+    /// Add a POSIX user to the cluster directory (LDAP). Auto-generates a per-user SSH keypair stored at ~/.azcluster/keys/<cluster>-<username> on this machine; public key is added to the user's LDAP sshPublicKey (alongside any --ssh-key files). Private key is NEVER copied to Key Vault — only the operator who runs `user add` gets it on their laptop.
     Add {
         cluster: String,
         #[arg(long)]
@@ -724,9 +724,15 @@ enum UserCmd {
         gecos: String,
         #[arg(long, default_value = "/bin/bash")]
         shell: String,
-        /// SSH public key files (repeatable). One key per file (extra lines after the first are ignored).
+        /// SSH public key files (repeatable). One key per file. Added to the user's LDAP sshPublicKey alongside the auto-generated keypair.
         #[arg(long = "ssh-key")]
         ssh_keys: Vec<PathBuf>,
+        /// Grant LDAP admin privileges (member of `cn=cluster-admins`, gets sudo via /etc/sudoers.d/cluster-admins).
+        #[arg(long)]
+        admin: bool,
+        /// Skip generating a per-user keypair on this machine. Use only when --ssh-key supplies all needed keys.
+        #[arg(long)]
+        no_generate_keypair: bool,
     },
     /// Remove a user.
     Remove {
@@ -734,8 +740,20 @@ enum UserCmd {
         #[arg(long)]
         username: String,
     },
-    /// List users.
+    /// List users (shows admin status from cluster-admins LDAP group).
     List { cluster: String },
+    /// Promote an LDAP user to admin (add to cluster-admins).
+    Setadmin {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+    },
+    /// Demote an LDAP user from admin (remove from cluster-admins).
+    Unsetadmin {
+        cluster: String,
+        #[arg(long)]
+        username: String,
+    },
     /// Manage authorized SSH keys for a user.
     Sshkey {
         #[command(subcommand)]
@@ -2965,9 +2983,21 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
             gecos,
             shell,
             ssh_keys,
+            admin,
+            no_generate_keypair,
         } => {
             let state = resolve_cluster(&cluster)?;
-            user::user_add(&state, &username, uid, gid, &gecos, &shell, &ssh_keys)
+            user::user_add(
+                &state,
+                &username,
+                uid,
+                gid,
+                &gecos,
+                &shell,
+                &ssh_keys,
+                admin,
+                !no_generate_keypair,
+            )
         }
         UserCmd::Remove { cluster, username } => {
             let state = resolve_cluster(&cluster)?;
@@ -2976,6 +3006,14 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
         UserCmd::List { cluster } => {
             let state = resolve_cluster(&cluster)?;
             user::user_list(&state)
+        }
+        UserCmd::Setadmin { cluster, username } => {
+            let state = resolve_cluster(&cluster)?;
+            user::user_setadmin(&state, &username, true)
+        }
+        UserCmd::Unsetadmin { cluster, username } => {
+            let state = resolve_cluster(&cluster)?;
+            user::user_setadmin(&state, &username, false)
         }
         UserCmd::Sshkey { cmd } => match cmd {
             SshkeyCmd::Add {

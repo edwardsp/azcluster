@@ -5,6 +5,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-05-27
+
+### Added
+- **Default LDAP users**: every fresh deploy now provisions two LDAP users in addition to the local `azureuser` admin foothold:
+  - `clusteradmin` (uid 20001, primary group `cluster-admins` gid 20100, sudo via `/etc/sudoers.d/cluster-admins`)
+  - `clusteruser` (uid 20002, primary group `azusers` gid 20000)
+
+  Both have `sshPublicKey` seeded to the v0.22 admin pubkey, so the deployer's `~/.azcluster/keys/<cluster>` private key authenticates them out of the box: `azcluster ssh <cluster> --user clusteradmin` works immediately. `pam_mkhomedir` creates `/shared/home/clusteradmin` and `/shared/home/clusteruser` on first login.
+
+- **LDAP admin role + sudo**: new `cn=cluster-admins,ou=groups` LDAP group. Members get sudo via `/etc/sudoers.d/cluster-admins` (`%cluster-admins ALL=(ALL) NOPASSWD: ALL`) on login + compute. `clusteradmin` is in this group by default; promote/demote other users via `azcluster user setadmin` / `unsetadmin`.
+
+- **`azcluster user add --admin`** flag: provisions the user AND adds them to `cn=cluster-admins` in one call. Equivalent to `add` followed by `setadmin`.
+
+- **Per-user auto-generated keypairs**: `azcluster user add` now generates a fresh ed25519 keypair on the operator's laptop. Public key goes into the user's LDAP `sshPublicKey` (alongside any `--ssh-key` files), private key is written to `~/.azcluster/keys/<cluster>-<username>` (mode 0600). The private key is **never** uploaded to Key Vault — only on the operator's laptop. `azcluster ssh --user <name>` from that laptop now Just Works without `--identity`. Use `--no-generate-keypair` to skip if you supplied all keys via `--ssh-key`.
+
+- **`azcluster user list`** now shows admin status (per `cn=cluster-admins` membership).
+
+- **`azcluster user setadmin` / `unsetadmin`**: promote or demote an existing LDAP user.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.23.2` to `v0.24.0`.
+- `sshPublicKey` Bicep param on scheduler module is no longer `@secure()` (it's a public key — needed for ldap-base.ldif `__ADMIN_SSH_PUBLIC_KEY__` substitution). No security impact; pubkey is on every VM `osProfile`.
+- `bicep/main.json` regenerated.
+
 ## [0.23.2] - 2026-05-27
 
 ### Fixed
@@ -883,7 +907,8 @@ Identical content to v0.22.1; v0.22.1 tag did not trigger GitHub Actions (delete
 - CI (`ci.yml`) + Release (`release.yml`) workflows; binaries published to GitHub Releases.
 - `Vec<NodePool>` core data model in `azcluster-core` (no autoscaling).
 
-[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.23.2...HEAD
+[Unreleased]: https://github.com/edwardsp/azcluster/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.24.0
 [0.23.2]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.2
 [0.23.1]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.1
 [0.23.0]: https://github.com/edwardsp/azcluster/releases/tag/v0.23.0
