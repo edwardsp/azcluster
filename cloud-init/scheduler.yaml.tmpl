@@ -744,6 +744,22 @@ write_files:
       systemctl enable --now sssd
       systemctl restart slurmctld
 
+      if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
+        # v0.24.1: register clusteradmin + clusteruser with slurmdbd so
+        # AccountingStorageEnforce=associations,limits,qos accepts their job
+        # submissions. The base LDIF created these LDAP users; this loop adds
+        # the matching sacctmgr accounts + per-partition associations.
+        sleep 5
+        for u in clusteradmin clusteruser; do
+          sacctmgr -i add account "$u" Description="azcluster default user $u" Organization=azcluster >/dev/null 2>&1 || true
+          sacctmgr -i add user "$u" DefaultAccount="$u" >/dev/null 2>&1 || true
+          for p in $(sinfo -h -o '%R' 2>/dev/null | sort -u); do
+            sacctmgr -i add user "$u" Account="$u" Partition="$p" >/dev/null 2>&1 || true
+          done
+        done
+        systemctl restart slurmctld
+      fi
+
       chmod 0755 /shared
       install -d -m 0755 -o root -g root /shared/home
 

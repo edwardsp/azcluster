@@ -112,8 +112,9 @@ fn dedup_ops_by_target(ops: Vec<Value>) -> Vec<Value> {
 pub struct ArmClient {
     client: reqwest::blocking::Client,
     subscription_id: String,
-    access_token: String,
+    access_token: std::sync::RwLock<String>,
     api_versions: ApiVersions,
+    refresh_token_fn: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
 }
 
 impl ArmClient {
@@ -127,9 +128,43 @@ impl ArmClient {
         Ok(Self {
             client,
             subscription_id,
-            access_token,
+            access_token: std::sync::RwLock::new(access_token),
             api_versions: ApiVersions::default(),
+            refresh_token_fn: None,
         })
+    }
+
+    /// Install a token-refresh callback used transparently when the cached
+    /// token returns `401 ExpiredAuthenticationToken`. Long-running poll loops
+    /// (deployment completion, async LROs) need this because the OAuth2
+    /// access token typically lives ~75 min while real Azure deployments
+    /// can run longer.
+    pub fn with_refresh_callback<F>(mut self, f: F) -> Self
+    where
+        F: Fn() -> Result<String> + Send + Sync + 'static,
+    {
+        self.refresh_token_fn = Some(Box::new(f));
+        self
+    }
+
+    fn access_token(&self) -> String {
+        self.access_token.read().unwrap().clone()
+    }
+
+    fn try_refresh_token(&self) -> Result<bool> {
+        let Some(refresh_fn) = self.refresh_token_fn.as_ref() else {
+            return Ok(false);
+        };
+        let new_token = refresh_fn().context("token refresh failed")?;
+        *self.access_token.write().unwrap() = new_token;
+        Ok(true)
+    }
+
+    fn is_expired_token_error(status: reqwest::StatusCode, body: &str) -> bool {
+        status.as_u16() == 401
+            && (body.contains("ExpiredAuthenticationToken")
+                || body.contains("ExpiredToken")
+                || body.contains("InvalidAuthenticationToken"))
     }
 
     /// Get the subscription ID.
@@ -143,22 +178,31 @@ impl ArmClient {
         self
     }
 
-    /// Make a GET request to the ARM API.
+    /// Make a GET request to the ARM API. On 401 ExpiredAuthenticationToken,
+    /// transparently refresh the OAuth2 token (if a callback was installed) and
+    /// retry once. Long deploy polls (>75 min) outlive the token TTL otherwise.
     fn get(&self, url: &str) -> Result<Value> {
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.access_token)
-            .send()
-            .context("Failed to send GET request")?;
-
-        if !response.status().is_success() {
+        for attempt in 0..=1 {
+            let response = self
+                .client
+                .get(url)
+                .bearer_auth(self.access_token())
+                .send()
+                .context("Failed to send GET request")?;
             let status = response.status();
+            if status.is_success() {
+                return response.json().context("Failed to parse ARM response");
+            }
             let body = response.text().unwrap_or_default();
+            if attempt == 0
+                && Self::is_expired_token_error(status, &body)
+                && self.try_refresh_token()?
+            {
+                continue;
+            }
             bail!("ARM GET failed ({status}): {body}");
         }
-
-        response.json().context("Failed to parse ARM response")
+        unreachable!()
     }
 
     /// Make a PUT request to the ARM API.
@@ -166,7 +210,7 @@ impl ArmClient {
         let response = self
             .client
             .put(url)
-            .bearer_auth(&self.access_token)
+            .bearer_auth(self.access_token())
             .json(&body)
             .send()
             .context("Failed to send PUT request")?;
@@ -182,7 +226,7 @@ impl ArmClient {
 
     /// Make a POST request to the ARM API.
     fn post(&self, url: &str, body: Option<Value>) -> Result<Value> {
-        let mut req = self.client.post(url).bearer_auth(&self.access_token);
+        let mut req = self.client.post(url).bearer_auth(self.access_token());
 
         if let Some(b) = body {
             req = req.json(&b);
@@ -204,7 +248,7 @@ impl ArmClient {
         let response = self
             .client
             .delete(url)
-            .bearer_auth(&self.access_token)
+            .bearer_auth(self.access_token())
             .send()
             .context("Failed to send DELETE request")?;
 
@@ -221,7 +265,7 @@ impl ArmClient {
         let response = self
             .client
             .patch(url)
-            .bearer_auth(&self.access_token)
+            .bearer_auth(self.access_token())
             .json(&body)
             .send()
             .context("Failed to send PATCH request")?;
@@ -259,7 +303,7 @@ impl ArmClient {
             let response = self
                 .client
                 .get(async_url)
-                .bearer_auth(&self.access_token)
+                .bearer_auth(self.access_token())
                 .send()
                 .context("Failed to poll async operation")?;
             let http_status = response.status();
@@ -450,7 +494,7 @@ impl ArmClient {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(&self.access_token)
+            .bearer_auth(self.access_token())
             .json(&body)
             .send()
             .context("Failed to send whatIf POST")?;
@@ -475,7 +519,7 @@ impl ArmClient {
             let r = self
                 .client
                 .get(&location_url)
-                .bearer_auth(&self.access_token)
+                .bearer_auth(self.access_token())
                 .send()
                 .context("poll whatIf")?;
             let st = r.status();
@@ -729,7 +773,7 @@ impl ArmClient {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(&self.access_token)
+            .bearer_auth(self.access_token())
             .header(reqwest::header::CONTENT_LENGTH, "0")
             .send()
             .context("Failed to send Key Vault purge POST")?;

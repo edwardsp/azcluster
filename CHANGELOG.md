@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-05-27
+
+### Fixed
+- **N-12** scheduler bootstrap now provisions sacctmgr account + per-partition associations for default LDAP users (`clusteradmin`, `clusteruser`) so `sbatch` works out-of-box without the operator manually running `azcluster user add`.
+- **N-13** `ArmClient` now transparently refreshes the OAuth2 access token on HTTP 401 `ExpiredAuthenticationToken`/`InvalidAuthenticationToken` and retries the GET once. Long-poll loops (deployment completion, async LRO) no longer fail after the ~60 min token lifetime; previously `azcluster deploy` aborted mid-poll with a 401 even though the deployment itself was still progressing. Implementation: `ArmClient.access_token: RwLock<String>` + `with_refresh_callback(get_access_token)` injected in `arm_client()` factory.
+- **N-14** Grafana dashboard import status line: detects non-TTY stderr (e.g. when CLI output is piped to `tee` or redirected to a log file) and emits one full status line every 5 minutes instead of carriage-return-refreshing every 30s. Interactive TTY behaviour unchanged.
+- **N-16** dcgm-exporter on compute nodes now ships a custom `/etc/dcgm-exporter/counters.csv` (bind-mounted into the enroot container) that adds DCGM profile-mode metrics: `DCGM_FI_PROF_GR_ENGINE_ACTIVE`, `SM_ACTIVE`, `SM_OCCUPANCY`, `PIPE_TENSOR_ACTIVE`, `DRAM_ACTIVE`, `PIPE_FP64/FP32/FP16_ACTIVE`, `PCIE_TX/RX_BYTES`, `NVLINK_TX/RX_BYTES`. Enables tensor-core utilization charts in Grafana without rebuilding the container image.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.0` to `v0.24.1`.
+
 ## [0.24.0] - 2026-05-27
 
 ### Added
