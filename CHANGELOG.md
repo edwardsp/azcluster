@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.4] - 2026-05-28
+
+### Added
+- **GPU + InfiniBand Grafana dashboard expanded** with 8 new panels for the v0.24.2 DCGM fields: GPU die temp vs `DCGM_FI_DEV_GPU_MAX_OP_TEMP` (in-band "tlimit", 87°C on H100), HBM3 memory temp, `DCGM_FI_PROF_SM_ACTIVE`, `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE`, throttle violation rate (thermal + power), clock throttle reasons (decoded bitmask), NVLink errors (CRC_FLIT + CRC_DATA + REPLAY + RECOVERY), and ECC errors (SBE/DBE × volatile/aggregate). Total panels: 16 (was 8).
+
+### Changed
+- **Grafana dashboards land in `azcluster` folder, not at root** (N-20). The CLI's dashboard-import path now creates a folder titled "azcluster" with UID `azc-azcluster` (idempotent — `409 Conflict` and `412 Precondition Failed` are treated as success), then sets `folderUid: "azc-azcluster"` on every dashboard import payload. Drops the prior `folderId: 0` (which dumped them at root). Pre-v0.24.4 deploys can retire the orphan top-level dashboards manually via Grafana UI; new deploys land cleanly.
+- **All dashboards now filter by `nodename`, not `instance`** (N-25). Grafana template variables and panel exprs across `gpu_ib.json` and `node.json` switched from `instance=~"$instance"` to `nodename=~"$nodename"`. Reason: every compute node scrapes its own colocated prometheus at `127.0.0.1:9100`, so `instance` is identically `127.0.0.1:9100` across the fleet — useless for disambiguation. `nodename` is set via Prometheus `external_labels.nodename = $(hostname)` in `cloud-init/{login,compute}.yaml.tmpl` and carries the real VMSS instance hostname into AMW. `node.json` IB panels were live-broken (showing "No data") because of this; now fixed.
+- **Dashboard import retry is now unbounded** (N-19). Previous 60-min cap caused `azcluster deploy` on fresh AMG instances to give up before the Grafana Admin role assignment had propagated to the Grafana data plane (Azure-side eventual consistency, observed taking >60 min in some regions). Rationale: the cluster is fully usable while waiting, dashboards are cosmetic, and there is no scenario where giving up early is the correct behavior. Loop continues with 30 s polls + non-TTY 5-min status emission. Only bails on non-retryable HTTP errors (non-401/403 + non-`NoRoleAssignedException`) or operator interrupt.
+- `--azcluster-version` CLI default bumped from `v0.24.3` to `v0.24.4`.
+
 ## [0.24.3] - 2026-05-27
 
 ### Fixed

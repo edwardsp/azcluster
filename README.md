@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.24.3)**: patch — fixes `azcluster ssh|exec|scp --host <compute>` under `--bastion`. The two stacked `-o ProxyCommand=` calls collapsed to one (last-wins) and the connection landed on the login VM instead of the requested compute hostname. Fixed by building one composite ProxyCommand. Live-validated end-to-end on `v24walk2`.
+> **Status (v0.24.4)**: patch — Grafana dashboard hygiene. Dashboards now land in an `azcluster` folder (was: root). All dashboard queries filter by `nodename` (was: `instance`, which was identical across the fleet — `node.json` IB panels were live-broken and gpu_ib was indistinguishable across nodes). GPU+IB dashboard gained 8 new panels for v0.24.2's DCGM fields: tlimit / HBM3 temp / SM_ACTIVE / PIPE_TENSOR_ACTIVE / throttle violations / throttle reasons / NVLink errors / ECC. Dashboard-import retry no longer caps at 60 min — RBAC propagation can take longer in some Azure regions and giving up early created a bad UX.
+
+> **Previous status (v0.24.3)**: patch — fixes `azcluster ssh|exec|scp --host <compute>` under `--bastion`. The two stacked `-o ProxyCommand=` calls collapsed to one (last-wins) and the connection landed on the login VM instead of the requested compute hostname. Fixed by building one composite ProxyCommand. Live-validated end-to-end on `v24walk2`.
 
 > **Previous status (v0.24.2)**: patch — DCGM metrics expansion + `/shared` permission fix from v24walk2 live-validation. The counters CSV now includes thermal limits (`DCGM_FI_DEV_GPU_MAX_OP_TEMP` = 87°C "tlimit" on H100), ECC quartet (volatile + aggregate, single+double-bit), HBM3 row remap (retired pages + remap failure), and aggregate NVLink error counters (CRC FLIT/DATA, replay, recovery). `/shared` now mounts `chmod 1777` (sticky world-write) — fixes the regression where LDAP users couldn't `mkdir /shared/dgxc` to run the example DGXC sbatches.
 
@@ -175,7 +177,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.24.3
+VERSION=v0.24.4
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
