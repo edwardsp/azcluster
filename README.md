@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.24.5)**: patch — healthcheck false-positives + `azcp-cluster` example sbatch defaults + `deploy --skip-arm`. azhealthcheck `gpu_xid` and `kmsg` now use `journalctl --dmesg` (was: raw `dmesg`, which EPERMs for non-root and false-warned the dashboard). `network` check tolerates the single boot-time eth0 carrier flap that Azure accelerated networking always shows. Example `azcp-cluster-distribute-sqsh.sbatch` now bakes in the upstream H100 tuning recipe (NUMA-0 pin, single-rail UCX, `--bcast-pipeline 128 --bcast-writers 8`); drops the now-redundant `/dev/infiniband` bind-mount. New `azcluster deploy --skip-arm` short-circuits the ARM submission and only re-runs post-deploy hooks (Grafana dashboard import, timings JSON) — use when RBAC has propagated and you just want dashboards to retry, without re-validating ARM.
+> **Status (v0.24.6)**: patch — KV-public-network-disabled UX. `is_rbac_propagation_error` no longer treats `ForbiddenByConnection` as a transient RBAC issue (cuts a spurious 5-min retry loop). `fetch_admin_private_key()` falls back to the local `<name>-secrets.toml` (written by deploy before any KV upload) so SSH-using commands work even when the KV upload itself failed.
+
+> **Previous status (v0.24.5)**: patch — healthcheck false-positives + `azcp-cluster` example sbatch defaults + `deploy --skip-arm`. azhealthcheck `gpu_xid` and `kmsg` now use `journalctl --dmesg` (was: raw `dmesg`, which EPERMs for non-root and false-warned the dashboard). `network` check tolerates the single boot-time eth0 carrier flap that Azure accelerated networking always shows. Example `azcp-cluster-distribute-sqsh.sbatch` now bakes in the upstream H100 tuning recipe (NUMA-0 pin, single-rail UCX, `--bcast-pipeline 128 --bcast-writers 8`); drops the now-redundant `/dev/infiniband` bind-mount. New `azcluster deploy --skip-arm` short-circuits the ARM submission and only re-runs post-deploy hooks (Grafana dashboard import, timings JSON) — use when RBAC has propagated and you just want dashboards to retry, without re-validating ARM.
 
 > **Previous status (v0.24.4)**: patch — Grafana dashboard hygiene. Dashboards now land in an `azcluster` folder (was: root). All dashboard queries filter by `nodename` (was: `instance`, which was identical across the fleet — `node.json` IB panels were live-broken and gpu_ib was indistinguishable across nodes). GPU+IB dashboard gained 8 new panels for v0.24.2's DCGM fields: tlimit / HBM3 temp / SM_ACTIVE / PIPE_TENSOR_ACTIVE / throttle violations / throttle reasons / NVLink errors / ECC. Dashboard-import retry no longer caps at 60 min — RBAC propagation can take longer in some Azure regions and giving up early created a bad UX.
 
@@ -179,7 +181,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.24.5
+VERSION=v0.24.6
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

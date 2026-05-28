@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.5")]
+    #[arg(long, default_value = "v0.24.6")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -977,6 +977,25 @@ fn fetch_admin_private_key(name: &str) -> Result<std::path::PathBuf> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+    }
+
+    if let Some(local_secrets) = cluster_state::ClusterSecrets::load_optional(name)? {
+        let privkey = &local_secrets.admin_ssh_private_key;
+        if !privkey.is_empty() {
+            std::fs::write(&key_path, privkey)
+                .with_context(|| format!("write {}", key_path.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                    .with_context(|| format!("chmod 0600 {}", key_path.display()))?;
+            }
+            eprintln!(
+                "==> materialised admin ssh key for cluster '{name}' (from local secrets file) -> {}",
+                key_path.display()
+            );
+            return Ok(key_path);
+        }
     }
 
     let arm = arm_client()?;

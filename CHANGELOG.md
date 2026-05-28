@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.6] - 2026-05-28
+
+### Fixed
+- **`is_rbac_propagation_error` misclassifies `ForbiddenByConnection` as transient RBAC propagation.** Key Vault returns a generic `403 Forbidden` when public network access is disabled, with the discriminator buried in `innererror.code = ForbiddenByConnection`. The retry classifier matched the surface 403+"forbidden" tokens and retried 10 × 30 s before bailing — a 5-minute spurious delay on every CLI invocation against a private-network-only KV. Now distinct: the classifier explicitly returns false for any error message containing `forbiddenbyconnection` or `public network access is disabled`, so callers fail fast.
+- **`fetch_admin_private_key()` now falls back to the local secrets file** (`~/.config/azcluster/clusters/<name>-secrets.toml`) when neither `~/.azcluster/keys/<name>` nor Key Vault is reachable. The cluster deploy writes the secrets locally BEFORE attempting the KV upload, so the local file is always populated even when the KV upload itself fails (e.g. operator's laptop not on the VNet, KV public access disabled). Pre-v0.24.6, an operator who deployed a cluster but whose KV upload silently failed would lose all SSH access on next `azcluster exec/ssh/scp/tunnel` — they'd hit the KV propagation retry every time. Now those commands work directly from the same machine that ran the deploy.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.5` to `v0.24.6`.
+
 ## [0.24.5] - 2026-05-28
 
 ### Added

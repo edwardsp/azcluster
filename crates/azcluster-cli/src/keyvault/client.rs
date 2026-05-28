@@ -166,6 +166,11 @@ impl KeyVaultClient {
 
 fn is_rbac_propagation_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
+    if lower.contains("forbiddenbyconnection")
+        || lower.contains("public network access is disabled")
+    {
+        return false;
+    }
     (lower.contains("403") || lower.contains("401"))
         && (lower.contains("forbidden")
             || lower.contains("does not have secrets")
@@ -188,6 +193,12 @@ mod tests {
         assert!(!is_rbac_propagation_error("KV 404 Not Found"));
         assert!(!is_rbac_propagation_error("KV 500 server explosion"));
         assert!(!is_rbac_propagation_error("connection refused"));
+        assert!(!is_rbac_propagation_error(
+            r#"KV 403 Forbidden: {"error":{"innererror":{"code":"ForbiddenByConnection"}}}"#
+        ));
+        assert!(!is_rbac_propagation_error(
+            "KV 403: Public network access is disabled"
+        ));
     }
 
     #[test]
