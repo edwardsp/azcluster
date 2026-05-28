@@ -18,3 +18,7 @@ bicep/**/*.json
 !bicep/main.json
 ngc_key.txt
 hf_token.txt
+doc/full-workflow-v0.24.4.md
+doc/full-workflow-v0.24.4/
+doc/full-workflow-v*.md
+doc/full-workflow-v*/
