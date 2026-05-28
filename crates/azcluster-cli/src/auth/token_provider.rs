@@ -87,7 +87,37 @@ impl TokenProvider {
                     self.subscription_id
                 )
             })?;
-        self.mint_scoped_token(&refresh_token, crate::auth::GRAFANA_SCOPE)
+        self.mint_scoped_token_no_cache(&refresh_token, crate::auth::GRAFANA_SCOPE)
+    }
+
+    fn mint_scoped_token_no_cache(&self, refresh_token: &str, scope: &str) -> Result<String> {
+        let client = reqwest::blocking::Client::new();
+        let url = token_endpoint(&self.tenant_id);
+        let resp = client
+            .post(&url)
+            .form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", AZURE_CLI_CLIENT_ID),
+                ("refresh_token", refresh_token),
+                ("scope", scope),
+            ])
+            .send()
+            .context("Failed to mint scoped Azure token")?;
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            if let Ok(err) = serde_json::from_str::<OAuthErrorResponse>(&body) {
+                bail!(
+                    "Scoped token mint failed: {}: {}. Run: azcluster login",
+                    err.error,
+                    err.error_description.unwrap_or_default()
+                );
+            }
+            bail!("Scoped token mint failed ({status}): {body}");
+        }
+        let token_resp: OAuthTokenResponse =
+            serde_json::from_str(&body).context("Failed to parse scoped token response")?;
+        Ok(token_resp.access_token)
     }
 
     fn mint_scoped_token(&mut self, refresh_token: &str, scope: &str) -> Result<String> {

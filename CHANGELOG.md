@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.9] - 2026-05-28
+
+### Fixed
+- **`get_grafana_token` poisoned the vault-token cache slot.** v0.24.7-8's `mint_scoped_token` stuffed every scoped-token result into the `vault_access_token` field regardless of which audience it was minted for. After `get_grafana_token()` ran (during dashboard import), `get_vault_token()` would read back the Grafana-scoped token from cache and pass it to Key Vault, which rejected with `AKV10022: Invalid audience. Expected cfa8b339-... [vault], found: ce34e7e5-... [grafana]`. v0.24.9 routes Grafana through a new `mint_scoped_token_no_cache` helper that returns the token without touching the on-disk cache. Vault tokens still cache normally.
+- Operators running v0.24.7/8 who hit the wrong-audience KV upload failure should `rm ~/.azure/azcli_tokens.json` and re-run `azcluster login` to flush the poisoned cache, then re-run deploy.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.8` to `v0.24.9`.
+
 ## [0.24.8] - 2026-05-28
 
 ### Fixed

@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.24.8)**: patch — fixes the two v0.24.7 release-day regressions. (1) Grafana scope: v0.24.7 used the wrong AAD application GUID for AMG (`ce34865e-...` = Azure Monitor RP, not callable) so first-deploy dashboard import always failed with `AADSTS500011`. Now uses `ce34e7e5-485f-4d76-964f-b3d2b16d1e4f` (correct AMG first-party app, same one `az grafana` uses). (2) `deploy --skip-arm` now reuses the pending deployment name from `<cluster>-pending.toml` instead of generating a fresh one, which always 404'd on `get_deployment()` when the timings capture / dashboard import phase tried to read ARM state.
+> **Status (v0.24.9)**: patch — fixes another v0.24.7-day regression. `get_grafana_token()` was caching its result into the same on-disk slot as the vault token, so subsequent KV ops got rejected by Key Vault with `Invalid audience` (the deploy print-out reported "Key Vault RBAC not yet propagated" — wrong; it was the wrong-audience token). Grafana scope is now minted without touching the cache.
+
+> **Previous status (v0.24.8)**: patch — fixes the two v0.24.7 release-day regressions. (1) Grafana scope: v0.24.7 used the wrong AAD application GUID for AMG (`ce34865e-...` = Azure Monitor RP, not callable) so first-deploy dashboard import always failed with `AADSTS500011`. Now uses `ce34e7e5-485f-4d76-964f-b3d2b16d1e4f` (correct AMG first-party app, same one `az grafana` uses). (2) `deploy --skip-arm` now reuses the pending deployment name from `<cluster>-pending.toml` instead of generating a fresh one, which always 404'd on `get_deployment()` when the timings capture / dashboard import phase tried to read ARM state.
 
 > **Previous status (v0.24.7)**: patch — observability gap-fills. (1) `prometheus-slurm-exporter` v1.8 (rivosinc) auto-installed on the scheduler + dedicated Prometheus on scheduler scraping it + node_exporter, both remote_writing to AMW via the cluster monitoring UAI. Slurm dashboard goes from "no data" to functional. (2) Dashboard PromQL fixed: `slurm_job_count_per_state` → `slurm_partition_job_state_total` (the original vpenso metric name doesn't exist in rivosinc). (3) CLI dashboard import now mints a Grafana-scoped token (`ce34865e-cb55-4dbc-8d7c-12f1cfcd1c01/.default`) instead of a management.azure.com-scoped one — pre-v0.24.7 the import hung indefinitely on what looked like RBAC propagation but was actually wrong-audience. (4) `bicep/main.json` regenerated against current cloud-init templates (was stale since v0.24.2, dropping the entire DCGM expansion claimed by that release). (5) `bootcmd` now `pkill -9` in-flight `unattended-upgrade`/`apt-get` to plug the cloud-init apt-lock race that lost one of two compute nodes on a recent live deploy.
 
@@ -185,7 +187,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.24.8
+VERSION=v0.24.9
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
