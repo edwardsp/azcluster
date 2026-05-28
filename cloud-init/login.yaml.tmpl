@@ -5,6 +5,7 @@ manage_etc_hosts: true
 bootcmd:
   - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
   - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - pkill -9 -f 'unattended-upgrade|apt-get|apt\.systemd\.daily' 2>/dev/null || true
 
 package_update: true
 package_upgrade: false

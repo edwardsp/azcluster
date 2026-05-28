@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.7] - 2026-05-28
+
+### Added
+- **`prometheus-slurm-exporter` (rivosinc v1.8.0) ships on scheduler** + dedicated Prometheus on scheduler that scrapes it and remote-writes to Azure Monitor Workspace via the cluster monitoring UAI. The Slurm Scheduler Grafana dashboard now actually has data; pre-v0.24.7 it was perpetually "no data" because no exporter was ever installed. Cloud-init pulls the precompiled `.deb` from `https://github.com/rivosinc/prometheus-slurm-exporter/releases/download/v1.8.0/...`, runs the exporter as the `slurm` user on port 9092 (CLI fallback mode — no slurmrestd, no JWT tokens, just shells out to `sinfo`/`squeue`), and the in-process Prometheus scrapes it every 60 s with a 30 s timeout. The same scheduler-side Prometheus also scrapes the existing `node_exporter` on port 9100 so scheduler-level host metrics flow into AMW for the first time.
+- **Grafana scope for the CLI's dashboard import.** New `GRAFANA_SCOPE = "ce34865e-cb55-4dbc-8d7c-12f1cfcd1c01/.default offline_access"` + `get_grafana_token()` helper. `import_dashboards()` now mints a properly-scoped Grafana token rather than passing a management.azure.com-scoped one to the Grafana HTTP API. Pre-v0.24.7 the CLI hit a permanent 401/403 loop on Grafana folder creation (looked like RBAC propagation, was actually wrong-audience) while `az grafana folder create` worked instantly because it knew to fetch the right scope.
+
+### Fixed
+- **N-33 stale dashboard counter list**: `bicep/main.json` was last regenerated against the v0.24.1 `cloud-init/compute.yaml.tmpl`, so every deploy from v0.24.2 onwards shipped the v0.24.1 DCGM counters list — losing the entire thermal/throttle/ECC/NVLink-error expansion the changelog claimed was in v0.24.2. Regenerated. CHANGELOG-discipline reminder: `bicep/main.json` is committed and embeds `cloud-init/*.tmpl` via Bicep `loadTextContent`, so any cloud-init edit needs an accompanying `az bicep build --file bicep/main.bicep --outfile bicep/main.json` (CI catches drift but only on PR push; local rebuilds are the operator's responsibility).
+- **N-31 cloud-init apt-lock contention**: `bootcmd` now `pkill -9 -f 'unattended-upgrade|apt-get|apt\.systemd\.daily'` in addition to `systemctl stop` + `systemctl mask`. The systemctl stop only sends SIGTERM; an in-flight `unattended-upgrades` holding the dpkg lock keeps running its current transaction. The `pkill -9` after the stop kills any survivor. Applied to scheduler, login, compute bootcmd. Live-reproduced on v245walk where `vmss-v245walk-gpu_c716fa3d` lost cloud-init mid-script due to apt-lock contention and never registered with Slurm.
+- **N-24 Slurm dashboard PromQL**: replace `slurm_job_count_per_state{...}` (which prometheus-slurm-exporter v1.8 does NOT emit; original v0.20 vpenso did) with `slurm_partition_job_state_total{...}` (which it does). Pre-v0.24.7 the dashboard would have been broken even WITH an exporter shipped. Applies to 3 panels: Running Jobs stat, Pending Jobs stat, and "Jobs by state" timeseries.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.6` to `v0.24.7`.
+
 ## [0.24.6] - 2026-05-28
 
 ### Fixed

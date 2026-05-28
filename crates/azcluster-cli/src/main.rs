@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.6")]
+    #[arg(long, default_value = "v0.24.7")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -893,6 +893,18 @@ fn get_vault_token() -> Result<String> {
     let mut provider =
         auth::TokenProvider::new(account.subscription_id.clone(), account.tenant_id.clone())?;
     provider.get_vault_token()
+}
+
+fn get_grafana_token() -> Result<String> {
+    let cache = auth::TokenCache::load()?;
+    let account = cache
+        .accounts
+        .values()
+        .max_by_key(|a| a.expires_at)
+        .ok_or_else(|| anyhow!("not logged in to Azure. Run: azcluster login"))?;
+    let mut provider =
+        auth::TokenProvider::new(account.subscription_id.clone(), account.tenant_id.clone())?;
+    provider.get_grafana_token()
 }
 
 fn resolve_cluster(name: &str) -> Result<ClusterState> {
@@ -1811,7 +1823,7 @@ fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
         .get_grafana_endpoint(resource_group, grafana_name)
         .with_context(|| format!("resolve Grafana endpoint for {grafana_name}"))?;
     let endpoint = endpoint.trim_end_matches('/').to_string();
-    let token = get_access_token()?;
+    let token = get_grafana_token()?;
     let http = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()

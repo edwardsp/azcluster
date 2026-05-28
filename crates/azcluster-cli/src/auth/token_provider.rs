@@ -76,6 +76,20 @@ impl TokenProvider {
         self.mint_scoped_token(&refresh_token, VAULT_SCOPE)
     }
 
+    pub fn get_grafana_token(&mut self) -> Result<String> {
+        let refresh_token = self
+            .cache
+            .get(&self.subscription_id)
+            .and_then(|acc| acc.refresh_token.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "No cached Azure credentials for subscription {}. Run: azcluster login",
+                    self.subscription_id
+                )
+            })?;
+        self.mint_scoped_token(&refresh_token, crate::auth::GRAFANA_SCOPE)
+    }
+
     fn mint_scoped_token(&mut self, refresh_token: &str, scope: &str) -> Result<String> {
         let client = reqwest::blocking::Client::new();
         let url = token_endpoint(&self.tenant_id);

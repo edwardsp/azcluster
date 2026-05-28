@@ -6,6 +6,7 @@ fqdn: {{CLUSTER_NAME}}-scheduler
 bootcmd:
   - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
   - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  - pkill -9 -f 'unattended-upgrade|apt-get|apt\.systemd\.daily' 2>/dev/null || true
 
 package_update: true
 package_upgrade: false
@@ -620,6 +621,97 @@ write_files:
       systemctl enable munge
       systemctl restart munge
       systemctl enable --now node_exporter
+
+      SLURM_EXP_VER="1.8.0"
+      cd /tmp
+      curl -fsSL --retry 8 --retry-delay 5 -o /tmp/prometheus-slurm-exporter.deb \
+        "https://github.com/rivosinc/prometheus-slurm-exporter/releases/download/v${SLURM_EXP_VER}/prometheus-slurm-exporter_${SLURM_EXP_VER}_linux_amd64.deb"
+      dpkg -i /tmp/prometheus-slurm-exporter.deb || true
+      rm -f /tmp/prometheus-slurm-exporter.deb
+      cat > /etc/systemd/system/prometheus-slurm-exporter.service <<'EOF'
+      [Unit]
+      Description=Prometheus SLURM Exporter
+      After=network.target slurmctld.service
+      Wants=slurmctld.service
+
+      [Service]
+      Type=simple
+      User=slurm
+      ExecStart=/usr/bin/prometheus-slurm-exporter
+      Restart=always
+      RestartSec=15
+      Environment="POLL_LIMIT=30"
+      Environment="LOGLEVEL=info"
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      chmod 0644 /etc/systemd/system/prometheus-slurm-exporter.service
+      systemctl daemon-reload
+      systemctl enable --now prometheus-slurm-exporter
+
+      mkdir -p /opt/prometheus
+      MON_UAI_CLIENT_ID="{{MON_UAI_CLIENT_ID}}"
+      AMW_INGEST_URL="{{AMW_INGEST_URL}}"
+      if [ -n "${MON_UAI_CLIENT_ID}" ] && [ -n "${AMW_INGEST_URL}" ]; then
+        cat > /opt/prometheus/prometheus.yml <<EOF
+      global:
+        scrape_interval: 30s
+        evaluation_interval: 30s
+        external_labels:
+          subscription: {{SUBSCRIPTION_ID}}
+          cluster: ${RG}/{{CLUSTER_NAME}}
+          nodename: $(hostname)
+          role: scheduler
+      remote_write:
+        - url: "${AMW_INGEST_URL}"
+          azuread:
+            cloud: AzurePublic
+            managed_identity:
+              client_id: ${MON_UAI_CLIENT_ID}
+      scrape_configs:
+        - job_name: node_exporter
+          static_configs:
+            - targets: ['127.0.0.1:9100']
+        - job_name: slurm_exporter
+          scrape_interval: 60s
+          scrape_timeout: 30s
+          static_configs:
+            - targets: ['127.0.0.1:9092']
+      EOF
+        chmod 0644 /opt/prometheus/prometheus.yml
+        PROM_VER="2.55.1"
+        curl -fsSL --retry 8 --retry-delay 5 -O \
+          "https://github.com/prometheus/prometheus/releases/download/v${PROM_VER}/prometheus-${PROM_VER}.linux-amd64.tar.gz"
+        tar -xzf "prometheus-${PROM_VER}.linux-amd64.tar.gz"
+        install -m 0755 "prometheus-${PROM_VER}.linux-amd64/prometheus" /opt/prometheus/prometheus
+        id -u prometheus >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin prometheus
+        chown -R prometheus:prometheus /opt/prometheus
+        mkdir -p /var/lib/prometheus
+        chown -R prometheus:prometheus /var/lib/prometheus
+        cat > /etc/systemd/system/prometheus.service <<'EOF'
+      [Unit]
+      Description=Prometheus
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=prometheus
+      ExecStart=/opt/prometheus/prometheus \
+        --config.file=/opt/prometheus/prometheus.yml \
+        --storage.tsdb.path=/var/lib/prometheus \
+        --web.listen-address=127.0.0.1:9090
+      Restart=always
+      RestartSec=15
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+        chmod 0644 /etc/systemd/system/prometheus.service
+        systemctl daemon-reload
+        systemctl enable --now prometheus
+      fi
 
       if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
         # Azure MySQL Flex serves a DigiCert Global Root CA chain, which is

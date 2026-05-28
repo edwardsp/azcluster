@@ -23,6 +23,8 @@ pub const MANAGEMENT_SCOPE: &str = "https://management.azure.com/.default offlin
 
 pub const VAULT_SCOPE: &str = "https://vault.azure.net/.default offline_access";
 
+pub const GRAFANA_SCOPE: &str = "ce34865e-cb55-4dbc-8d7c-12f1cfcd1c01/.default offline_access";
+
 /// Default tenant for first-time login. `organizations` = any Entra ID tenant.
 pub const COMMON_TENANT: &str = "organizations";
 
