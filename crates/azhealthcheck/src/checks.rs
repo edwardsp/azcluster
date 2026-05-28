@@ -65,9 +65,12 @@ const XID_WARNING: &[u32] = &[43, 45];
 
 pub fn gpu_xid(runner: &dyn Runner) -> CheckOutcome {
     let name = "gpu_xid";
-    let out = match runner.run("dmesg", &["--time-format=iso"]) {
+    let out = match runner.run(
+        "journalctl",
+        &["--dmesg", "--no-pager", "--since", "1 hour ago"],
+    ) {
         Ok(o) => o,
-        Err(e) => return CheckOutcome::error(name, format!("dmesg failed: {e}"), vec![]),
+        Err(e) => return CheckOutcome::error(name, format!("journalctl failed: {e}"), vec![]),
     };
     if !out.status.success() {
         return CheckOutcome::warning(
@@ -162,7 +165,11 @@ pub fn network(sys_root: &Path) -> CheckOutcome {
         if let Some(c) =
             read_trim(&base.join("carrier_down_count")).and_then(|s| s.parse::<u64>().ok())
         {
-            if c > 0 && operstate == "up" {
+            // Azure accelerated-networking VMs always show exactly 1 boot-time
+            // carrier transition on eth0 (the kernel hot-switches from the basic
+            // emulated NIC to the SR-IOV VF). Allow up to 1 flap as benign;
+            // anything ≥ 2 is a real fabric/link issue worth flagging.
+            if c >= 2 && operstate == "up" {
                 warnings.push(format!("{iface}: carrier_down_count={c}"));
             }
         }
@@ -188,9 +195,18 @@ pub fn network(sys_root: &Path) -> CheckOutcome {
 
 pub fn kmsg(runner: &dyn Runner) -> CheckOutcome {
     let name = "kmsg";
-    let out = match runner.run("dmesg", &["--level=emerg,alert,crit", "--since=1 hour ago"]) {
+    let out = match runner.run(
+        "journalctl",
+        &[
+            "--dmesg",
+            "--no-pager",
+            "--priority=crit",
+            "--since",
+            "1 hour ago",
+        ],
+    ) {
         Ok(o) => o,
-        Err(e) => return CheckOutcome::error(name, format!("dmesg failed: {e}"), vec![]),
+        Err(e) => return CheckOutcome::error(name, format!("journalctl failed: {e}"), vec![]),
     };
     if !out.status.success() {
         return CheckOutcome::warning(
@@ -328,7 +344,11 @@ mod tests {
 
     #[test]
     fn gpu_xid_clean() {
-        let r = FakeRunner::new().with("dmesg --time-format=iso", "boot ok\n", 0);
+        let r = FakeRunner::new().with(
+            "journalctl --dmesg --no-pager --since 1 hour ago",
+            "boot ok\n",
+            0,
+        );
         let out = gpu_xid(&r);
         assert_eq!(out.severity, Severity::Ok);
     }
@@ -336,7 +356,7 @@ mod tests {
     #[test]
     fn gpu_xid_fatal() {
         let r = FakeRunner::new().with(
-            "dmesg --time-format=iso",
+            "journalctl --dmesg --no-pager --since 1 hour ago",
             "2026-01-01T00:00:00 NVRM: Xid (PCI:0000:01:00): 79, pid=0\n",
             0,
         );
@@ -348,7 +368,7 @@ mod tests {
     #[test]
     fn gpu_xid_warning() {
         let r = FakeRunner::new().with(
-            "dmesg --time-format=iso",
+            "journalctl --dmesg --no-pager --since 1 hour ago",
             "2026-01-01 NVRM: Xid (PCI:0000:01:00): 43, ch 00\n",
             0,
         );
@@ -394,8 +414,25 @@ mod tests {
     }
 
     #[test]
+    fn network_single_boot_flap_is_ok() {
+        let sys = tmpdir();
+        let net = sys.path().join("class/net/eth0");
+        fs::create_dir_all(&net).unwrap();
+        fs::write(net.join("type"), "1\n").unwrap();
+        fs::write(net.join("operstate"), "up\n").unwrap();
+        fs::write(net.join("carrier"), "1\n").unwrap();
+        fs::write(net.join("carrier_down_count"), "1\n").unwrap();
+        let out = network(sys.path());
+        assert_eq!(out.severity, Severity::Ok);
+    }
+
+    #[test]
     fn kmsg_clean() {
-        let r = FakeRunner::new().with("dmesg --level=emerg,alert,crit --since=1 hour ago", "", 0);
+        let r = FakeRunner::new().with(
+            "journalctl --dmesg --no-pager --priority=crit --since 1 hour ago",
+            "",
+            0,
+        );
         let out = kmsg(&r);
         assert_eq!(out.severity, Severity::Ok);
     }
@@ -403,7 +440,7 @@ mod tests {
     #[test]
     fn kmsg_critical() {
         let r = FakeRunner::new().with(
-            "dmesg --level=emerg,alert,crit --since=1 hour ago",
+            "journalctl --dmesg --no-pager --priority=crit --since 1 hour ago",
             "kernel panic - not syncing\n",
             0,
         );

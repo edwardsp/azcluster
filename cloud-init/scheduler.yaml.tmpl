@@ -532,24 +532,34 @@ write_files:
 
         cat > "${EXAMPLES_DIR}/azcp-cluster-distribute-sqsh.sbatch" <<'EOF'
       #!/bin/bash -l
-      #SBATCH --partition=gpu --nodes=2 --ntasks-per-node=1 --time=01:00:00
+      #SBATCH --partition=gpu --nodes=2 --ntasks-per-node=1 --time=01:00:00 --exclusive
       #SBATCH --output=/shared/home/%u/distribute-%j.out
       set -euo pipefail
       SQSH_NAME="${1:?usage: sbatch <script> <sqsh-name>}"
       mkdir -p "${AZCLUSTER_USER_NVME}/sqsh"
-      # azcp-cluster treats source as a prefix; stage by uploading to a
-      # per-sqsh subdir then point the source at that subdir.
       SRC="${AZCLUSTER_USER_BLOB_URL}/sqsh/${SQSH_NAME}/"
       DST="${AZCLUSTER_USER_NVME}/sqsh/${SQSH_NAME}/"
       mkdir -p "${DST}"
+      # Tuning from https://github.com/edwardsp/azcp/blob/main/docs/cluster-h100-tuning.md
+      # - UCX_TLS=rc,sm,self forces RDMA-over-IB (no TCP fallback)
+      # - UCX_NET_DEVICES=mlx5_ib0:1 single-rail; multi-rail competes for the host bridge
+      # - taskset -c 0-47 pins to NUMA-0; the frontend NIC and mlx5_ib0..3 are both on NUMA-0
+      # - --bcast-pipeline 128 / --bcast-writers 8 = doc-recommended depth + parallel NVMe writers
+      # The /dev/infiniband bind mount is omitted; MELLANOX_VISIBLE_DEVICES=all in
+      # /etc/enroot/environ.d/50-nccl.env triggers the enroot 99-mellanox.sh hook to bind them in.
+      export UCX_TLS=rc,sm,self
+      export UCX_NET_DEVICES=mlx5_ib0:1
+      export OMPI_MCA_pml=ucx
+      export OMPI_MCA_osc=ucx
       srun --mpi=pmix \
         --container-image="docker://ghcr.io/edwardsp/azcp/azcp-cluster:{{AZCP_VERSION}}" \
-        --container-mounts=/dev/infiniband:/dev/infiniband,${AZCLUSTER_USER_NVME}:${AZCLUSTER_USER_NVME} \
-        --export=ALL,AZURE_CLIENT_ID,AZCLUSTER_USER_BLOB_URL,AZCLUSTER_USER_NVME \
+        --container-mounts=${AZCLUSTER_USER_NVME}:${AZCLUSTER_USER_NVME} \
+        --export=ALL,AZURE_CLIENT_ID,AZCLUSTER_USER_BLOB_URL,AZCLUSTER_USER_NVME,UCX_TLS,UCX_NET_DEVICES,OMPI_MCA_pml,OMPI_MCA_osc \
+        taskset -c 0-47 \
         azcp-cluster \
           "${SRC}" "${DST}" \
           --concurrency 32 --block-size 16777216 \
-          --bcast-chunk 67108864 --bcast-pipeline 4 \
+          --bcast-chunk 67108864 --bcast-pipeline 128 --bcast-writers 8 \
           --compare size --no-progress
       EOF
         sed -i 's|^      ||' "${EXAMPLES_DIR}/azcp-cluster-distribute-sqsh.sbatch"

@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.5] - 2026-05-28
+
+### Added
+- `azcluster deploy --skip-arm`: bypass the ARM submission entirely and only re-run post-deploy hooks (Grafana dashboard import, timings JSON, state-file refresh). Use when the cluster is already healthy and you only want to retry dashboard import (e.g. RBAC propagation finally completed). Mutually exclusive with `--no-wait`. Errors helpfully if there is no pre-existing local cluster state. This is the operator-facing answer to "I just want to retry dashboard import without churning ARM".
+
+### Changed
+- `azhealthcheck` `gpu_xid` and `kmsg` checks now invoke `journalctl --dmesg` instead of `dmesg(1)`. `dmesg` requires `CAP_SYSLOG` or root (kernel 4.10+), and although Slurm's `HealthCheckProgram` runs the check as root via slurmd (which works), interactive invocation by an operator's LDAP user from `srun` failed with `Operation not permitted` and emitted spurious WARN status into the dashboard. `journalctl --dmesg` works for root unconditionally AND for any user in the `systemd-journal` group, so future moves to non-root healthcheck execution remain possible without code changes.
+- `azhealthcheck` `network` check now treats `carrier_down_count == 1` as OK rather than WARN. Azure accelerated-networking VMs always show exactly one boot-time carrier transition on eth0 (the kernel hot-switches from the basic emulated NIC to the SR-IOV VF), and we were permanently warning on every compute node. Threshold raised to `>= 2`, which is what an actual link-flap incident would look like.
+- `cloud-init/scheduler.yaml.tmpl` example sbatch `azcp-cluster-distribute-sqsh.sbatch` now bakes in the upstream [azcp H100 tuning recipe](https://github.com/edwardsp/azcp/blob/main/docs/cluster-h100-tuning.md): `UCX_TLS=rc,sm,self`, `UCX_NET_DEVICES=mlx5_ib0:1`, `OMPI_MCA_pml=ucx`, `OMPI_MCA_osc=ucx`, `taskset -c 0-47` (NUMA-0 pin), `--bcast-pipeline 128`, `--bcast-writers 8`. Drops the `/dev/infiniband` bind-mount (redundant since v0.13.8's `MELLANOX_VISIBLE_DEVICES=all` env triggers enroot's `99-mellanox.sh` hook to bind-mount the IB device nodes automatically). On 2-node clusters the broadcast is NVMe-read-bound and tops out around 40 Gbps; at 16 nodes the upstream doc measures 110 Gbps. Adds `--exclusive` to the SBATCH directives because `taskset` requires the cgroup to actually expose the NUMA-0 cores.
+- `--azcluster-version` CLI default bumped from `v0.24.4` to `v0.24.5`.
+
 ## [0.24.4] - 2026-05-28
 
 ### Added

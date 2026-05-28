@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.4")]
+    #[arg(long, default_value = "v0.24.5")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -175,6 +175,9 @@ struct DeployArgs {
     /// Submit ARM with `--no-wait` and return immediately. Run `azcluster resume <name>` afterwards to wait for ARM and run post-deploy hooks (state file, timings JSON, Grafana dashboard import). Without `--no-wait`, deploy blocks and finalizes in one shot.
     #[arg(long, default_value_t = false)]
     no_wait: bool,
+    /// Skip the ARM submission entirely and re-run post-deploy hooks only (Grafana dashboard import, timings JSON, state file refresh). Use when the cluster is already healthy and you only want to retry dashboard import. Mutually exclusive with `--no-wait`.
+    #[arg(long, default_value_t = false, conflicts_with = "no_wait")]
+    skip_arm: bool,
     /// Extra apt packages to install on every node (scheduler, login, compute). Repeatable. Validated against a Debian package name grammar subset (`^[a-z0-9][a-z0-9.+-]*$`). Example: --extra-package git-lfs --extra-package python3.12-venv
     #[arg(long = "extra-package", action = clap::ArgAction::Append, value_parser = parse_pkg_name)]
     extra_packages: Vec<String>,
@@ -1338,14 +1341,21 @@ fn deploy(args: DeployArgs) -> Result<()> {
     let pending_path = pending.save()?;
     eprintln!("==> saved pending deploy -> {}", pending_path.display());
 
-    eprintln!(
-        "==> ARM create deployment '{}'{}",
-        deployment_name,
-        if args.no_wait { " (--no-wait)" } else { "" }
-    );
-    client
-        .create_subscription_deployment(&deployment_name, &args.location, template, params_json)
-        .context("ARM deployment submission failed")?;
+    if !args.skip_arm {
+        eprintln!(
+            "==> ARM create deployment '{}'{}",
+            deployment_name,
+            if args.no_wait { " (--no-wait)" } else { "" }
+        );
+        client
+            .create_subscription_deployment(&deployment_name, &args.location, template, params_json)
+            .context("ARM deployment submission failed")?;
+    } else {
+        eprintln!(
+            "==> --skip-arm: bypassing ARM submission for '{}'; running post-deploy hooks only",
+            args.name
+        );
+    }
 
     if args.no_wait {
         eprintln!(
@@ -1360,23 +1370,25 @@ fn deploy(args: DeployArgs) -> Result<()> {
         "==> waiting for ARM deployment '{}' to complete...",
         deployment_name
     );
-    let mut progress = deploy_progress::Renderer::new();
-    let final_state = client
-        .wait_for_deployment_completion_with_progress(&deployment_name, &mut |ops| {
-            progress.render(ops);
-        })
-        .context("polling ARM deployment")?;
-    progress.finish();
-    let state_str = final_state
-        .get("properties")
-        .and_then(|p| p.get("provisioningState"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("");
-    if state_str != "Succeeded" {
-        bail!(
-            "ARM deployment '{}' ended in state {state_str}. Run `azcluster delete --name {}` to tear down.",
-            deployment_name, args.name
-        );
+    if !args.skip_arm {
+        let mut progress = deploy_progress::Renderer::new();
+        let final_state = client
+            .wait_for_deployment_completion_with_progress(&deployment_name, &mut |ops| {
+                progress.render(ops);
+            })
+            .context("polling ARM deployment")?;
+        progress.finish();
+        let state_str = final_state
+            .get("properties")
+            .and_then(|p| p.get("provisioningState"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if state_str != "Succeeded" {
+            bail!(
+                "ARM deployment '{}' ended in state {state_str}. Run `azcluster delete --name {}` to tear down.",
+                deployment_name, args.name
+            );
+        }
     }
 
     finalize_deploy(
@@ -1454,6 +1466,7 @@ fn resume(args: ResumeArgs) -> Result<()> {
                 template: None,
                 what_if: false,
                 no_wait: false,
+                skip_arm: false,
                 extra_packages: pending.extra_packages.clone(),
                 bastion: pending.bastion_enabled,
                 scheduler_sku: String::new(),
