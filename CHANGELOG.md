@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.8] - 2026-05-28
+
+### Fixed
+- **Grafana scope: corrected AMG first-party app id.** v0.24.7 used `ce34865e-cb55-4dbc-8d7c-12f1cfcd1c01` (the Azure Monitor resource-provider GUID) which is NOT a callable application and is not consented in any tenant — AAD rejects with `AADSTS500011: The resource principal ... was not found in the tenant`. The correct AMG first-party app id is `ce34e7e5-485f-4d76-964f-b3d2b16d1e4f` (lifted from the `az grafana` CLI extension's `_get_data_plane_creds`). Dashboard import now mints the right scope and lands cleanly within seconds rather than hanging indefinitely.
+- **`azcluster deploy --skip-arm` ignored the pending deployment name** and generated a fresh `azcluster-<cluster>-<utc-stamp>` for the timings-capture + finalize step, then 404'd on `arm_client.get_deployment()` because that name was never submitted. v0.24.8 reuses the `deployment_name` from `<cluster>-pending.toml` when `--skip-arm` is set, and bails with a helpful error if no pending marker exists. Bonus cleanup: the misleading "==> waiting for ARM deployment ... to complete" print no longer appears when we're skipping ARM.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.7` to `v0.24.8`.
+
 ## [0.24.7] - 2026-05-28
 
 ### Added

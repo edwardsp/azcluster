@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.7")]
+    #[arg(long, default_value = "v0.24.8")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -1203,7 +1203,23 @@ fn deploy(args: DeployArgs) -> Result<()> {
             .with_context(|| format!("create resource group {}", resolved_rg))?;
     }
 
-    let deployment_name = format!("azcluster-{}-{}", args.name, utc_stamp());
+    let deployment_name = if args.skip_arm {
+        let pending = PendingDeploy::load_optional(&args.name)?.ok_or_else(|| {
+            anyhow!(
+                "--skip-arm: no pending deploy marker for '{}' (~/.config/azcluster/clusters/{}-pending.toml). \
+                 The marker is needed to identify the most recent ARM deployment to finalize against. \
+                 If the cluster was already finalized, delete and redeploy, or run `azcluster deploy --name {}` without --skip-arm.",
+                args.name, args.name, args.name
+            )
+        })?;
+        eprintln!(
+            "==> --skip-arm: reusing pending deployment_name '{}'",
+            pending.deployment_name
+        );
+        pending.deployment_name
+    } else {
+        format!("azcluster-{}-{}", args.name, utc_stamp())
+    };
 
     let pools: Vec<PoolSpec> = if args.pools.is_empty() {
         vec![PoolSpec {
@@ -1369,8 +1385,12 @@ fn deploy(args: DeployArgs) -> Result<()> {
         storage_public_access: args.storage_public_access,
         azcp_version: Some(args.azcp_version.clone()),
     };
-    let pending_path = pending.save()?;
-    eprintln!("==> saved pending deploy -> {}", pending_path.display());
+    if !args.skip_arm {
+        let pending_path = pending.save()?;
+        eprintln!("==> saved pending deploy -> {}", pending_path.display());
+    } else {
+        eprintln!("==> --skip-arm: leaving existing pending marker intact");
+    }
 
     if !args.skip_arm {
         eprintln!(
@@ -1397,11 +1417,11 @@ fn deploy(args: DeployArgs) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
-        "==> waiting for ARM deployment '{}' to complete...",
-        deployment_name
-    );
     if !args.skip_arm {
+        eprintln!(
+            "==> waiting for ARM deployment '{}' to complete...",
+            deployment_name
+        );
         let mut progress = deploy_progress::Renderer::new();
         let final_state = client
             .wait_for_deployment_completion_with_progress(&deployment_name, &mut |ops| {
