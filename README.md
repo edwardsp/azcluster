@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.24.11)**: patch — apt-lock + prolog fixes from the v2411walk live deploy. (1) On a fresh v2411walk deploy in `eastus`, one of two H100 compute nodes' `install-compute.sh` aborted at `aptget install` with `E: Could not get lock /var/lib/apt/lists/lock. It is held by process 11352 (apt)`. The v0.24.7 `bootcmd` `pkill -9` of `unattended-upgrades` had run, but a NEW apt process started AFTER bootcmd and held the lock when the install script ran later. The `-o DPkg::Lock::Timeout=600` flag only covers the **dpkg** locks, not `/var/lib/apt/lists/lock`. Fix: every install script defines an `apt_wait` shell function (fuser-polls all 3 locks, 10-min cap) + an `aptget` wrapper called instead of bare `apt-get`. (2) Compute nodes came up `drain (Prolog error)` on the very first job after boot because `install -d /mnt/nvme/users/$USER` doesn't auto-create the parent `/mnt/nvme/users` directory. Fix: prolog now `mkdir -p /mnt/nvme/users` before `install -d`.
+> **Status (v0.24.12)**: patch — install-script idempotency. v0.24.11 fixed the specific apt-lists lock contention from v2411walk run 1, but run 2 (also on v0.24.11) reproduced a different abort point: install-scheduler.sh died between the azcluster-server tarball SHA verification and slapd install; install-compute.sh on gpu-0003 died between `systemctl enable prometheus` and the prolog write. Both required manual re-runs. v0.24.12: cloud-init `runcmd` now wraps each install script in a 10-attempt retry loop (30 s gap, exits as soon as `/var/log/azcluster/ready` appears); the script itself exits 0 fast at the top when the ready marker exists. Any single-step transient failure now self-heals on the next retry. Live-validated end-to-end.
+
+> **Previous status (v0.24.11)**: patch — apt-lock + prolog fixes from the v2411walk live deploy. (1) On a fresh v2411walk deploy in `eastus`, one of two H100 compute nodes' `install-compute.sh` aborted at `aptget install` with `E: Could not get lock /var/lib/apt/lists/lock. It is held by process 11352 (apt)`. The v0.24.7 `bootcmd` `pkill -9` of `unattended-upgrades` had run, but a NEW apt process started AFTER bootcmd and held the lock when the install script ran later. The `-o DPkg::Lock::Timeout=600` flag only covers the **dpkg** locks, not `/var/lib/apt/lists/lock`. Fix: every install script defines an `apt_wait` shell function (fuser-polls all 3 locks, 10-min cap) + an `aptget` wrapper called instead of bare `apt-get`. (2) Compute nodes came up `drain (Prolog error)` on the very first job after boot because `install -d /mnt/nvme/users/$USER` doesn't auto-create the parent `/mnt/nvme/users` directory. Fix: prolog now `mkdir -p /mnt/nvme/users` before `install -d`.
 
 > **Previous status (v0.24.10)**: patch — silent DCGM exporter crash. v0.24.2-v0.24.9 shipped a `counters.csv` whose help-message fields contained commas (e.g. `Maximum operating temperature (tlimit, 87C on H100 SXM5)`), and dcgm-exporter's CSV parser rejects rows with ≠ 3 fields. systemctl reported `active` because it was restart-looping fast enough to look healthy, but `:9400/metrics` returned zero DCGM lines and AMW got zero GPU data. Fix: rewrite description commas as semicolons. Live-validated 248 DCGM metric lines per compute node post-fix.
 
@@ -191,7 +193,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.24.11
+VERSION=v0.24.12
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}

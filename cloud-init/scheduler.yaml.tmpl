@@ -160,6 +160,9 @@ write_files:
       trap 'chmod 0644 /etc/slurm/slurm.conf /etc/slurm/plugstack.conf /etc/slurm/cgroup.conf /etc/slurm/gres.conf 2>/dev/null || true' EXIT
       . /etc/azcluster/install.env
 
+      # v0.24.12 idempotency early-exit: ready marker means previous run completed.
+      [ -f /var/log/azcluster/ready ] && exit 0
+
       # See compute.yaml.tmpl for rationale: DPkg::Lock::Timeout only covers
       # the dpkg locks, not /var/lib/apt/lists/lock. Wrap apt-get with apt_wait.
       apt_wait() {
@@ -883,4 +886,9 @@ runcmd:
   - systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
   - systemctl mask unattended-upgrades.service apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
   - bash -lc 'i=0; while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 5; i=$((i+1)); [ $i -gt 120 ] && break; done'
-  - bash -lc 'mkdir -p /var/log/azcluster && /opt/azcluster/install-scheduler.sh 2>&1 | tee -a /var/log/azcluster/install.log'
+  # v0.24.12 idempotency: retry install script up to 10 times, 30s gap.
+  # Script no-ops fast on retries because each step skips when its product
+  # already exists (apt is idempotent; useradd/groupadd/mkdir/cat are guarded
+  # with || true; systemctl enable is idempotent). Loop exits as soon as
+  # /var/log/azcluster/ready exists. Hard cap protects against runaway.
+  - bash -lc 'mkdir -p /var/log/azcluster; for i in $(seq 1 10); do [ -f /var/log/azcluster/ready ] && exit 0; echo "=== install-scheduler attempt $i $(date -u +%FT%TZ) ===" >> /var/log/azcluster/install.log; /opt/azcluster/install-scheduler.sh 2>&1 | tee -a /var/log/azcluster/install.log || true; [ -f /var/log/azcluster/ready ] && exit 0; sleep 30; done; echo "=== install-scheduler FAILED after 10 attempts ===" >> /var/log/azcluster/install.log; exit 1'

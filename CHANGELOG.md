@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.12] - 2026-05-29
+
+### Fixed
+- **Cloud-init install scripts now retry on transient failure** (v0.24.12). v0.24.11's fix addressed the *specific* apt-lists lock contention that bit v2411walk's gpu-0003. But the underlying class of bug — install scripts running under `set -euo pipefail` aborting silently mid-run on ANY transient issue (curl/dns/IMDS hiccup, slapd race, oddball apt error, etc.) — wasn't fixed. v2411walk's second deploy on v0.24.11 reproduced this: install-scheduler.sh aborted somewhere between the azcluster-server tarball SHA verification and slapd install; install-compute.sh on gpu-0003 aborted between `systemctl enable prometheus` and the prolog write. Both required manual `bash /opt/azcluster/install-X.sh` re-runs. v0.24.12 fix: (1) cloud-init `runcmd` wraps each install script in a 10-attempt retry loop with 30 s gap; (2) each install script exits 0 fast at the top if `/var/log/azcluster/ready` already exists; (3) loop exits as soon as `ready` marker exists. Net effect: any single-step transient failure heals on the next retry without manual intervention. apt installs are naturally idempotent, useradd/groupadd already guarded with `getent || useradd` patterns, mkdir is `-p`. The 10-attempt cap (5 min total) protects against runaway loops.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.11` to `v0.24.12`.
+- `bicep/main.json` regenerated against the updated cloud-init templates.
+
 ## [0.24.11] - 2026-05-29
 
 ### Fixed
