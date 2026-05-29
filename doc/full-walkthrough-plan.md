@@ -137,6 +137,18 @@ Every run uses scripts checked into this section. The same scripts go into both 
 
 Secrets are passed via environment variables — **never bake tokens, passwords, or other secrets into committed sbatch files**. The relevant env vars are noted per script.
 
+### Prerequisites — credentials and secrets
+
+The walkthrough pulls container images and model weights from third-party registries. **Set these as environment variables in your shell before running the relevant sbatches, or write them into per-user files under `${HOME}/.config/...` — never commit them into source.**
+
+| Secret | Where it's used | How to set it on the cluster |
+|---|---|---|
+| **NGC API key** (for `nvcr.io/nvidia/...` pulls) | `dgxc-nemo-{container,multinode}-smoke.sbatch`, anything that imports a NeMo / NGC container under `nvcr.io/nvidia/` | NGC public images can pull anonymously (this walkthrough's runs all worked without a key) but anonymous pulls are heavily rate-limited and some images are gated. To set a key for an LDAP user: `azcluster ssh <name> --user clusteradmin` then `mkdir -p ~/.config/enroot && cat > ~/.config/enroot/.credentials <<EOF`<br/>`machine nvcr.io login $oauthtoken password <NGC_API_KEY>`<br/>`EOF`<br/>`chmod 0600 ~/.config/enroot/.credentials`<br/><br/>Get an NGC API key at `https://ngc.nvidia.com/setup/api-key` (free signup). The login is literally the string `$oauthtoken` (NGC convention). Set this if `enroot import` returns HTTP 401/403, or pre-emptively for production runs. |
+| **Hugging Face token** (gated models only) | `llama-pipeline.sbatch`, `dsr1-pipeline.sbatch` if pulling a gated repo | `azcluster ssh <name> --user clusteradmin` then store at `~/.hf-token` (mode 0600). In the sbatch, `export HF_TOKEN=$(cat ~/.hf-token)` before the `hf download`. The two models we use (`neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8`, `deepseek-ai/DeepSeek-R1-0528`) are public and don't need a token; gated models (Meta's own Llama, Qwen3.5-FP8) do. |
+| **Azure access** | Everything | `azcluster login` once on the operator's laptop — token cache lives at `~/.azure/azcli_tokens.json`. The cluster itself uses managed identities for blob and AMW access; no operator action needed. |
+
+Without an NGC key, anonymous pulls from `nvcr.io` may succeed for public images but get heavily rate-limited (and some images require it outright). When `enroot import` fails with HTTP 401 or 403, the credentials file is the fix.
+
 ### 0. Cluster + Grafana — deploy
 
 ```bash
