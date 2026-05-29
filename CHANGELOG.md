@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.10] - 2026-05-29
+
+### Fixed
+- **DCGM `counters.csv` was being rejected by dcgm-exporter** with `record on line 6: wrong number of fields`. 13 of the v0.24.2/v0.24.5 counter descriptions contained literal commas inside the `help message` field (e.g. `gauge, Maximum operating temperature (tlimit, 87C on H100 SXM5).` — the comma after `(tlimit` made dcgm-exporter's CSV parser see 4 fields not 3). Result: dcgm-exporter `systemctl is-active` reported `active` (because systemd's Type=simple just checks the process is running), but the actual exporter binary had crashed at startup and was being restart-looped — `curl :9400/metrics | grep DCGM_` returned 0 lines, and AMW received zero DCGM data. Every v0.24.2-v0.24.9 deploy was silently shipping zero GPU metrics. Fix: rewrite description commas as semicolons in `cloud-init/compute.yaml.tmpl`. Verified end-to-end: 248 metric lines now flow per compute node (31 fields × 8 GPUs).
+- `bicep/main.json` regenerated against the fixed cloud-init template.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.9` to `v0.24.10`.
+
 ## [0.24.9] - 2026-05-28
 
 ### Fixed

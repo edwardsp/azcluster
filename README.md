@@ -2,7 +2,9 @@
 
 Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~7-15 minutes wall-clock, no daemons on your laptop.
 
-> **Status (v0.24.9)**: patch — fixes another v0.24.7-day regression. `get_grafana_token()` was caching its result into the same on-disk slot as the vault token, so subsequent KV ops got rejected by Key Vault with `Invalid audience` (the deploy print-out reported "Key Vault RBAC not yet propagated" — wrong; it was the wrong-audience token). Grafana scope is now minted without touching the cache.
+> **Status (v0.24.10)**: patch — silent DCGM exporter crash. v0.24.2-v0.24.9 shipped a `counters.csv` whose help-message fields contained commas (e.g. `Maximum operating temperature (tlimit, 87C on H100 SXM5)`), and dcgm-exporter's CSV parser rejects rows with ≠ 3 fields. systemctl reported `active` because it was restart-looping fast enough to look healthy, but `:9400/metrics` returned zero DCGM lines and AMW got zero GPU data. Fix: rewrite description commas as semicolons. Live-validated 248 DCGM metric lines per compute node post-fix.
+
+> **Previous status (v0.24.9)**: patch — fixes another v0.24.7-day regression. `get_grafana_token()` was caching its result into the same on-disk slot as the vault token, so subsequent KV ops got rejected by Key Vault with `Invalid audience` (the deploy print-out reported "Key Vault RBAC not yet propagated" — wrong; it was the wrong-audience token). Grafana scope is now minted without touching the cache.
 
 > **Previous status (v0.24.8)**: patch — fixes the two v0.24.7 release-day regressions. (1) Grafana scope: v0.24.7 used the wrong AAD application GUID for AMG (`ce34865e-...` = Azure Monitor RP, not callable) so first-deploy dashboard import always failed with `AADSTS500011`. Now uses `ce34e7e5-485f-4d76-964f-b3d2b16d1e4f` (correct AMG first-party app, same one `az grafana` uses). (2) `deploy --skip-arm` now reuses the pending deployment name from `<cluster>-pending.toml` instead of generating a fresh one, which always 404'd on `get_deployment()` when the timings capture / dashboard import phase tried to read ARM state.
 
@@ -187,7 +189,7 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600). Subscriptions enumerat
 Grab the prebuilt CLI from the latest release:
 
 ```bash
-VERSION=v0.24.9
+VERSION=v0.24.10
 ARCH=x86_64-linux                       # or aarch64-darwin
 curl -fsSL -o azcluster \
   https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
