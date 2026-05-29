@@ -550,7 +550,26 @@ curl -sG "${ENDPOINT}/api/v1/query_range" \
 
 Returning `0` = blank chart (scrape interval too long for run window, or wrong metric name). Returning `16` (= 2 nodes × 8 GPUs) = good. Don't render a matplotlib PNG without first confirming this returns the expected series count.
 
-### 8. Tear-down
+### 8. Job-accounting capture
+
+After every walkthrough run completes (before tearing down), capture the full Slurm accounting record. This goes at the end of every version-specific walkthrough doc so reviewers can verify the actual job timing and exit status without re-running.
+
+```bash
+azcluster exec <name> --user clusteradmin -- "sacct --starttime $(date -d '6 hours ago' +%Y-%m-%dT%H:%M:%S) --format=JobID,JobName%24,Partition,NodeList%30,Start,End,Elapsed,State,ExitCode -P"
+```
+
+`-P` produces pipe-delimited output that pastes cleanly into a markdown table. `--format` is explicit because the default `sacct` columns truncate names. `--starttime` is required since the default range is "today" which can miss late-evening runs.
+
+Field meanings:
+
+- `JobID` — Slurm job ID. Child step rows (`<jobid>.batch`, `<jobid>.extern`, `<jobid>.0`) appear underneath the parent and account for the actual srun work.
+- `JobName` — first 24 chars of the SBATCH `--job-name`
+- `NodeList` — exact compute nodes the job landed on (use this to correlate with per-node DCGM/IB metrics in Grafana)
+- `Start` / `End` — UTC timestamps; use these as the time-range when querying AMW or rendering matplotlib charts
+- `State` — `COMPLETED` is the only success
+- `ExitCode` — `0:0` is success; first number is the highest exit code returned by `srun`, second is the killing signal
+
+### 9. Tear-down
 
 ```bash
 azcluster delete <name>
