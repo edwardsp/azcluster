@@ -160,8 +160,18 @@ write_files:
       trap 'chmod 0644 /etc/slurm/slurm.conf /etc/slurm/plugstack.conf /etc/slurm/cgroup.conf /etc/slurm/gres.conf 2>/dev/null || true' EXIT
       . /etc/azcluster/install.env
 
+      # See compute.yaml.tmpl for rationale: DPkg::Lock::Timeout only covers
+      # the dpkg locks, not /var/lib/apt/lists/lock. Wrap apt-get with apt_wait.
+      apt_wait() {
+        local i=0
+        while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          sleep 5; i=$((i+1)); [ $i -gt 120 ] && break
+        done
+      }
+      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+
       if [ -n "${EXTRA_PACKAGES:-}" ]; then
-        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}
+        aptget install -y ${EXTRA_PACKAGES}
       fi
 
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmctld /var/log/slurm /etc/slurm /opt/pyxis
@@ -187,8 +197,8 @@ write_files:
       if [ "${ENABLE_ACCOUNTING:-false}" = "true" ]; then
         EXTRA_PKGS="${EXTRA_PKGS} slurm-smd-slurmdbd mariadb-client"
       fi
-      apt-get -o DPkg::Lock::Timeout=600 update
-      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
+      aptget update
+      aptget install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-slurmctld \
@@ -590,8 +600,8 @@ write_files:
       # killing the whole bootstrap under `set -euo pipefail`).
       AZ_CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_CODENAME} main" > /etc/apt/sources.list.d/azure-cli.list
-      apt-get -o DPkg::Lock::Timeout=600 update
-      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends azure-cli
+      aptget update
+      aptget install -y --no-install-recommends azure-cli
       # Defensive login: scheduler UAI may have no subscription RBAC under
       # --no-monitoring --no-accounting test mode. No `az` calls follow on
       # the scheduler itself, so a failed login is tolerable.
@@ -787,7 +797,7 @@ write_files:
         "slapd slapd/move_old_database boolean true" \
         "slapd slapd/no_configuration boolean false" \
         | debconf-set-selections
-      apt-get -o DPkg::Lock::Timeout=600 install -y slapd
+      aptget install -y slapd
       for i in $(seq 1 30); do
         if ldapsearch -Y EXTERNAL -H ldapi:/// -b cn=schema,cn=config dn 2>/dev/null | grep -q '^dn: cn=.*core,cn=schema'; then
           break
@@ -822,7 +832,7 @@ write_files:
       systemctl enable slapd
       unset LDAP_ADMIN_PW
 
-      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \
+      DEBIAN_FRONTEND=noninteractive aptget install -y \
         sssd sssd-ldap sssd-tools libnss-sss
       cat > /etc/sssd/sssd.conf <<EOF
       [sssd]

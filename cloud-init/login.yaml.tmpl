@@ -57,8 +57,18 @@ write_files:
       trap 'chmod 0644 /etc/slurm/plugstack.conf 2>/dev/null || true' EXIT
       . /etc/azcluster/cluster.env
 
+      # See compute.yaml.tmpl for rationale: DPkg::Lock::Timeout only covers
+      # the dpkg locks, not /var/lib/apt/lists/lock. Wrap apt-get with apt_wait.
+      apt_wait() {
+        local i=0
+        while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          sleep 5; i=$((i+1)); [ $i -gt 120 ] && break
+        done
+      }
+      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+
       if [ -n "${EXTRA_PACKAGES:-}" ]; then
-        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}
+        aptget install -y ${EXTRA_PACKAGES}
       fi
 
       mkdir -p /shared /var/log/azcluster /etc/slurm
@@ -76,7 +86,7 @@ write_files:
 
       if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
         mkdir -p /amlfs
-        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client || true
+        aptget install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || aptget install -y --no-install-recommends amlfs-lustre-client || true
         if ! mountpoint -q /amlfs; then
           eval "${AMLFS_MOUNT_CMD} /amlfs" || echo "AMLFS mount failed; continuing" >&2
         fi
@@ -90,8 +100,8 @@ write_files:
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
-      apt-get -o DPkg::Lock::Timeout=600 update
-      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
+      aptget update
+      aptget install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-sackd
@@ -213,7 +223,7 @@ write_files:
         systemctl enable --now sackd
       fi
 
-      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \
+      DEBIAN_FRONTEND=noninteractive aptget install -y \
         sssd sssd-ldap sssd-tools libnss-sss libpam-sss oddjob-mkhomedir
       cat > /etc/sssd/sssd.conf <<EOF
       [sssd]

@@ -78,8 +78,20 @@ write_files:
       trap 'chmod 0644 /etc/slurm/plugstack.conf 2>/dev/null || true' EXIT
       . /etc/azcluster/install.env
 
+      # Wait for any in-flight unattended-upgrades / apt-daily to release the
+      # apt-lists lock AND the dpkg lock-frontend. DPkg::Lock::Timeout only
+      # covers the dpkg locks, NOT /var/lib/apt/lists/lock; we wrap every
+      # apt-get call to also wait on the apt-lists lock explicitly.
+      apt_wait() {
+        local i=0
+        while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
+          sleep 5; i=$((i+1)); [ $i -gt 120 ] && break
+        done
+      }
+      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+
       if [ -n "${EXTRA_PACKAGES:-}" ]; then
-        apt-get -o DPkg::Lock::Timeout=600 install -y ${EXTRA_PACKAGES}
+        aptget install -y ${EXTRA_PACKAGES}
       fi
 
       mkdir -p /shared /opt/azcluster /var/log/azcluster /var/spool/slurmd /var/log/slurm /etc/slurm /opt/pyxis /run/enroot
@@ -101,7 +113,7 @@ write_files:
       NVME_COUNT=$(printf "%s\n" "${NVME_DEVS}" | grep -c . || true)
       if [ "${NVME_COUNT}" -ge 1 ] && ! mountpoint -q /mnt/nvme; then
         echo "Found ${NVME_COUNT} local NVMe disk(s) for RAID-0 scratch: ${NVME_DEVS}"
-        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends mdadm
+        aptget install -y --no-install-recommends mdadm
         for d in ${NVME_DEVS}; do
           swapoff "$d" 2>/dev/null || true
           umount "$d" 2>/dev/null || true
@@ -198,7 +210,7 @@ write_files:
 
       if [ -n "${AMLFS_MOUNT_CMD:-}" ]; then
         mkdir -p /amlfs
-        apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends amlfs-lustre-client || true
+        aptget install -y --no-install-recommends amlfs-lustre-client-$(uname -r) || aptget install -y --no-install-recommends amlfs-lustre-client || true
         if ! mountpoint -q /amlfs; then
           eval "${AMLFS_MOUNT_CMD} /amlfs" || echo "AMLFS mount failed; continuing" >&2
         fi
@@ -212,8 +224,8 @@ write_files:
       ARCH=$(dpkg --print-architecture)
       CODENAME=$(. /etc/os-release; echo "${VERSION_CODENAME}")
       echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/slurm-ubuntu-${CODENAME} stable main" > /etc/apt/sources.list.d/slurm.list
-      apt-get -o DPkg::Lock::Timeout=600 update
-      apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
+      aptget update
+      aptget install -y --no-install-recommends \
         slurm-smd \
         slurm-smd-client \
         slurm-smd-slurmd \
@@ -227,7 +239,7 @@ write_files:
       cd /tmp
       curl -fsSL --retry 8 --retry-delay 5 -o enroot.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot_${ENROOT_VERSION}-1_${ARCH}.deb"
       curl -fsSL --retry 8 --retry-delay 5 -o enroot-caps.deb "https://github.com/NVIDIA/enroot/releases/download/v${ENROOT_VERSION}/enroot+caps_${ENROOT_VERSION}-1_${ARCH}.deb"
-      apt-get -o DPkg::Lock::Timeout=600 install -y ./enroot.deb ./enroot-caps.deb
+      aptget install -y ./enroot.deb ./enroot-caps.deb
 
       mkdir -p /etc/enroot /etc/enroot/environ.d
       mkdir -p "${ENROOT_BASE}/enroot-temp"
@@ -736,7 +748,7 @@ write_files:
 
       systemctl enable --now slurmd
 
-      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y \
+      DEBIAN_FRONTEND=noninteractive aptget install -y \
         sssd sssd-ldap sssd-tools libnss-sss libpam-sss oddjob-mkhomedir
       cat > /etc/sssd/sssd.conf <<EOF
       [sssd]
@@ -802,6 +814,11 @@ write_files:
       [ -z "${SLURM_JOB_USER:-}" ] && exit 0
       [ -z "${SLURM_JOB_UID:-}" ] && exit 0
       [ -z "${SLURM_JOB_GID:-}" ] && exit 0
+      # install -d requires parents to exist; use mkdir -p first to create
+      # /mnt/nvme/users on the very first job after boot (cloud-init creates
+      # /mnt/nvme but not the users/ subdir).
+      mkdir -p /mnt/nvme/users
+      chmod 0755 /mnt/nvme/users
       install -d -o "${SLURM_JOB_UID}" -g "${SLURM_JOB_GID}" -m 0700 \
         "/mnt/nvme/users/${SLURM_JOB_USER}"
       exit 0

@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.11] - 2026-05-29
+
+### Fixed
+- **Compute / login / scheduler bootstrap aborted on apt-lists lock contention.** v0.24.7 added `bootcmd` hooks that stop/mask `unattended-upgrades.service apt-daily.service apt-daily-upgrade.service` + `pkill -9 -f 'unattended-upgrade|apt-get'` BEFORE cloud-init's package phase, which fixed the original race for first-boot. But on a fresh deploy in `eastus` (v2411walk), one of two H100 compute nodes still hit `E: Could not get lock /var/lib/apt/lists/lock. It is held by process 11352 (apt)` deep inside `install-compute.sh` — a NEW apt process had started AFTER bootcmd's `pkill` (likely a kernel-update post-install trigger from the `unattended-upgrade` that was already mid-flight when bootcmd killed it) and was holding the apt-lists lock when our script tried `aptget install`. The `-o DPkg::Lock::Timeout=600` flag only covers the **dpkg** locks (`/var/lib/dpkg/lock-frontend`, `/var/lib/dpkg/lock`), NOT `/var/lib/apt/lists/lock` (apt's own metadata lock), so the wait was a no-op for this particular contention. v0.24.11 fix: every install script (compute, login, scheduler) now defines an `apt_wait` shell function that polls `fuser` against all three locks (10-min cap, 5s interval) plus an `aptget` wrapper that calls `apt_wait` before every `apt-get` invocation. Replaces all 17 `apt-get -o DPkg::Lock::Timeout=600 ...` call sites across the 3 templates. Live-reproduced on v2411walk's gpu-0003 (which left `install-compute.sh` at line ~228 with `Could not get lock`, never registering with Slurm); manual rerun with `apt_wait`-equivalent completed cleanly. Compute node `slurmd` registers normally after the fix.
+- **Slurm prolog drained nodes on the very first job after boot** with `Prolog error`. `/etc/slurm/prolog.d/10-azcluster-user-nvme.sh` called `install -d -o $UID -g $GID -m 0700 /mnt/nvme/users/${SLURM_JOB_USER}`. `install -d` does NOT auto-create parents (despite the man-page wording — `install -d` creates the LEAF dir only), so the FIRST prolog invocation after boot errored because `/mnt/nvme/users/` (the parent) didn't exist. Slurm marked the node `DRAIN` with reason `Prolog error`; an operator had to manually `scontrol update nodename=<node> state=resume` to recover. Fix: prepend `mkdir -p /mnt/nvme/users; chmod 0755 /mnt/nvme/users` to the prolog, then call `install -d` for the per-user leaf. Idempotent on every job thereafter; first-job-after-boot now succeeds.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.10` to `v0.24.11`.
+- `bicep/main.json` regenerated against the updated cloud-init templates.
+
 ## [0.24.10] - 2026-05-29
 
 ### Fixed
