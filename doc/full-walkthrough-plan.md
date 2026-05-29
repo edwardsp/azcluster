@@ -496,7 +496,11 @@ if [ "$NODE_RANK" = "0" ]; then
     --num-prompts $((CONC*10)) --max-concurrency $CONC \
     --result-filename $RESULT_FILENAME --result-dir /workspace/
   stop_gpu_monitor
-  kill $SERVER_PID || true
+  # SIGTERM (default `kill`) then `wait` lets sglang shut down gracefully so the
+  # sbatch exits 0. Using `kill -9` propagates 137 (128+SIGKILL) up through the
+  # srun -> sbatch chain and sacct reports FAILED even though the bench succeeded.
+  kill $SERVER_PID 2>/dev/null || true
+  wait $SERVER_PID 2>/dev/null || true
 else
   wait $SERVER_PID
 fi
