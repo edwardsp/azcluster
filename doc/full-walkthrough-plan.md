@@ -202,16 +202,117 @@ Expect `# Avg bus bandwidth : 460-466 GB/s`.
 
 ### 3. NCCL in a NeMo container, 2 nodes × 16 ranks
 
-Shipped at `/shared/examples/dgxc-nemo-multinode-smoke.sbatch`. Submit:
+Two sbatches; both shipped by cloud-init at `/shared/examples/`. Reproduced here for reference (and in case the operator wants to modify the model/container/iters without re-deploying).
+
+#### 3a. Single-node smoke (`dgxc-nemo-container-smoke.sbatch`)
+
+Drops the `nccl_allreduce_smoke.py` helper into `/shared/dgxc/`, then runs an 8-rank intra-node all-reduce inside the NeMo container. First-run import of `nvcr.io/nvidia/nemo:25.07.02` (~16 GB) takes ~25 min on a cold node; subsequent runs are seconds.
 
 ```bash
-# First-time only: drop the python script the multinode sbatch needs
+#!/usr/bin/env bash
+#SBATCH --job-name=dgxc-nemo-smoke
+#SBATCH --output=dgxc-nemo-smoke-%j.out
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=8
+#SBATCH --exclusive
+#SBATCH --time=00:30:00
+
+NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}
+
+mkdir -p /shared/dgxc
+cat > /shared/dgxc/nccl_allreduce_smoke.py <<'PY'
+import os, time, torch
+import torch.distributed as dist
+
+def main():
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl")
+    rank, world = dist.get_rank(), dist.get_world_size()
+    print(f"rank {rank} / world {world} on device {torch.cuda.current_device()} "
+          f"({torch.cuda.get_device_name(local_rank)})", flush=True)
+
+    # Warmup + measured all-reduce of a 1 GiB float16 tensor.
+    numel = 512 * 1024 * 1024          # 512 M elements = 1 GiB fp16
+    tensor = torch.ones(numel, dtype=torch.float16, device="cuda")
+    for _ in range(5):
+        dist.all_reduce(tensor)
+    torch.cuda.synchronize()
+
+    iters = 20
+    dist.barrier()
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        dist.all_reduce(tensor)
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t0
+
+    if rank == 0:
+        size_bytes = numel * 2
+        # busbw factor for ring/tree all-reduce = 2*(N-1)/N
+        algbw = size_bytes * iters / elapsed / 1e9
+        busbw = algbw * 2 * (world - 1) / world
+        print(f"all_reduce size=1GiB iters={iters} elapsed={elapsed:.3f}s "
+              f"algbw={algbw:.2f} GB/s avg busbw={busbw:.2f} GB/s",
+              flush=True)
+    dist.destroy_process_group()
+
+if __name__ == "__main__":
+    main()
+PY
+
+srun \
+  --container-image="${NEMO_IMAGE}" \
+  --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \
+  --no-container-mount-home \
+  --export=ALL,NCCL_DEBUG=INFO \
+  bash -c 'set -euo pipefail; cd /; torchrun --nproc_per_node=8 /shared/dgxc/nccl_allreduce_smoke.py'
+```
+
+Success criteria: `pyxis: imported docker image: ...` + `rank 0 / world 8` + `all_reduce avg busbw` > 100 GB/s + `NCCL_DEBUG INFO` mentions `IBext_v11` + `mlx5_ib` (not `via SOCKET`).
+
+#### 3b. Multinode (`dgxc-nemo-multinode-smoke.sbatch`)
+
+Reuses the python script the single-node smoke dropped. Runs across 2 nodes via `srun --mpi=pmix` — exercises cross-container PMIx world (v0.13.6 unblocked this) + IB device visibility inside container (v0.13.8 `MELLANOX_VISIBLE_DEVICES=all` enroot hook).
+
+```bash
+#!/usr/bin/env bash
+#SBATCH --job-name=dgxc-nemo-multi
+#SBATCH --output=dgxc-nemo-multi-%j.out
+#SBATCH --partition=gpu
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=8
+#SBATCH --gpus-per-node=8
+#SBATCH --exclusive
+#SBATCH --time=00:30:00
+
+NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}
+
+if [ ! -f /shared/dgxc/nccl_allreduce_smoke.py ]; then
+  echo "Missing /shared/dgxc/nccl_allreduce_smoke.py; run dgxc-nemo-container-smoke.sbatch first." >&2
+  exit 1
+fi
+
+srun --mpi=pmix \
+  --container-image="${NEMO_IMAGE}" \
+  --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \
+  --no-container-mount-home \
+  --export=ALL,NCCL_DEBUG=INFO \
+  bash -c 'set -euo pipefail; cd /; python /shared/dgxc/nccl_allreduce_smoke.py'
+```
+
+Submit:
+
+```bash
+# Single-node smoke first (drops the python script + imports the NeMo container)
 azcluster exec <name> --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-container-smoke.sbatch"
-# Wait for that to finish (~25 min first time for NeMo container import), then:
+# Wait for that to finish (~25 min first time, ~1 min after), then:
 azcluster exec <name> --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch"
 ```
 
-Expect `all_reduce ... avg busbw 425-435 GB/s` in `dgxc-nemo-multi-<jobid>.out`.
+Expect `all_reduce ... avg busbw 425-435 GB/s` in `dgxc-nemo-multi-<jobid>.out`. The single-node smoke produces ~465 GB/s (intra-NVLink-only, no IB hops).
 
 ### 4. Storage pipeline — small model (Llama 3.1 8B FP8)
 
