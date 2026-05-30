@@ -223,44 +223,44 @@ flowchart LR
     operator([operator laptop])
     subgraph azure[Subscription / Resource Group]
         direction TB
-        bastion[Azure Bastion<br/>Standard + tunneling]
-        login[login VM<br/>SSSD client]
-        sched[scheduler VM<br/>slurmctld<br/>slurmdbd<br/>slapd LDAP<br/>azcluster-server]
-        subgraph compute[VMSS Flex compute pools]
-            c1[gpu pool<br/>ND96isr_H100_v5<br/>slurmd, Pyxis, Enroot<br/>NCCL+IB, dcgm-exporter<br/>azhealthcheck, prometheus]
-            c2[cpu pool<br/>any SKU<br/>same toolchain]
-        end
-        kv[Key Vault<br/>cluster-manifest<br/>secrets-bundle<br/>admin SSH key]
-        storage[Storage account<br/>data container<br/>PE-only]
+        bastion[Azure Bastion]
+        login[login VM]
+        sched[scheduler VM<br/>slurmctld + slurmdbd<br/>slapd LDAP<br/>azcluster-server]
+        gpu_pool[gpu VMSS Flex<br/>ND96isr_H100_v5<br/>slurmd, Pyxis, Enroot<br/>NCCL+IB, DCGM, healthcheck]
+        cpu_pool[cpu VMSS Flex<br/>any SKU]
+        kv[Key Vault<br/>manifest + secrets + SSH key]
+        storage[Storage account<br/>blob, PE-only]
         anf[ANF NFSv4.1<br/>/shared]
         mysql[(MySQL Flex<br/>slurmdbd backend)]
-        amw[Azure Monitor Workspace<br/>Managed Prometheus]
-        amg[Managed Grafana<br/>4 dashboards in azcluster folder]
-        nat[NAT Gateway<br/>egress]
+        amw[Azure Monitor Workspace]
+        amg[Managed Grafana<br/>4 dashboards]
     end
 
-    operator -- ssh --> bastion
-    bastion -- tcptunnel --> login
-    bastion -- tcptunnel --> sched
-    login -- ProxyJump --> sched
-    login -- ProxyJump --> compute
-    sched -- "slurmd&nbsp;--conf-server" --> compute
-    sched <-- ldap --> login
-    sched <-- ldap --> compute
-    sched <-- "TLS:6819" --> mysql
-    compute -- NFSv4.1 --> anf
-    login -- NFSv4.1 --> anf
-    sched -- NFSv4.1 --> anf
-    compute -- "IMDS&nbsp;Bearer" --> storage
-    compute -- remote_write --> amw
-    sched -- remote_write --> amw
-    login -- remote_write --> amw
+    operator -->|ssh| bastion
+    bastion --> login
+    bastion --> sched
+    login -->|ProxyJump| sched
+    login -->|ProxyJump| gpu_pool
+    login -->|ProxyJump| cpu_pool
+    sched -->|conf-server| gpu_pool
+    sched -->|conf-server| cpu_pool
+    login <-->|ldap| sched
+    gpu_pool <-->|ldap| sched
+    cpu_pool <-->|ldap| sched
+    sched <-->|TLS 6819| mysql
+    gpu_pool -->|NFS| anf
+    cpu_pool -->|NFS| anf
+    login -->|NFS| anf
+    sched -->|NFS| anf
+    gpu_pool -->|IMDS Bearer| storage
+    cpu_pool -->|IMDS Bearer| storage
+    gpu_pool -->|remote write| amw
+    cpu_pool -->|remote write| amw
+    sched -->|remote write| amw
+    login -->|remote write| amw
     amg --> amw
-    operator -. "KV REST" .-> kv
-    sched -. "KV REST" .-> kv
-    compute --> nat
-    sched --> nat
-    login --> nat
+    operator -.->|KV REST| kv
+    sched -.->|KV REST| kv
 ```
 
 **Network plan** (VNet `10.42.0.0/16`):
@@ -291,21 +291,17 @@ Big datasets and model weights follow a canonical path: HuggingFace → per-clus
 ```mermaid
 flowchart LR
     hf[HuggingFace CDN]
-    subgraph node1["compute node 1"]
-        n1nvme["/mnt/nvme/users/u/models/m/"]
-    end
-    subgraph nodeN["compute node N"]
-        nNnvme["/mnt/nvme/users/u/models/m/"]
-    end
-    blob["Per-cluster Azure Blob<br/>data/users/u/models/m/"]
-    container["Inference container<br/>bind-mount /models/m"]
+    n1nvme["/mnt/nvme on node 1"]
+    nNnvme["/mnt/nvme on node N"]
+    blob[Per-cluster Azure Blob]
+    container[Inference container]
 
-    hf -- "[1] hf download<br/>(single node)" --> n1nvme
-    n1nvme -- "[2] azcp copy<br/>(single node)" --> blob
-    blob -- "[3] azcp-cluster<br/>(MPI, IB broadcast)" --> n1nvme
-    blob -- "[3] azcp-cluster<br/>(MPI, IB broadcast)" --> nNnvme
-    n1nvme -- "[4] bind-mount" --> container
-    nNnvme -- "[4] bind-mount" --> container
+    hf -->|"1. hf download (single node)"| n1nvme
+    n1nvme -->|"2. azcp copy (single node)"| blob
+    blob -->|"3. azcp-cluster MPI broadcast"| n1nvme
+    blob -->|"3. azcp-cluster MPI broadcast"| nNnvme
+    n1nvme -->|"4. bind-mount /models/m"| container
+    nNnvme -->|"4. bind-mount /models/m"| container
 ```
 
 Measured on a 2-node `Standard_ND96isr_H100_v5` cluster: 8.5 GB Llama 8B in 9 s (8.7 Gbps upload, 20 Gbps broadcast); 642 GiB DeepSeek-R1-0528 in 30 min HF download + 9 min azcp upload (10.2 Gbps) + 134 s cluster broadcast (41 Gbps). Larger clusters scale better; 2 nodes is the worst case for `azcp-cluster` because each rank must read ~50% of the bytes from local NVMe while writing the other ~50%.
