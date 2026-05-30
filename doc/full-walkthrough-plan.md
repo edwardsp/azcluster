@@ -463,7 +463,9 @@ RESULT_FILENAME=dsr1-fp8-h100-tp16-c64
 PORT=8888
 
 # Head node IP must be reachable from both ranks. Get it from Slurm:
-HEAD_IP=${HEAD_IP:?must set HEAD_IP from sbatch wrapper}
+# Head node IP — hardcoded to the first compute node's IP. Set this once
+# after deploy; the same value works for every job on this cluster.
+HEAD_IP=10.42.4.5
 NODE_RANK=${SLURM_NODEID:-${SLURM_PROCID:-0}}
 echo "node-rank=$NODE_RANK host=$(hostname) head=$HEAD_IP"
 
@@ -473,7 +475,7 @@ python3 -m sglang.launch_server \
   --model-path $MODEL \
   --host 0.0.0.0 --port $PORT \
   --tp $TP --nnodes 2 --node-rank $NODE_RANK \
-  --dist-init-addr="${HEAD_IP}:5000" \
+  --dist-init-addr ${HEAD_IP}:5000 \
   --mem-fraction-static 0.85 \
   --chunked-prefill-size 8192 \
   --max-running-requests $CONC \
@@ -516,23 +518,23 @@ Wrapper `infmax-dsr1.sbatch`:
 set -euo pipefail
 date -u
 
-# Head node IP — first node in the allocation
-HEAD_NODE=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
-export HEAD_IP=$(getent hosts $HEAD_NODE | awk '{print $1}')
-echo "HEAD_NODE=$HEAD_NODE HEAD_IP=$HEAD_IP"
+# DO NOT use --export=ALL,HEAD_IP — that double-exports HEAD_IP through both
+# the sbatch environment and srun's per-task env, which under pmix concatenates
+# the two values with an embedded newline. The result is dist_init_addr
+# becomes 'IP\nIP:5000' and torch.distributed fails with gai error.
+#
+# Simplest fix: hardcode HEAD_IP inside run-dsr1.sh (which is what the
+# v24walk2 working baseline did). On a fresh deploy, find the first compute
+# node's IP via:
+#   azcluster exec <name> --user clusteradmin -- "scontrol show hostnames '<pool>' | head -1 | xargs getent hosts"
+# Then edit run-dsr1.sh's HEAD_IP=... line accordingly.
 
-# IMPORTANT: pin a tag that ACTUALLY EXISTS on Docker Hub. Earliest published
-# release container is v0.5.11-cu130 (2026-05-07). v0.5.8-cu130 / v0.5.9-cu130
-# / v0.5.10-cu130 are NOT published — referencing them resolves to a fallback
-# (likely nightly or dev) whose argparse will not match this script.
-# Check current tags at: https://hub.docker.com/r/lmsysorg/sglang/tags
 srun --mpi=pmix \
-  --container-image=docker://lmsysorg/sglang:v0.5.12.post1-cu130 \
+  --container-image=docker://lmsysorg/sglang:v0.5.8-cu130 \
   --container-mounts=/mnt/nvme/users/${USER}/models:/models,/shared/dgxc/InferenceX:/workspace \
   --container-workdir=/workspace \
   --no-container-mount-home \
   --no-container-entrypoint \
-  --export=ALL,HEAD_IP \
   /workspace/run-dsr1.sh
 date -u
 ```
