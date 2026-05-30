@@ -21,7 +21,7 @@ A deployed cluster has:
 - **Per-cluster Azure Key Vault** holding the cluster manifest and admin SSH keypair so any operator with KV RBAC can run commands from a fresh laptop
 - **LDAP-backed multi-user setup** (slapd on scheduler, SSSD on login + compute) with two default users (`clusteradmin` + `clusteruser`) provisioned at deploy time
 - **Slurm accounting** via Azure Database for MySQL Flexible Server
-- **Per-node `azhealthcheck`** running every 5 minutes via Slurm `HealthCheckProgram` to drain misbehaving nodes automatically
+- **Per-node `azhealthcheck`** running every 5 minutes via Slurm `HealthCheckProgram` to drain misbehaving nodes automatically (see [`doc/healthchecks.md`](doc/healthchecks.md))
 
 ## Why azcluster
 
@@ -345,7 +345,7 @@ Four Grafana dashboards land in an `azcluster` folder, populated from the first 
 - **Node Health** — CPU, memory, disk, network from `node_exporter` on every VM
 - **Slurm Scheduler** — queue, partition state, jobs by state (from `prometheus-slurm-exporter` on the scheduler)
 - **GPU + InfiniBand** — DCGM (util, memory, clocks, power, temperature, tlimit, throttle reasons, `SM_ACTIVE`, `PIPE_TENSOR_ACTIVE`, NVLink errors, ECC) + `node_infiniband_port_*` per-port rates
-- **Node Health Checks** — per-node/per-check status from `azhealthcheck` (runs every 5 min via Slurm `HealthCheckProgram`; non-zero exit drains the node)
+- **Node Health Checks** — per-node/per-check status from `azhealthcheck` (runs every 5 min via Slurm `HealthCheckProgram`; non-zero exit drains the node). See [`doc/healthchecks.md`](doc/healthchecks.md) for the check list, severity model, and Prometheus metrics surface.
 
 Open the URL via `azcluster monitor <name>`. The same PromQL works in Grafana's Explore view — useful queries:
 
