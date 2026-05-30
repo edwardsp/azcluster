@@ -286,34 +286,57 @@ flowchart LR
 
 ## Storage pipeline for big models
 
-Big datasets and model weights follow a canonical path: HuggingFace → per-cluster blob → MPI broadcast → per-node NVMe RAID-0. Two example sbatch templates ship under `/shared/examples/`.
+Big datasets and model weights follow a two-phase canonical path. Phase 1 happens **once per model**: download from HuggingFace to NVMe, upload to the per-cluster blob. Phase 2 happens **every time you start a job**: broadcast from blob across all compute nodes in parallel over IB, then bind-mount into the container. The model persists in blob for the lifetime of the cluster, so phase 2 is the fast path — phase 1 is amortised.
+
+Two example sbatch templates ship under `/shared/examples/`.
+
+### Phase 1 — one-time ingest (per model)
 
 ```mermaid
 sequenceDiagram
     participant HF as HuggingFace CDN
     participant N1 as Compute node 1<br/>(/mnt/nvme)
     participant Blob as Per-cluster<br/>Azure Blob
+
+    Note over N1: hf download<br/>(single node, ~4 Gbps from HF CDN)
+    HF->>N1: model weights
+
+    Note over N1,Blob: azcp copy<br/>(single node, ~10 Gbps to blob PE)
+    N1->>Blob: model weights
+```
+
+After this, the model is in blob and stays there for the cluster's lifetime. Skip to phase 2 for any subsequent run.
+
+### Phase 2 — every job (fast path)
+
+```mermaid
+sequenceDiagram
+    participant Blob as Per-cluster<br/>Azure Blob
+    participant N1 as Compute node 1<br/>(/mnt/nvme)
     participant NN as Compute node N<br/>(/mnt/nvme)
     participant C as Inference container
 
-    Note over N1: 1. hf download (single node)
-    HF->>N1: model weights
-
-    Note over N1,Blob: 2. azcp copy (single node, ~10 Gbps)
-    N1->>Blob: model weights
-
-    Note over Blob,NN: 3. azcp-cluster (MPI, IB broadcast, ~40 Gbps)
+    Note over Blob,NN: azcp-cluster<br/>(MPI, IB broadcast, ~40 Gbps at N=2, ~110 Gbps at N=16)
     Blob-->>N1: byte-range shard
     Blob-->>NN: byte-range shard
     N1-->>NN: peer broadcast over IB
     NN-->>N1: peer broadcast over IB
 
-    Note over N1,C: 4. bind-mount /models/m into container
-    N1->>C: /mnt/nvme/.../m -> /models/m
-    NN->>C: /mnt/nvme/.../m -> /models/m
+    Note over N1,C: bind-mount<br/>/mnt/nvme/.../m -> /models/m
+    N1->>C: container start
+    NN->>C: container start
 ```
 
-Measured on a 2-node `Standard_ND96isr_H100_v5` cluster: 8.5 GB Llama 8B in 9 s (8.7 Gbps upload, 20 Gbps broadcast); 642 GiB DeepSeek-R1-0528 in 30 min HF download + 9 min azcp upload (10.2 Gbps) + 134 s cluster broadcast (41 Gbps). Larger clusters scale better; 2 nodes is the worst case for `azcp-cluster` because each rank must read ~50% of the bytes from local NVMe while writing the other ~50%.
+### Measured numbers
+
+On a 2-node `Standard_ND96isr_H100_v5` cluster:
+
+| Model | Phase 1 (HF + upload, once) | Phase 2 (broadcast, per run) |
+|---|---|---|
+| Llama-3.1-8B-FP8 (8.5 GB) | 25 s + 9 s = 34 s | 3.6 s (20 Gbps) |
+| DeepSeek-R1-0528 FP8 (642 GiB) | 21 min + 9 min = 30 min | 134 s (41 Gbps) |
+
+Phase 2 scales near-linearly with node count above 2: 2 nodes is the worst case for `azcp-cluster` because each rank must read ~50% of the bytes from local NVMe while concurrently writing the other ~50%. At 16 nodes each rank reads ~6% and writes ~94%, and the upstream tuning doc measures 110 Gbps.
 
 ## Observability
 
