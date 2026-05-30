@@ -7,113 +7,111 @@ Instructions for AI agents working on this repository. Keep this file current.
 Every change MUST update three artifacts in lockstep:
 
 1. **`CHANGELOG.md`** — add entry under `## [Unreleased]` for every user-visible or operator-visible change. On tag, rename `Unreleased` to the new version with the release date, and open a fresh `Unreleased` section. Categories: `Added`, `Changed`, `Fixed`, `Removed`, `Deprecated`, `Security`.
-2. **`README.md`** — keep `Status`, `Quickstart`, `Architecture`, `Repo Layout` honest. If a phase ships, update the Status block. If a flag/command changes, update the Quickstart.
-3. **`AGENTS.md`** (this file) — when a new workflow, convention, or guard-rail emerges, add it here so the next agent inherits it.
+2. **`README.md`** — keep the top-of-file pointer line current (`**Current release:**`), keep `Quickstart`, `Deploy options`, `Operator commands`, `Architecture`, `Repo layout` honest. If a flag/command/default changes, update the relevant table or command example. **Do not** add release-note "status blocks" at the top — those belong in `CHANGELOG.md`.
+3. **`AGENTS.md`** (this file) — when a new workflow, convention, or guard-rail emerges, add it here so the next agent inherits it. Per-version gotchas at the bottom are the institutional debugging memory; append a new section per release if you hit a non-obvious bug.
 
-If a PR touches code but skips any of these three, it is incomplete.
+Additional doc surface:
+
+- **`doc/full-walkthrough-plan.md`** — canonical version-agnostic end-to-end walkthrough. Updated when an sbatch script changes or a new step is added. Every concrete sbatch lives here verbatim so version-specific walkthroughs (`doc/full-walkthrough-vX.Y.Z.md`) can reproduce.
+- **`doc/full-walkthrough-vX.Y.Z.md`** + matching `doc/full-walkthrough-vX.Y.Z/` chart directory — committed once per release that completes a clean end-to-end run. Latest: `v0.24.12`.
+- **`doc/healthchecks.md`** — operator-facing reference for the `azhealthcheck` binary, the 5 checks, the Prometheus textfile exporter, and the Grafana dashboard wiring. Update when adding/removing a check or changing a severity classification.
+
+If a PR touches code but skips any of these three required artifacts (CHANGELOG, README, AGENTS), it is incomplete. The doc/ surface updates are required only when the underlying contract changes.
 
 ## Release Workflow
 
-1. Land all `Unreleased` work; verify `cargo fmt && cargo clippy -- -D warnings && cargo test --workspace` and `az bicep build` clean across all modules.
-2. Edit `CHANGELOG.md`: rename `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` block at the top, update the link references at the bottom.
-3. Edit `README.md` Status block if phase advanced.
-4. Bump version: `crates/*/Cargo.toml`, the `--azcluster-version` CLI default in `crates/azcluster-cli/src/main.rs`.
-5. Commit, tag `vX.Y.Z`, push tag — CI publishes the release.
-6. Live-validate on `paul-azcluster`/`southafricanorth` before declaring done.
+1. Land all `Unreleased` work; verify the four gates below.
+2. Edit `CHANGELOG.md`: rename `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` block at the top.
+3. Bump version: `Cargo.toml` (workspace `[workspace.package] version = "X.Y.Z"`) and the `--azcluster-version` CLI default in `crates/azcluster-cli/src/main.rs`.
+4. Regenerate `bicep/main.json` (`az bicep build --file bicep/main.bicep --outfile bicep/main.json`) if any `bicep/*.bicep` or `cloud-init/*.tmpl` changed. CI fails on drift.
+5. Update README's `**Current release:**` line + the install snippet `VERSION=vX.Y.Z`.
+6. Commit, `git tag vX.Y.Z && git push origin main --tags` — CI publishes the release.
+7. Live-validate on a fresh cluster in the current test region (today: `eastus`) before declaring done. See "Live-test workflow" below.
 
-## v0.19.1 deploy UX (`azcluster resume`)
+## Live-test workflow
 
-- v0.19.0 overloaded `azcluster deploy` to detect a pending marker and switch to "resume" mode. That was confusing — "deploy" reads as "deploy again". v0.19.1 replaces it with an explicit verb: **`azcluster resume --name <name>`**.
-- New invariant: **`deploy` is strictly linear**. It writes the pending marker, submits ARM, and (without `--no-wait`) calls `finalize_deploy()` inline + deletes the marker. There is no resume branch in `deploy()` anymore.
-- New invariant: **blocking deploys also write+delete the pending marker** (around the ARM submission). If the operator's shell dies mid-deploy (terminal disconnect, hibernate, OOM kill), `azcluster resume --name <name>` recovers — same code path as `--no-wait`.
-- `finalize()` reads the pending marker, polls ARM until terminal, loads `ClusterSecrets`, queries `az group show --query location` to recover the missing `location` field (PendingDeploy schema doesn't persist `location`), builds a synthetic `DeployArgs`, calls `finalize_deploy()`, deletes the marker. On Failed/Canceled it bails with the standard delete-+-remove-pending-file hint.
-- `status` now appends `-> run azcluster resume --name <name> once ARM state is Succeeded` to the pending block, and the no-state footer points at `resume` instead of re-running `deploy`.
-- `resume_deploy()` function deleted. `PendingDeploy` schema unchanged from v0.19.0 (still 8 fields: `cluster, deployment_name, resource_group, started_at, monitoring_enabled, accounting_enabled, shared_storage, grafana_location`) — backward-compatible with v0.19.0 markers (validated live by `azcluster resume` finalising the `v19walk` pending marker that was created with v0.19.0).
+- **Region**: `eastus` is the default test region as of v0.24.x. Capacity for the `Standard_D*as_v5` family is intermittent — when scheduler/login deploys fail with `SkuNotAvailable`, override with `--scheduler-sku Standard_HB120rs_v3 --login-sku Standard_HB120rs_v3`. HBv3 capacity is reliably available because the GPU pool needs ND_v5 in the same region.
+- **Cluster name**: convention `v<MAJOR><MINOR><PATCH>walk` (e.g. `v2412walk` for v0.24.12). The plan canonical command is `azcluster deploy --name <name> --pool name=gpu,sku=Standard_ND96isr_H100_v5,count=2,default --bastion`; add `--location eastus --grafana-location eastus --scheduler-sku Standard_HB120rs_v3 --login-sku Standard_HB120rs_v3` for the eastus capacity workaround.
+- **Token files**: `hf_token.txt` and `ngc_key.txt` at the repo root (both gitignored). NEVER echo their contents; pass them via `azcluster scp ... :/shared/home/clusteradmin/.hf-token` per the walkthrough plan.
+- **Capture wall-clock + sacct + charts** as the walkthrough plan documents. Commit version-specific results under `doc/full-walkthrough-vX.Y.Z.md` + `doc/full-walkthrough-vX.Y.Z/` once the run is clean.
+- **Tear down immediately** after capture: `azcluster delete <name>` + `azcluster purge-kv --name <name> --location <region> --yes` to release H100 quota and the KV name.
 
-## v0.19.0 deploy UX (`--no-wait` + resume + enhanced status)
+## Hard Rules
 
-- **`--no-wait`** is plumbed through `clap` on `DeployArgs` and appended verbatim to `az deployment sub create`. CLI exits after writing `~/.config/azcluster/clusters/<name>-pending.toml` (`PendingDeploy` schema: `cluster, deployment_name, resource_group, started_at (UTC iso8601), monitoring_enabled, accounting_enabled, shared_storage, grafana_location`). Secrets MUST be persisted **before** `az deployment sub create` returns — ARM secure parameters are not retrievable from `properties.outputs`, so the resume path needs them on local disk. v0.19.0 enforces this by calling `secrets.save(...)` before building the `az` argv.
-- **Resume**. Re-running `azcluster deploy --name <name> …` with the pending file present jumps into `resume_deploy()` (skips template/SSH-key resolution, skips `az group create`, skips a fresh ARM submission). Polls `az deployment sub show --query properties.provisioningState` every 30 s (cap 90 min). On `Succeeded` it loads the persisted `ClusterSecrets` and calls `finalize_deploy()` (state file, timings capture, dashboard import), then `PendingDeploy::delete`. On `Failed`/`Canceled` it aborts with a recovery hint pointing at `azcluster delete` + manual pending-file removal — does NOT auto-tear-down.
-- **`finalize_deploy()`** is the single post-ARM path. Same call signature for blocking and resume flows. Takes the resolved RG explicitly (computed once at deploy start) so resume doesn't have to redo the `unwrap_or_else(|| format!("rg-azcluster-{}", name))` dance.
-- **`azcluster status`** now tolerates the no-state-file case (pending-only) AND the pending-and-state-file case (post-finalize but pending marker not yet cleaned up). SSH probe uses `BatchMode=yes`, `ConnectTimeout=8`, `StrictHostKeyChecking=accept-new`, `UserKnownHostsFile=/dev/null`, `LogLevel=ERROR`. Scheduler probe goes via ProxyJump through login. Both probes are best-effort — any SSH error prints `ERR (...)` and the command continues.
-- **`azcluster delete`** now falls back from `ClusterState::load` to `PendingDeploy::load_optional`, so an aborted `--no-wait` deploy is still tearable down via the CLI. Both files are removed on success.
-- Pending file path: `~/.config/azcluster/clusters/<name>-pending.toml`. State path: `~/.config/azcluster/clusters/<name>.toml`. Secrets: `~/.config/azcluster/clusters/<name>-secrets.toml`. Do not rename without grepping all three across `main.rs` + `cluster_state.rs`.
-- **`Command::new("ssh").args(["host", "--", "bash", "-lc", "cmd"])` is BROKEN** (v0.19.0 fix). OpenSSH whitespace-joins all positional remote args before passing them to the remote login shell, so the remote sees `bash -lc cmd arg1 arg2` and bash parses it as `-c 'cmd'` (ignoring everything after). When you need to run a multi-token shell command via `ssh`, pass it as a single string positional arg: `cmd.args(["host", "tail -n1 /path 2>/dev/null || echo MISSING"])`. The login shell on the remote will then parse and exec it correctly. Live-bitten by `bootstrap_probe` in v0.19.0 before live-validation caught it.
-
-
-
-## Hard Rules (carried from earlier sessions)
-
-- **No CycleCloud / Jetpack / CCWS references** in any public artifact (README, code, commits, tags, release notes). Past mentions were already scrubbed; don't reintroduce them.
-- **No personal identifiers or tenant-specific values** in committed files. Subscription IDs, RG names beyond the documented `paul-azcluster`, emails, etc. stay out of git.
-- **Public IPs off by default**; opt-in via `--login-public-ip`.
-- **All code Rust** except Bicep + bootstrap shell in cloud-init.
-- **Research checkouts** live under `research/` (gitignored). Planning artifacts under `.sisyphus/` (gitignored).
-- **Minimize comments**; let code be self-documenting. Necessary exceptions: clap doc-comments (they render as `--help` text), complex algorithms, security-critical sections.
-- **Never suppress type errors** (`as any`, `#[allow]` blanket, `unwrap()` on user input paths).
-- **Never commit** unless the user explicitly asks.
-- **Autonomous versioning is enabled** (user directive, AFK): when a coherent unit of work is complete, verified, and changelogged, the agent SHOULD bump the version, commit, tag, and push. Do not wait for explicit per-release permission. Apply SemVer: feature batch → minor; bugfix-only → patch; breaking → major.
-
-## Azure / Infra Gotchas
-
-- AzSecPack policy auto-attaches `AzSecPackAutoConfigUA-<region>` UAI to every VM/VMSS. Any PUT on a VMSS `identity` collection triggers `LinkedAuthorizationFailed` unless the caller has `Managed Identity Operator` on that UAI (out-of-band). **Use `az vmss scale --new-capacity`, not `az vmss update --set sku.capacity`.**
-- Slurm configless mode does **not** distribute `plugstack.conf.d/`. Write `/etc/slurm/plugstack.conf` (absolute path) on every node that uses Pyxis (compute + login).
-- Enroot needs `1777` on `/var/lib/enroot{,/runtime}`, `/var/lib/enroot-data{,/cache}`, and `/run/enroot` — top-level AND subdirs.
-- VMSS Flex VMs surface as `Microsoft.Compute/virtualMachines` named `vmss-<cluster>-<pool>_<hex>`, not under the VMSS resource.
-- Image: `microsoft-dsvm:ubuntu-hpc:2404` (default), `2204` fallback.
-- Slurm 25.11 + Pyxis 0.21.0 ABI match. NVIDIA Pyxis 0.24.0 exists; only bump if Slurm 26 is needed.
-- Slurm 25.11 dynamic nodes: `slurmd --conf "...Partitions=<pool>"` is rejected ("Failed to parse nodeline"). Use the **NodeSet+Feature** pattern: emit `NodeSet=<pool>set Feature=pool_<pool>` and `PartitionName=<pool> Nodes=<pool>set ...` in `slurm.conf`; the compute slurmd registers with `--conf "...Feature=pool_<pool>"` and slurmctld places it in the matching NodeSet/partition.
-- Pyxis spank library (`spank_pyxis.so`) must be installed on **every** node that may submit `srun` — scheduler, login, and compute — because `plugstack.conf` loads at submit time. Forgetting it on scheduler crashes any `srun` invoked from there with `Dlopen of plugin file failed`.
-- The `microsoft-dsvm:ubuntu-hpc` image ships `nvidia-smi` even on CPU SKUs, so `command -v nvidia-smi` cannot be used as a GPU presence check. Use `nvidia-smi -L | grep -cE '^GPU [0-9]+:' || true` instead.
-- **Managed Grafana region coverage**: `Microsoft.Dashboard/grafana` is NOT available in `southafricanorth` (and several other regions). Use `--grafana-location uksouth` (or another supported region) when the cluster region lacks AMG.
-- **Monitoring Data Reader role GUID** is `b0d8363b-8ddd-447d-831f-62ca05bff136` (NOT the `...51537` value some docs list). Verify role GUIDs with `az role definition list --name "..."` before baking into Bicep.
-- **AMW ingestion RBAC scope**: `Monitoring Metrics Publisher` MUST be granted on the AMW's **default Data Collection Rule**, not on the AMW account itself. Role at the AMW scope passes role-listing checks but the ingestion endpoint still returns `403 The authentication token provided does not have access to ingest data for the data collection rule with immutable Id 'dcr-...'`. The default DCR lives in the Azure-managed sister RG `MA_<amwName>_<location>_managed`.
-- **AMW ingestion RBAC propagation**: 5-10 minutes on a freshly-created MI + DCR. After it propagates, `systemctl restart prometheus` is required - prometheus and IMDS cache the bearer token, and the cached token's authorization is decided server-side at request time but the connection state appears to survive the role landing. A direct `curl` test (`POST` empty body to the ingestion URL with an IMDS token) is the fastest way to confirm whether the failure is RBAC vs config.
-- **Prometheus 3.x cloud-init perms**: `cat > /opt/prometheus/prometheus.yml <<EOF ... EOF` in a cloud-init `runcmd` produces a file with mode `0600` (root's umask). The non-root `prometheus` service user cannot read it -> "permission denied" at startup. Always follow with explicit `chmod 0644`.
-- **Slurm conf files cloud-init perms** (v0.13.9 fix). Same root cause as the Prometheus gotcha above: cloud-init `runcmd` inherits a 0077 umask so `cat > /etc/slurm/slurm.conf <<EOF` produces 0600 files. `srun`/`sinfo` run as the submitting (non-root) user and parse `/etc/slurm/slurm.conf` + `/etc/slurm/plugstack.conf` locally on the submit host — Pyxis spank plugins load at submit time, not exec time. With 0600 perms users get `error: s_p_parse_file: unable to read "/etc/slurm/slurm.conf": Permission denied` and `error: spank: Failed to open /etc/slurm/plugstack.conf: Permission denied`. Always `chmod 0644 /etc/slurm/*.conf` after writing them in cloud-init. Applies to scheduler (slurm.conf + plugstack.conf + cgroup.conf + gres.conf), login (plugstack.conf — slurm.conf comes via sackd configless), and compute (plugstack.conf — slurm.conf + gres.conf come via slurmd configless cache).
-- **Compute `/etc/hosts` 127.0.1.1 breaks cross-node Gloo/PyTorch rendezvous** (v0.13.9 fix). The Ubuntu cloud-image default `/etc/hosts` has `127.0.1.1 <hostname>` after `hostnamectl set-hostname`. `torch.distributed.new_group(backend="gloo")` (Megatron-Bridge uses this for CP groups during init) calls `gethostbyname(hostname)` to learn its own advertised address, and Gloo `connectFullMesh` then expects every other rank to dial that address. With `127.0.1.1` every remote rank dials its own loopback and the rendezvous stalls with `Gloo connectFullMesh failed ... timed out connecting: SO_ERROR: Connection refused, remote=[127.0.1.1]:20901`. NCCL is unaffected (rendezvous is via `MASTER_ADDR`, set explicitly by Megatron-Bridge's launcher) — the failure is at the PyTorch-level Gloo PG used for control-plane groups. Live-validated on `paul-azcluster-h100d` Llama 3.1 8B 2-node BF16 (job 16 failed pre-fix, job 20 succeeded post-fix). Fix in `cloud-init/compute.yaml.tmpl`: after `sed -i '/^127\.0\.1\.1/d' /etc/hosts`, write `${IPV4} ${NEW_HOSTNAME}` (eth0 IP, NOT 127.0.1.1). Scheduler/login don't need this — slurm.conf resolves them via Azure DNS suffix.
-- **Prometheus `azuread.managed_identity` remote_write**: works directly against the AMW DCE ingestion URL (`${dceEndpoint}/dataCollectionRules/${dcrImmutableId}/streams/Microsoft-PrometheusMetrics/api/v1/write?api-version=2023-04-24`). No AMA or DCR custom scrape config needed for VMs. Block shape:
-  ```yaml
-  remote_write:
-    - url: "..."
-      azuread:
-        cloud: AzurePublic
-        managed_identity:
-          client_id: "<uai-client-id>"
-  ```
-  Audience is implicit (`https://monitor.azure.com/`). The UAI MUST be attached to the VM AND hold Metrics Publisher on the DCR (see above).
-- **VMSS Flex + SystemAssigned identity** is rejected in subscriptions with AzSecPack/UAI-only policy (`InvalidParameter` on `identity`). VMs are fine; VMSS must use UserAssigned (or no MI).
-- **Grafana dashboard JSON** lives under `grafana/dashboards/` and is provisioned by `bicep/modules/grafana-dashboards.bicep`. Keep panel ids stable across edits, use a datasource template variable named `DS_PROMETHEUS`, and never hardcode Azure Managed Grafana datasource UIDs.
-- Phase 1+ test region: `southafricanorth`, RG `paul-azcluster`, max 2 GPU nodes.
-
-## Subnetting (VNet `10.42.0.0/16`)
-
-- scheduler `10.42.1.0/24` (first `.4`)
-- login `10.42.2.0/24` (first `.4`)
-- compute `10.42.4.0/22` (first `.4.4`)
-- anf `10.42.0.0/26`
-- database `10.42.8.0/29` (delegated to `Microsoft.DBforMySQL/flexibleServers`, only when `--accounting` on)
-- Ports `8443` (control plane), `6817` (slurmctld), `6819` (slurmdbd, localhost only), `3306` (MySQL Flex from scheduler). UID/GID `11100` for `slurm`.
-
-## Delegation Conventions
-
-- Live Azure / KQL investigation → use the `azure-infra-analyst` skill.
-- Multi-file refactors → `explore` agents in parallel before editing.
-- External libraries (Pyxis, Enroot, Slurm internals) → `librarian` agent.
-- Hard architecture calls or post-implementation review → `oracle`.
-- Plans that get written under `.sisyphus/plans/*.md` → `momus` for review.
+- **No CycleCloud / Jetpack / CCWS references** in any public artifact (README, code, commits, tags, release notes). Past mentions were scrubbed; don't reintroduce them. Historical references in `CHANGELOG.md` entries and AGENTS.md gotcha sections are fine because they document the debugging trail.
+- **No personal identifiers or tenant-specific values** in committed files. Subscription IDs, real RG names, emails, tenant IDs all stay out of git.
+- **No `az` shell-out from `crates/azcluster-cli/`.** v0.20.0 removed all 17 `Command::new("az")` sites in favour of native ARM REST + OAuth2. CI clippy with `-D warnings` enforces no dead-imports. Local dev commands in README/AGENTS that use `az bicep build` are fine — that's the build-time Bicep transpiler, not a runtime dependency.
+- **Public IPs off by default** for login. Opt-in via `--login-public-ip`; default path is Bastion (`--bastion`).
+- **All code Rust** except Bicep (transpiled to ARM JSON) + bootstrap shell in cloud-init templates.
+- **Research checkouts** live under `research/` (gitignored). Planning artifacts under `.sisyphus/` (gitignored). Walkthrough logs/charts under `walkthrough-logs/` and `walkthrough-charts/` (also gitignored; they're scratch from live runs).
+- **Minimize comments**; let code be self-documenting. Necessary exceptions: clap doc-comments (render as `--help` text), complex algorithms with non-obvious invariants, security-critical sections, ARM REST request body contracts (where field placement matters — see `arm/client.rs` for the canonical example).
+- **Never suppress errors silently.** No `let _ = ...` on `Result` without a justifying comment; no `#[allow(...)]` blanket; no `.unwrap()` on user input paths. `expect("...")` is acceptable when the message documents why the invariant holds.
+- **Never commit** unless the user explicitly asks. Force-add (`git add -f`) requires explicit user direction — the walkthrough docs under `doc/full-walkthrough-v*/` are gitignored-by-pattern but committed on user request once a clean run is captured.
+- **Autonomous versioning is enabled** (user directive): when a coherent unit of work is complete, verified, changelogged, and live-validated, the agent SHOULD bump the version, commit, tag, and push without waiting for per-release permission. Apply SemVer strictly: feature batch → minor; bugfix-only → patch; breaking → major.
+- **Walkthrough plan is the source of truth.** When debugging a failed walkthrough run, re-read `doc/full-walkthrough-plan.md` BEFORE proposing flag changes. The canonical command in the plan is what worked in the most-recent green release; deviations need explicit justification.
 
 ## Verification Gates (before declaring "done")
 
-- `cargo fmt --all` clean
-- `cargo clippy --workspace --all-targets -- -D warnings` clean
-- `cargo test --workspace` green
-- `for f in bicep/main.bicep bicep/cluster.bicep bicep/modules/*.bicep; do az bicep build --file "$f" --stdout > /dev/null; done` clean
-- `CHANGELOG.md` updated
-- `README.md` Status/Quickstart still accurate
-- `AGENTS.md` updated if process changed
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+for f in bicep/main.bicep bicep/cluster.bicep bicep/modules/*.bicep; do
+  az bicep build --file "$f" --stdout > /dev/null
+done
+# YAML sanity for cloud-init templates (placeholders → dummy values):
+for f in cloud-init/{scheduler,login,compute}.yaml.tmpl; do
+  sed -E 's/\{\{[A-Z_]+\}\}/PLACEHOLDER/g' "$f" > /tmp/_check.yaml
+  python3 -c "import yaml; yaml.safe_load(open('/tmp/_check.yaml'))"
+done
+```
 
-If any of these fail, fix before claiming completion.
+All four must pass before commit. Live-validation on a real cluster is mandatory for any change that touches cloud-init, Bicep, or the deploy/finalize path.
+
+## Subnetting (VNet `10.42.0.0/16`)
+
+- `scheduler` `10.42.1.0/24` (first usable `.4`)
+- `login` `10.42.2.0/24` (first usable `.4`)
+- `compute` `10.42.4.0/22` (first usable `.4.4`)
+- `anf` `10.42.0.0/26`
+- `amlfs` `10.42.3.0/24` (optional)
+- `database` `10.42.8.0/29` (MySQL Flex delegation, only when `--accounting` on)
+- `AzureBastionSubnet` `10.42.0.64/26` (only when `--bastion` on)
+- Ports: `8443` (azcluster-server control plane), `6817` (slurmctld), `6819` (slurmdbd, localhost only), `3306` (MySQL Flex from scheduler). UID/GID `11100` for `slurm`, `20100` for `cluster-admins`, `20001`/`20002` for default LDAP users `clusteradmin`/`clusteruser`.
+
+## Delegation Conventions
+
+- **`explore` agent** — multi-file searches, codebase patterns, "where is X used", "find all callers of Y". Fire in parallel for unrelated searches.
+- **`librarian` agent** — external repos (Pyxis, Enroot, Slurm internals, SGLang, vLLM, NCCL), official docs, GitHub usage examples.
+- **`oracle` agent** — hard architecture calls, debugging that's hit 2+ failed fix attempts, post-implementation review.
+- **`metis` agent** — pre-planning analysis for ambiguous requirements.
+- **`momus` agent** — review work plans under `.sisyphus/plans/*.md`.
+- **`azure-infra-analyst` skill** — live Azure / KQL investigation against the internal infrastructure database.
+
+## Azure / Infra Gotchas
+
+- **AzSecPack policy** auto-attaches `AzSecPackAutoConfigUA-<region>` UAI to every VM/VMSS. Any PUT on a VMSS `identity` collection triggers `LinkedAuthorizationFailed` unless the caller has `Managed Identity Operator` on that UAI (out-of-band). Use VMSS scale ARM verb that doesn't touch `identity`, not the property-patch verb.
+- **VMSS Flex + SystemAssigned identity** is rejected in subscriptions with AzSecPack/UAI-only policy (`InvalidParameter` on `identity`). VMs are fine; VMSS must use UserAssigned (or no MI).
+- **Slurm configless mode** does NOT distribute `plugstack.conf.d/`. Write `/etc/slurm/plugstack.conf` (absolute path) on every node that uses Pyxis (compute + login + scheduler).
+- **Pyxis spank library** (`spank_pyxis.so`) must be installed on EVERY node that may submit `srun` — including scheduler — because `plugstack.conf` loads at submit time. Forgetting it on scheduler crashes any `srun` invoked from there with `Dlopen of plugin file failed`.
+- **Enroot directory perms** need `1777` (sticky world-write) on `/var/lib/enroot{,/runtime}`, `/var/lib/enroot-data{,/cache}`, and `/run/enroot` — top-level AND subdirs. Plus `0666` on `/dev/infiniband/*` via udev rule.
+- **VMSS Flex VMs** surface as `Microsoft.Compute/virtualMachines` named `vmss-<cluster>-<pool>_<hex>`, NOT under the VMSS resource. The Slurm-side hostname is `<cluster>-<pool>-NNNN` (auto-set by cloud-init); the two names are unrelated. VNet DNS resolves the Slurm name only from inside the VNet.
+- **Image**: `microsoft-dsvm:ubuntu-hpc:2404` (default), `2204` fallback. Ships drivers + OFED + NCCL + `nvidia-smi` (even on CPU SKUs — use `nvidia-smi -L | grep -cE '^GPU [0-9]+:'` as the GPU presence check).
+- **Slurm 25.11 + Pyxis 0.21.0** ABI match. NVIDIA Pyxis 0.24.0 exists; only bump if Slurm 26 is needed.
+- **Slurm 25.11 dynamic nodes**: `slurmd --conf "...Partitions=<pool>"` is rejected. Use the NodeSet+Feature pattern: emit `NodeSet=<pool>set Feature=pool_<pool>` and `PartitionName=<pool> Nodes=<pool>set ...` in `slurm.conf`; the compute slurmd registers with `--conf "...Feature=pool_<pool>"`.
+- **Managed Grafana region coverage**: `Microsoft.Dashboard/grafana` is NOT available in many regions (e.g. `southafricanorth`). Use `--grafana-location <supported-region>` when needed.
+- **Monitoring Data Reader role GUID** is `b0d8363b-8ddd-447d-831f-62ca05bff136`. Verify role GUIDs via ARM REST before baking into Bicep.
+- **AMW ingestion RBAC**: `Monitoring Metrics Publisher` MUST be granted on the AMW's **default Data Collection Rule** (in the Azure-managed sister RG `MA_<amwName>_<location>_managed`), NOT on the AMW account itself. Role at the AMW scope passes role-listing checks but ingestion still returns 403.
+- **AMW ingestion RBAC propagation**: 5-10 min on a freshly-created MI + DCR. After propagation, `systemctl restart prometheus` on the node is required to drop the cached bearer token.
+- **Cloud-init `runcmd` 0077 umask** produces 0600 files from `cat > file <<EOF` heredocs. Both Prometheus (non-root `prometheus` user) and Slurm (non-root submitter parses `/etc/slurm/*.conf` locally for spank plugins) fail with permission denied. Always follow heredocs with explicit `chmod 0644`. Better: use the `trap '... || true' EXIT` pattern at the top of the install script so chmod runs even if the script aborts mid-way.
+- **Cloud-init script silent abort**: scripts running under `set -euo pipefail` can abort on any transient failure (curl/IMDS/apt hiccup, slapd race, etc.) and cloud-init reports `status: done` because the *cloud-init phase* completed — it doesn't track the inner script's exit code through `tee`. v0.24.12 wraps each `install-X.sh` invocation in a 10-attempt retry loop with 30 s gap; the script exits 0 fast at the top if `/var/log/azcluster/ready` already exists. Any new install-script logic must be idempotent (apt is naturally so; useradd/groupadd already use `getent || useradd`; mkdir is `-p`).
+- **apt-lists lock** at `/var/lib/apt/lists/lock` is NOT covered by `-o DPkg::Lock::Timeout=600` (that only handles the dpkg locks). v0.24.11 added an `apt_wait()` shell function that `fuser`-polls all 3 locks (dpkg-frontend, dpkg, apt-lists) plus an `aptget()` wrapper called instead of bare `apt-get`. Generalisable rule: any cloud-init script that runs apt-get MUST go through a wrapper that polls fuser on `/var/lib/apt/lists/lock` as well, not just dpkg-frontend.
+- **Compute `/etc/hosts` 127.0.1.1** breaks cross-node Gloo/PyTorch rendezvous (Megatron-Bridge uses Gloo for CP groups during init). After `hostnamectl set-hostname`, `sed -i '/^127\.0\.1\.1/d' /etc/hosts` + write `${IPV4} ${NEW_HOSTNAME}` (eth0 IP, NOT 127.0.1.1). Scheduler/login don't need this — slurm.conf resolves them via Azure DNS suffix.
+- **Prometheus `azuread.managed_identity` remote_write** works directly against the AMW DCE ingestion URL — no AMA or DCR custom scrape config needed for VMs. The UAI MUST be attached to the VM AND hold Metrics Publisher on the DCR. Audience is implicit (`https://monitor.azure.com/`).
+- **Grafana dashboard JSON** lives under `grafana/dashboards/`. Keep panel ids stable across edits, use the datasource template variable named `DS_PROMETHEUS`, and never hardcode Azure Managed Grafana datasource UIDs. Filter all queries by `nodename` label (not `instance` — each node scrapes its own colocated Prometheus on `127.0.0.1:9100` so the `instance` label is identical across the fleet).
+- **`bicep/main.json`** is committed (with `.gitignore` exception `!bicep/main.json`). Contributors editing `bicep/*.bicep` MUST regenerate `bicep/main.json` before committing — CI's `bicep` job diffs against the committed copy and fails on drift. The CLI embeds `main.json` at compile time via `include_str!`.
+- **Cloud-init template variables containing whitespace** (e.g. `EXTRA_PACKAGES`) MUST be emitted quoted in env files (`EXTRA_PACKAGES="{{EXTRA_PACKAGES}}"`). Unquoted, bash parses `EXTRA_PACKAGES=git-lfs python3.12-venv` as a scoped env assignment for the next command, not a global export — and the install script aborts under `set -e`.
+- **`Command::new("ssh").args(["host", "--", "bash", "-lc", "cmd"])` is BROKEN.** OpenSSH whitespace-joins all positional remote args, so the remote sees `bash -lc cmd arg1 arg2` and parses it as `-c 'cmd'` (ignoring everything after). Pass multi-token remote shell commands as a single string positional arg: `cmd.args(["host", "tail -n1 /path 2>/dev/null || echo MISSING"])`.
 - **YAML write_files heredoc terminators**: cloud-init `write_files` with `content: |` block scalars strips the FIRST line's leading whitespace as the indent and removes that prefix from every subsequent line. Any `EOF` terminator MUST sit at exactly that base indent column in the template so it lands at column 0 in the materialised script - bash heredocs without `<<-` only recognise the closer at column 0. Extra indentation from being nested inside `if`/`for` (e.g. 6-space base + 2-space if-body = 8-space `EOF`) silently breaks the heredoc and chains errors until bash hits EOF with "syntax error: unexpected end of file". Always put `EOF` at the template's base indent column even inside `if` blocks.
 - **AMG Grafana Admin for dashboard import**: `az grafana dashboard create` calls the Grafana HTTP API (`POST /api/dashboards/db`), which requires a Grafana role on the AMG. ARM contributor / owner is not enough. Grant the deployer principal `Grafana Admin` (`22926164-76b3-42b3-bc55-97df8dab3e41`) on the AMG resource scope, and expect 1-3 min propagation - retry with back-off on `401 NoRoleAssignedException`.
 - **`Microsoft.Dashboard/grafana/dashboards@*` is NOT a real ARM resource**: BCP081 ("resource type does not have types available") is the warning, and ARM preflight returns `ResourceTypeRegistrationNotFound`. Import dashboards via the Grafana HTTP API (`az grafana dashboard create` or direct REST), not Bicep. The CLI does this post-deploy with the dashboard JSONs embedded via `include_str!`.
