@@ -56,7 +56,7 @@ Fast Rust-based Slurm cluster deployer for Azure. Slurm + Pyxis + Enroot for con
 
 > **Previous status (v0.21.0)**: native Azure Bastion (no plugin). Provisions Bastion Standard SKU + `enableTunneling: true` into `AzureBastionSubnet = 10.42.0.64/26` when `--bastion` is passed. CLI auto-routes `azcluster ssh/exec/tunnel` through Bastion when login has no public IP. Live-validated on `paul-azcluster`/`southafricanorth` (`v21a`): login + scheduler reachable via Bastion, `--no-bastion` cleanly surfaces the legacy error.
 
-> **Previous status (v0.19.4)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 + container `_mpi` NCCL live-validated. v0.19.4 fixed a latent showstopper for containerised MPI (removed `UCX_TLS=tcp` from `/etc/enroot/environ.d/50-nccl.env` and `/etc/profile.d/nccl-azcluster.sh`). Llama 3.1 8B BF16 baselines: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node). Full DGXC workflow: [walkthrough-dgxc.md](walkthrough-dgxc.md). Next backlog: bastion SSH tunneling (vgamayunov-style, no plugin), DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
+> **Previous status (v0.19.4)**: phases 0-3 + Slurm accounting + GPU pool + end-to-end DGXC Llama 3.1 8B BF16 + container `_mpi` NCCL live-validated. v0.19.4 fixed a latent showstopper for containerised MPI (removed `UCX_TLS=tcp` from `/etc/enroot/environ.d/50-nccl.env` and `/etc/profile.d/nccl-azcluster.sh`). Llama 3.1 8B BF16 baselines: 167,594 tok/s on 16 H100 (2 node) / 83,737 tok/s on 8 H100 (1 node). Next backlog: bastion SSH tunneling (vgamayunov-style, no plugin), DCGM-backed NVLink/throttle checks, Slurm power-save autoscaling.
 
 ## Why azcluster
 
