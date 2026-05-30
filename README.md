@@ -289,19 +289,28 @@ flowchart LR
 Big datasets and model weights follow a canonical path: HuggingFace → per-cluster blob → MPI broadcast → per-node NVMe RAID-0. Two example sbatch templates ship under `/shared/examples/`.
 
 ```mermaid
-flowchart LR
-    hf[HuggingFace CDN]
-    n1nvme["/mnt/nvme on node 1"]
-    nNnvme["/mnt/nvme on node N"]
-    blob[Per-cluster Azure Blob]
-    container[Inference container]
+sequenceDiagram
+    participant HF as HuggingFace CDN
+    participant N1 as Compute node 1<br/>(/mnt/nvme)
+    participant Blob as Per-cluster<br/>Azure Blob
+    participant NN as Compute node N<br/>(/mnt/nvme)
+    participant C as Inference container
 
-    hf -->|"1. hf download (single node)"| n1nvme
-    n1nvme -->|"2. azcp copy (single node)"| blob
-    blob -->|"3. azcp-cluster MPI broadcast"| n1nvme
-    blob -->|"3. azcp-cluster MPI broadcast"| nNnvme
-    n1nvme -->|"4. bind-mount /models/m"| container
-    nNnvme -->|"4. bind-mount /models/m"| container
+    Note over N1: 1. hf download (single node)
+    HF->>N1: model weights
+
+    Note over N1,Blob: 2. azcp copy (single node, ~10 Gbps)
+    N1->>Blob: model weights
+
+    Note over Blob,NN: 3. azcp-cluster (MPI, IB broadcast, ~40 Gbps)
+    Blob-->>N1: byte-range shard
+    Blob-->>NN: byte-range shard
+    N1-->>NN: peer broadcast over IB
+    NN-->>N1: peer broadcast over IB
+
+    Note over N1,C: 4. bind-mount /models/m into container
+    N1->>C: /mnt/nvme/.../m -> /models/m
+    NN->>C: /mnt/nvme/.../m -> /models/m
 ```
 
 Measured on a 2-node `Standard_ND96isr_H100_v5` cluster: 8.5 GB Llama 8B in 9 s (8.7 Gbps upload, 20 Gbps broadcast); 642 GiB DeepSeek-R1-0528 in 30 min HF download + 9 min azcp upload (10.2 Gbps) + 134 s cluster broadcast (41 Gbps). Larger clusters scale better; 2 nodes is the worst case for `azcp-cluster` because each rank must read ~50% of the bytes from local NVMe while writing the other ~50%.
