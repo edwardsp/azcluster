@@ -18,7 +18,3 @@ bicep/**/*.json
 !bicep/main.json
 ngc_key.txt
 hf_token.txt
-doc/full-walkthrough-v0.24.4.md
-doc/full-walkthrough-v0.24.4/
-doc/full-walkthrough-v*.md
-doc/full-walkthrough-v*/
