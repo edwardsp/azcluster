@@ -473,7 +473,7 @@ python3 -m sglang.launch_server \
   --model-path $MODEL \
   --host 0.0.0.0 --port $PORT \
   --tp $TP --nnodes 2 --node-rank $NODE_RANK \
-  --dist-init-addr ${HEAD_IP}:5000 \
+  --dist-init-addr="${HEAD_IP}:5000" \
   --mem-fraction-static 0.85 \
   --chunked-prefill-size 8192 \
   --max-running-requests $CONC \
@@ -521,8 +521,13 @@ HEAD_NODE=$(scontrol show hostnames "$SLURM_NODELIST" | head -n1)
 export HEAD_IP=$(getent hosts $HEAD_NODE | awk '{print $1}')
 echo "HEAD_NODE=$HEAD_NODE HEAD_IP=$HEAD_IP"
 
+# IMPORTANT: pin a tag that ACTUALLY EXISTS on Docker Hub. Earliest published
+# release container is v0.5.11-cu130 (2026-05-07). v0.5.8-cu130 / v0.5.9-cu130
+# / v0.5.10-cu130 are NOT published — referencing them resolves to a fallback
+# (likely nightly or dev) whose argparse will not match this script.
+# Check current tags at: https://hub.docker.com/r/lmsysorg/sglang/tags
 srun --mpi=pmix \
-  --container-image=docker://lmsysorg/sglang:v0.5.8-cu130 \
+  --container-image=docker://lmsysorg/sglang:v0.5.12.post1-cu130 \
   --container-mounts=/mnt/nvme/users/${USER}/models:/models,/shared/dgxc/InferenceX:/workspace \
   --container-workdir=/workspace \
   --no-container-mount-home \
