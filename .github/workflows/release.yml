@@ -45,6 +45,18 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} -p azhealthcheck
       - name: Build cli
         run: cargo build --release --target ${{ matrix.target }} -p azcluster-cli
+      - name: Smoke-test cli on runner OS (linux only)
+        if: ${{ matrix.arch_name == 'x86_64-linux' }}
+        run: |
+          set -e
+          echo "==> runner OS: $(. /etc/os-release && echo "$PRETTY_NAME")"
+          ldd --version | head -1
+          BIN="target/${{ matrix.target }}/release/azcluster"
+          file "$BIN"
+          objdump -T "$BIN" | grep -oE 'GLIBC_[0-9.]+' | sort -V -u | tail -5
+          "$BIN" --version
+          "$BIN" --help > /dev/null
+          echo "==> azcluster runs on $(. /etc/os-release && echo "$PRETTY_NAME")"
       - name: Package artifacts
         run: |
           set -e
