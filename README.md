@@ -37,14 +37,17 @@ A deployed cluster has:
 
 ## Install
 
-Grab the prebuilt CLI from the latest release:
+Grab the prebuilt CLI from the latest release. Each release ships a versioned tarball plus a `SHA256SUMS` file:
 
 ```bash
 VERSION=v0.24.12
 ARCH=x86_64-linux                       # or aarch64-darwin
-curl -fsSL -o azcluster \
-  https://github.com/edwardsp/azcluster/releases/download/${VERSION}/azcluster-cli-${ARCH}
-chmod +x azcluster && sudo mv azcluster /usr/local/bin/
+BASE=https://github.com/edwardsp/azcluster/releases/download/${VERSION}
+curl -fsSLO "${BASE}/azcluster-cli-${VERSION}-${ARCH}.tar.gz"
+curl -fsSLO "${BASE}/SHA256SUMS"
+sha256sum --ignore-missing -c SHA256SUMS
+tar -xzf "azcluster-cli-${VERSION}-${ARCH}.tar.gz"   # contains a top-level `azcluster`
+sudo install -m 0755 azcluster /usr/local/bin/azcluster
 azcluster --version
 ```
 

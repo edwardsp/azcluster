@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+- **Agent skill at `.opencode/skills/azcluster/SKILL.md`** — a self-contained reference that lets an AI agent install and operate the azcluster CLI without a repo checkout. It resolves the latest release tag via the GitHub API, downloads the versioned `azcluster-cli-${VERSION}-${ARCH}.tar.gz` + `SHA256SUMS`, verifies the checksum, and installs the binary; documents the full clap command surface (deploy flags, operator commands, LDAP user management, the hidden `bastion-proxy` subcommand, the global `--no-cache` flag); and includes a "Debugging & the repo" section (clone, repo layout, live `logs`/`status`/`validate` recipes, the `cloud-init status` lies / `/var/log/azcluster/install.log` truth, and a pointer to `AGENTS.md` as the gotchas memory).
+
+### Fixed
+- **README install snippet pointed at a non-existent release asset.** The Quickstart used `releases/download/${VERSION}/azcluster-cli-${ARCH}` (raw binary, no version in the name) which CI never publishes — the real assets are versioned tarballs (`azcluster-cli-${VERSION}-${ARCH}.tar.gz`) plus a `SHA256SUMS` file. Copy-pasting the old snippet 404'd. The snippet now downloads the correct tarball, verifies it against `SHA256SUMS`, and extracts the top-level `azcluster` binary.
+
 ## [0.24.12] - 2026-05-29
 
 ### Fixed
