@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.15] - 2026-06-02
+
+### Added
+- **Cluster-internal SSH keypair per LDAP user (issue #2).** Every LDAP user now gets a second `sshPublicKey` LDAP attribute carrying a node-local ed25519 keypair, generated **on the scheduler** under `/shared/home/<user>/.ssh/id_ed25519` (mode 0700 dir / 0600 priv / 0644 pub, chown'd to the user). This pubkey is added to `authorized_keys` AND prefixed with `from="10.42.0.0/16,127.0.0.1/32"` in LDAP, so the operator's `--ssh-key`-supplied key still authenticates from the public Internet through Bastion while the cluster-internal key only authenticates inside the VNet. Result: from any login or compute node, a user can `ssh <other-node>` and `srun --pty bash` followed by `ssh ...` without their laptop key being on the cluster at all. Applies to the two default users (`clusteradmin`, `clusteruser`) at scheduler bootstrap and to every user created via `azcluster user add` thereafter. Private key never leaves the cluster.
+- `--azcluster-version` CLI default bumped from `v0.24.14` to `v0.24.15`.
+
 ## [0.24.14] - 2026-06-02
 
 ### Fixed

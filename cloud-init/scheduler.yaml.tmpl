@@ -960,6 +960,34 @@ write_files:
         exit $rc
       fi
 
+      install -d -m 0755 /shared/home
+      for spec in "clusteradmin:20001:20100" "clusteruser:20002:20000"; do
+        U=$(echo "$spec" | cut -d: -f1)
+        UID_N=$(echo "$spec" | cut -d: -f2)
+        GID_N=$(echo "$spec" | cut -d: -f3)
+        HOME_DIR=/shared/home/$U
+        SSH_DIR=$HOME_DIR/.ssh
+        KEY=$SSH_DIR/id_ed25519
+        install -d -m 0700 -o $UID_N -g $GID_N $HOME_DIR
+        install -d -m 0700 -o $UID_N -g $GID_N $SSH_DIR
+        if [ ! -f $KEY ]; then
+          sudo -u \#$UID_N -g \#$GID_N ssh-keygen -t ed25519 -N '' -f $KEY \
+            -C "azcluster-internal-{{CLUSTER_NAME}}-$U" >/dev/null
+        fi
+        PUB=$(cat $KEY.pub)
+        AUTH=$SSH_DIR/authorized_keys
+        touch $AUTH; chown $UID_N:$GID_N $AUTH; chmod 0600 $AUTH
+        grep -qF "$PUB" $AUTH || echo "$PUB" >> $AUTH
+        VALUE="from=\"10.42.0.0/16,127.0.0.1/32\" $PUB"
+        CURRENT=$(ldapsearch -x -LLL -D "cn=admin,dc=azcluster,dc=local" -w "${LDAP_ADMIN_PW}" \
+          -H ldap://127.0.0.1 -b "uid=$U,ou=people,dc=azcluster,dc=local" -s base \
+          '(objectClass=*)' sshPublicKey 2>/dev/null | awk '/^sshPublicKey:/' || true)
+        if ! printf %s "$CURRENT" | grep -qF "$PUB"; then
+          printf 'dn: uid=%s,ou=people,dc=azcluster,dc=local\nchangetype: modify\nadd: sshPublicKey\nsshPublicKey: %s\n' "$U" "$VALUE" \
+            | ldapmodify -x -D "cn=admin,dc=azcluster,dc=local" -w "${LDAP_ADMIN_PW}" -H ldap://127.0.0.1 >/dev/null
+        fi
+      done
+
       sed -i 's|^SLAPD_SERVICES=.*|SLAPD_SERVICES="ldap:/// ldapi:///"|' /etc/default/slapd
       systemctl restart slapd
       systemctl enable slapd
