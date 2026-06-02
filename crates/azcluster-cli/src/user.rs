@@ -7,6 +7,14 @@ const BASE_DN: &str = "dc=azcluster,dc=local";
 const ADMIN_DN: &str = "cn=admin,dc=azcluster,dc=local";
 const DEFAULT_GID: u32 = 20000;
 
+// Issue #2: the cluster-internal keypair's public key is added to LDAP
+// `sshPublicKey` with a `from="..."` restriction prefix so the key can only
+// authenticate inbound sessions originating from inside the VNet (or the node
+// itself). sss_ssh_authorizedkeys returns the value verbatim and sshd parses
+// the prefix per authorized_keys(5). 10.42.0.0/16 covers every azcluster
+// subnet (see AGENTS.md "Subnetting").
+const INTERNAL_KEYPAIR_FROM_CIDR: &str = "10.42.0.0/16,127.0.0.1/32";
+
 pub struct NewUser<'a> {
     pub username: &'a str,
     pub uid: u32,
@@ -428,6 +436,51 @@ fn fetch_next_uid(state: &ClusterState, password: &str) -> Result<u32> {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn build_internal_keypair_provision_cmd(
+    password: &str,
+    username: &str,
+    uid: u32,
+    gid: u32,
+    cluster_name: &str,
+) -> String {
+    let pw_b64 = b64_encode(password.as_bytes());
+    let restriction = INTERNAL_KEYPAIR_FROM_CIDR;
+    format!(
+        "set -e; \
+         PW=$(printf %s '{pw_b64}' | base64 -d); \
+         HOME_DIR=/shared/home/{user}; \
+         SSH_DIR=$HOME_DIR/.ssh; \
+         KEY=$SSH_DIR/id_ed25519; \
+         install -d -m 0755 /shared/home; \
+         install -d -m 0700 -o {uid} -g {gid} $HOME_DIR; \
+         install -d -m 0700 -o {uid} -g {gid} $SSH_DIR; \
+         if [ ! -f $KEY ]; then \
+           sudo -u \\#{uid} -g \\#{gid} ssh-keygen -t ed25519 -N '' -f $KEY -C 'azcluster-internal-{cluster}-{user}' >/dev/null; \
+         fi; \
+         PUB=$(cat $KEY.pub); \
+         AUTH=$SSH_DIR/authorized_keys; \
+         touch $AUTH; chown {uid}:{gid} $AUTH; chmod 0600 $AUTH; \
+         if ! grep -qF \"$PUB\" $AUTH; then echo \"$PUB\" >> $AUTH; fi; \
+         VALUE=\"from=\\\"{restriction}\\\" $PUB\"; \
+         CURRENT=$(ldapsearch -x -LLL -D '{admin}' -w \"$PW\" -H ldap://127.0.0.1 \
+           -b 'uid={user},ou=people,{base}' -s base '(objectClass=*)' sshPublicKey 2>/dev/null \
+           | awk '/^sshPublicKey:/' || true); \
+         if ! printf %s \"$CURRENT\" | grep -qF \"$PUB\"; then \
+           printf 'dn: uid={user},ou=people,{base}\\nchangetype: modify\\nadd: sshPublicKey\\nsshPublicKey: %s\\n' \"$VALUE\" \
+             | ldapmodify -x -D '{admin}' -w \"$PW\" -H ldap://127.0.0.1 >/dev/null; \
+         fi",
+        pw_b64 = pw_b64,
+        user = username,
+        uid = uid,
+        gid = gid,
+        cluster = cluster_name,
+        restriction = restriction,
+        admin = ADMIN_DN,
+        base = BASE_DN,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn user_add(
     state: &ClusterState,
     username: &str,
@@ -505,6 +558,14 @@ pub fn user_add(
     let cmd = build_ldap_write_cmd(&password, &ldif, "ldapadd", "-c");
     ssh_run(state, &cmd)?;
     eprintln!("==> added user '{}' (uid={}, gid={})", username, uid, gid);
+
+    let provision_cmd =
+        build_internal_keypair_provision_cmd(&password, username, uid, gid, &state.name);
+    ssh_run(state, &provision_cmd).context("provision cluster-internal SSH keypair for user")?;
+    eprintln!(
+        "==> provisioned cluster-internal SSH keypair for '{}' at /shared/home/{}/.ssh/id_ed25519",
+        username, username
+    );
 
     if admin {
         let cmd = build_admin_set_cmd(&password, username, true);
@@ -992,5 +1053,26 @@ gecos: Alice A
         assert_eq!(user_col_2, "bobbington");
         assert!(lines[1].contains("20001"));
         assert!(lines[2].contains("20002"));
+    }
+
+    #[test]
+    fn internal_pubkey_value_has_from_restriction() {
+        let cmd = build_internal_keypair_provision_cmd("pw", "alice", 20005, 20000, "demo");
+        assert!(cmd.contains(INTERNAL_KEYPAIR_FROM_CIDR));
+    }
+
+    #[test]
+    fn internal_keypair_cmd_contains_critical_steps() {
+        let cmd = build_internal_keypair_provision_cmd("hunter2", "alice", 20005, 20000, "demo");
+        assert!(cmd.contains("install -d -m 0700 -o 20005 -g 20000 $HOME_DIR"));
+        assert!(cmd.contains("install -d -m 0700 -o 20005 -g 20000 $SSH_DIR"));
+        assert!(cmd.contains("sudo -u \\#20005 -g \\#20000 ssh-keygen -t ed25519"));
+        assert!(cmd.contains("'azcluster-internal-demo-alice'"));
+        assert!(cmd.contains("authorized_keys"));
+        assert!(cmd.contains("uid=alice,ou=people,dc=azcluster,dc=local"));
+        assert!(cmd.contains("changetype: modify"));
+        assert!(cmd.contains("add: sshPublicKey"));
+        assert!(cmd.contains("from=\\\"10.42.0.0/16,127.0.0.1/32\\\""));
+        assert!(cmd.contains(&b64_encode(b"hunter2")));
     }
 }
