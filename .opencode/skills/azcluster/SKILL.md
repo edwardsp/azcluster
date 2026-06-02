@@ -239,7 +239,7 @@ crates/azcluster-server/           scheduler control daemon (axum)
 crates/azhealthcheck/              per-node health probe (5 checks)
 bicep/main.bicep, cluster.bicep    ARM entrypoint + per-cluster orchestration
 bicep/modules/                     network, scheduler, login, compute, anf, amlfs, accounting, monitoring, keyvault, storage, bastion
-bicep/main.json                    committed transpiled ARM template (CLI embeds it via include_str!)
+bicep/main.json                    transpiled ARM template (generated from main.bicep, gitignored; CLI embeds it via include_str!)
 cloud-init/{scheduler,login,compute}.yaml.tmpl   per-node bootstrap (slurm, pyxis/enroot, NCCL/IB, NVMe RAID, prometheus)
 grafana/dashboards/                4 auto-imported dashboards
 doc/full-walkthrough-plan.md       canonical version-agnostic end-to-end recipe (every sbatch inlined)
@@ -267,11 +267,14 @@ Key truth: `cloud-init status` reports `done` even when an inner `install-*.sh` 
 ### Build / verify when editing the repo
 
 ```bash
+# bicep/main.json is generated, not committed. The CLI's build.rs embeds it via
+# include_str! and FAILS the build with instructions if it is missing — so generate
+# it first (and after editing any bicep/*.bicep):
+az bicep build --file bicep/main.bicep --outfile bicep/main.json
+
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-# After editing any bicep/*.bicep, regenerate the committed ARM JSON (CI fails on drift):
-az bicep build --file bicep/main.bicep --outfile bicep/main.json
 ```
 
 ### High-frequency operational gotchas (see AGENTS.md for the full list)

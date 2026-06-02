@@ -2,7 +2,7 @@
 
 **Fast Rust-based Slurm cluster deployer for Azure.** Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~15 minutes wall-clock, no daemons on your laptop.
 
-> **Current release:** `v0.24.12`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
+> **Current release:** `v0.24.13`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
 > **End-to-end walkthrough:** [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-v0.24.12.md`](doc/full-walkthrough-v0.24.12.md) (latest live results: NCCL plain VM 461.6 GB/s, NeMo container multinode 428.0 GB/s, Llama-3.1-8B-FP8 vLLM 10,118 tok/s @ 12.06 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 491.8 tok/s @ 122.6 ms TPOT).
 
@@ -40,7 +40,7 @@ A deployed cluster has:
 Grab the prebuilt CLI from the latest release. Each release ships a versioned tarball plus a `SHA256SUMS` file:
 
 ```bash
-VERSION=v0.24.12
+VERSION=v0.24.13
 ARCH=x86_64-linux                       # or aarch64-darwin
 BASE=https://github.com/edwardsp/azcluster/releases/download/${VERSION}
 curl -fsSLO "${BASE}/azcluster-cli-${VERSION}-${ARCH}.tar.gz"
@@ -51,7 +51,7 @@ sudo install -m 0755 azcluster /usr/local/bin/azcluster
 azcluster --version
 ```
 
-Or build from source: `cargo build --release --workspace` → `target/release/azcluster`.
+Or build from source: `cargo build --release --workspace` → `target/release/azcluster`. Building from source requires the Bicep CLI (`az bicep` or standalone `bicep`) to generate `bicep/main.json` first — see [Development](#development). End users installing the prebuilt tarball need neither `az` nor Bicep.
 
 ### Prerequisites
 
@@ -381,7 +381,7 @@ bicep/
   cluster.bicep         orchestrates per-cluster modules
   modules/              network, scheduler, login, compute, anf, amlfs,
                         accounting, monitoring, keyvault, storage, bastion
-  main.json             prebuilt ARM template embedded into the CLI binary
+  main.json             ARM template embedded into the CLI binary (generated from main.bicep; not committed)
 cloud-init/
   scheduler.yaml.tmpl   slurmctld, slurmdbd, slapd LDAP, prometheus, NFS exports (test mode)
   login.yaml.tmpl       mounts /shared + /amlfs; slurm client + Pyxis + SSSD
@@ -401,6 +401,10 @@ AGENTS.md               operating manual for AI agents
 ## Development
 
 ```bash
+# Generate the ARM template first — the CLI build embeds it via include_str!
+# and fails with instructions if it is missing.
+az bicep build --file bicep/main.bicep --outfile bicep/main.json
+
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
@@ -409,7 +413,7 @@ for f in bicep/main.bicep bicep/cluster.bicep bicep/modules/*.bicep; do
 done
 ```
 
-Contributors editing `bicep/*.bicep` MUST regenerate `bicep/main.json` (`az bicep build --file bicep/main.bicep --outfile bicep/main.json`) before committing — CI fails the build on drift. The CLI embeds `main.json` at compile time so end users never need `az` or Bicep installed.
+`bicep/main.json` is **generated, not committed** (it's gitignored). The CLI's `build.rs` embeds it via `include_str!` at compile time and fails the build with actionable instructions if it's absent, so anyone building from source must run `az bicep build --file bicep/main.bicep --outfile bicep/main.json` (or the standalone `bicep build bicep/main.bicep --outfile bicep/main.json`) after editing any `bicep/*.bicep`. CI and the release pipeline regenerate it from a pinned Bicep version on every run. End users who install the prebuilt tarball never need `az` or Bicep — the template is already baked into the published binary.
 
 ## Releasing
 

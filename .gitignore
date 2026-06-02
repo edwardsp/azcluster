@@ -9,12 +9,9 @@ Cargo.lock.bak
 *.swp
 .DS_Store
 
-# Bicep transpile output
+# Bicep transpile output. bicep/main.json is generated from bicep/*.bicep at build
+# time (see crates/azcluster-cli/build.rs) and intentionally NOT committed.
 *.json.bicep
 bicep/**/*.json
-# Exception: main.json is the prebuilt ARM template embedded into the CLI binary
-# (`include_str!`). Must be rebuilt with `az bicep build --file bicep/main.bicep
-# --outfile bicep/main.json` whenever any .bicep file changes; CI verifies drift.
-!bicep/main.json
 ngc_key.txt
 hf_token.txt

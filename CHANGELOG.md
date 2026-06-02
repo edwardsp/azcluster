@@ -5,8 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.13] - 2026-06-02
+
 ### Added
 - **Agent skill at `.opencode/skills/azcluster/SKILL.md`** — a self-contained reference that lets an AI agent install and operate the azcluster CLI without a repo checkout. It resolves the latest release tag via the GitHub API, downloads the versioned `azcluster-cli-${VERSION}-${ARCH}.tar.gz` + `SHA256SUMS`, verifies the checksum, and installs the binary; documents the full clap command surface (deploy flags, operator commands, LDAP user management, the hidden `bastion-proxy` subcommand, the global `--no-cache` flag); and includes a "Debugging & the repo" section (clone, repo layout, live `logs`/`status`/`validate` recipes, the `cloud-init status` lies / `/var/log/azcluster/install.log` truth, and a pointer to `AGENTS.md` as the gotchas memory).
+
+### Changed
+- **`bicep/main.json` is no longer committed — it is generated at build time.** Previously the transpiled ARM template was committed (with a `!bicep/main.json` `.gitignore` exception) and a CI `bicep` job `diff`ed the regenerated file against the committed copy to catch drift. That drift check was permanently red whenever the CI runner's Bicep version differed from whatever produced the committed file, because Bicep stamps a cosmetic `_generator.version` + `templateHash` into the JSON even when zero resource/template content changes. The file is now gitignored (`bicep/**/*.json`, `!bicep/main.json` exception removed) and `git rm --cached`'d. A new `crates/azcluster-cli/build.rs` checks the file exists before compiling and **fails the build with actionable instructions** (`az bicep build --file bicep/main.bicep --outfile bicep/main.json`, or the standalone-`bicep` equivalent) if it is absent — so building from source requires the Bicep CLI, but the runtime stays 100% `az`-free and end users installing the prebuilt tarball need neither `az` nor Bicep (the template is baked into the published binary). CI's `rust` job and `release.yml`'s `build` + `assets` jobs each regenerate `main.json` from a pinned Bicep (`v0.43.8`) before `cargo build`; the CI drift `diff` step was removed.
+- `--azcluster-version` CLI default bumped from `v0.24.12` to `v0.24.13`.
 
 ### Fixed
 - **README install snippet pointed at a non-existent release asset.** The Quickstart used `releases/download/${VERSION}/azcluster-cli-${ARCH}` (raw binary, no version in the name) which CI never publishes — the real assets are versioned tarballs (`azcluster-cli-${VERSION}-${ARCH}.tar.gz`) plus a `SHA256SUMS` file. Copy-pasting the old snippet 404'd. The snippet now downloads the correct tarball, verifies it against `SHA256SUMS`, and extracts the top-level `azcluster` binary.
