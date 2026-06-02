@@ -182,7 +182,7 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster deploy …` | Provision a cluster |
 | `azcluster resume --name <name>` | Wait for a `--no-wait` or interrupted deploy to finish + run post-deploy hooks |
 | `azcluster status <name>` | Pool capacities + bootstrap probe (READY/in-progress) for login + scheduler |
-| `azcluster scale <name> <pool> <current/target>` | Resize a pool: `azcluster scale demo gpu 0/2` |
+| `azcluster scale <name> <pool> <count>` | Resize a pool to an absolute node count: `azcluster scale demo gpu 2` |
 | `azcluster ssh <name> [--scheduler\|--host <node>] [--user <ldap>]` | Interactive shell |
 | `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp (remote paths: `[node]:path`, empty node = login) |
 | `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command |

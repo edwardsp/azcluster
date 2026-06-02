@@ -10,6 +10,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 - **README install snippet pointed at a non-existent release asset.** The Quickstart used `releases/download/${VERSION}/azcluster-cli-${ARCH}` (raw binary, no version in the name) which CI never publishes — the real assets are versioned tarballs (`azcluster-cli-${VERSION}-${ARCH}.tar.gz`) plus a `SHA256SUMS` file. Copy-pasting the old snippet 404'd. The snippet now downloads the correct tarball, verifies it against `SHA256SUMS`, and extracts the top-level `azcluster` binary.
+- **README `azcluster scale` operator-command row showed the wrong argument shape.** It documented `azcluster scale <name> <pool> <current/target>` with the example `azcluster scale demo gpu 0/2`, but the CLI takes a single absolute node count (clap `count: u32`). Corrected to `azcluster scale <name> <pool> <count>` / `azcluster scale demo gpu 2`.
 
 ## [0.24.12] - 2026-05-29
 
