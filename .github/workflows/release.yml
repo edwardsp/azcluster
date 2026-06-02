@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
+            os: ubuntu-22.04
             arch_name: x86_64-linux
           - target: aarch64-apple-darwin
             os: macos-14
@@ -100,6 +100,14 @@ jobs:
           done
           tar -czf "dist/azcluster-assets-${VERSION}.tar.gz" -C staging assets
           cp bicep/main.json "dist/azcluster-main-${VERSION}.json"
+      - name: Package dashboards tarball
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME}"
+          mkdir -p staging/dashboards
+          cp grafana/dashboards/*.json staging/dashboards/
+          tar -czf "dist/azcluster-dashboards-${VERSION}.tar.gz" -C staging dashboards
+          echo "==> dashboards tarball: $(wc -c < dist/azcluster-dashboards-${VERSION}.tar.gz) bytes"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-assets

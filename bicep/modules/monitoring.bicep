@@ -74,6 +74,19 @@ resource raDeployerGrafanaAdmin 'Microsoft.Authorization/roleAssignments@2022-04
   }
 }
 
+// Grant the monitoring UAI Grafana Admin on the AMG so the scheduler VM
+// can POST dashboards via IMDS-issued tokens (server-side dashboard import,
+// replacing the prior client-side `azcluster` CLI import path).
+resource raMonUaiGrafanaAdmin 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: grafana
+  name: guid(grafana.id, monUai.id, grafanaAdminRoleId)
+  properties: {
+    roleDefinitionId: grafanaAdminRoleId
+    principalId: monUai.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 var managedRg = 'MA_${amwName}_${location}_managed'
 
 module ingestion 'ingestion-endpoint.bicep' = {

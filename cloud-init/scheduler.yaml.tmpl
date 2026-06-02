@@ -591,6 +591,136 @@ write_files:
       tar -xzf "${TARBALL}" -C /usr/local/bin/
       chmod +x /usr/local/bin/azcluster-server
 
+      # Server-side Grafana dashboard import (issue #1). Fetches the
+      # versioned dashboards tarball (published as a release artifact) and
+      # POSTs each dashboard to the AMG via IMDS-issued tokens for the
+      # monitoring UAI (which holds Grafana Admin on the AMG, granted by
+      # bicep/modules/monitoring.bicep). Gated on monitoring being enabled —
+      # GRAFANA_ENDPOINT and MON_UAI_CLIENT_ID are empty otherwise.
+      GRAFANA_ENDPOINT="{{GRAFANA_ENDPOINT}}"
+      MON_UAI_CLIENT_ID="{{MON_UAI_CLIENT_ID}}"
+      if [ -n "${GRAFANA_ENDPOINT}" ] && [ -n "${MON_UAI_CLIENT_ID}" ]; then
+        DASH_TARBALL="azcluster-dashboards-${AZCLUSTER_VERSION}.tar.gz"
+        curl -fsSL --retry 8 --retry-delay 5 -O "${BASE}/${DASH_TARBALL}"
+        sha256sum --ignore-missing -c SHA256SUMS
+        mkdir -p /opt/azcluster
+        tar -xzf "${DASH_TARBALL}" -C /opt/azcluster/
+        # Tarball contains a top-level `dashboards/` directory.
+        chmod 0755 /opt/azcluster/dashboards
+        chmod 0644 /opt/azcluster/dashboards/*.json
+
+        mkdir -p /etc/azcluster
+        cat > /etc/azcluster/grafana-import.env <<EOF
+      GRAFANA_ENDPOINT=${GRAFANA_ENDPOINT}
+      MON_UAI_CLIENT_ID=${MON_UAI_CLIENT_ID}
+      EOF
+        chmod 0644 /etc/azcluster/grafana-import.env
+
+        cat > /opt/azcluster/import-dashboards.sh <<'IMPORT_EOF'
+      #!/bin/bash
+      # Server-side Grafana dashboard importer. Runs once on boot via a
+      # systemd one-shot unit. Idempotent: POST /api/folders with an
+      # existing uid returns 409, POST /api/dashboards/db with
+      # overwrite=true upserts. Retries on 401/403 to absorb the well-known
+      # 5-20 min RBAC propagation lag on freshly-granted Grafana Admin.
+      set -euo pipefail
+
+      . /etc/azcluster/grafana-import.env
+
+      LOG=/var/log/azcluster/grafana-import.log
+      mkdir -p /var/log/azcluster
+      exec >>"${LOG}" 2>&1
+
+      echo "==> $(date -u +%FT%TZ) grafana import starting (endpoint=${GRAFANA_ENDPOINT})"
+
+      AUDIENCE="ce34e7e5-485f-4d76-964f-b3d2b16d1e4f"
+      IMDS_URL="http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=${AUDIENCE}&client_id=${MON_UAI_CLIENT_ID}"
+
+      get_token() {
+        curl -fsSL -H Metadata:true "${IMDS_URL}" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+      }
+
+      # Retry wrapper: returns 0 on HTTP 2xx or 409 (folder already exists),
+      # retries on 401/403/5xx with linear backoff (60 s × 20 = 20 min cap).
+      post_json() {
+        local url="$1" body="$2" attempt=1 max=20 http
+        while [ "${attempt}" -le "${max}" ]; do
+          TOKEN=$(get_token)
+          http=$(curl -sS -o /tmp/grafana-resp -w '%{http_code}' \
+            -X POST -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary "${body}" "${url}" || echo 000)
+          case "${http}" in
+            2*|409)
+              echo "  attempt ${attempt}: ${url} -> ${http} OK"
+              return 0
+              ;;
+            401|403|5*|000)
+              echo "  attempt ${attempt}: ${url} -> ${http} (retrying in 60s)"
+              cat /tmp/grafana-resp >&2 || true
+              sleep 60
+              attempt=$((attempt + 1))
+              ;;
+            *)
+              echo "  attempt ${attempt}: ${url} -> ${http} FATAL"
+              cat /tmp/grafana-resp >&2 || true
+              return 1
+              ;;
+          esac
+        done
+        echo "  gave up after ${max} attempts on ${url}" >&2
+        return 1
+      }
+
+      # Folder first. uid=azc-azcluster matches what `azcluster monitor` /
+      # the bundled dashboards reference.
+      post_json "${GRAFANA_ENDPOINT}/api/folders" \
+        '{"uid":"azc-azcluster","title":"azcluster"}'
+
+      # Each dashboard JSON is a raw dashboard model; wrap it for the API.
+      shopt -s nullglob
+      for f in /opt/azcluster/dashboards/*.json; do
+        name=$(basename "${f}" .json)
+        echo "==> importing ${name}"
+        # Build payload with python3 (avoids fragile shell-quoting of JSON).
+        payload=$(python3 -c '
+      import json, sys
+      with open(sys.argv[1]) as fh:
+          dash = json.load(fh)
+      dash["id"] = None
+      print(json.dumps({"dashboard": dash, "overwrite": True, "folderUid": "azc-azcluster"}))
+      ' "${f}")
+        printf '%s' "${payload}" > /tmp/grafana-payload.json
+        post_json "${GRAFANA_ENDPOINT}/api/dashboards/db" "@/tmp/grafana-payload.json" \
+          || { echo "FAILED to import ${name}"; exit 1; }
+      done
+      rm -f /tmp/grafana-payload.json /tmp/grafana-resp
+      echo "==> $(date -u +%FT%TZ) grafana import complete"
+      IMPORT_EOF
+        chmod 0755 /opt/azcluster/import-dashboards.sh
+
+        cat > /etc/systemd/system/azcluster-grafana-import.service <<'EOF'
+      [Unit]
+      Description=Import azcluster Grafana dashboards (one-shot, idempotent)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/opt/azcluster/import-dashboards.sh
+      RemainAfterExit=yes
+      # Long retry budget inside the script itself; this is a safety cap.
+      TimeoutStartSec=1800
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+        chmod 0644 /etc/systemd/system/azcluster-grafana-import.service
+        systemctl daemon-reload
+        systemctl enable --now azcluster-grafana-import.service || true
+      fi
+
       RG=$(curl -fsSL -H Metadata:true "http://169.254.169.254/metadata/instance/compute/resourceGroupName?api-version=2021-02-01&format=text")
       mkdir -p /etc/systemd/system/azcluster-server.service.d
       cat > /etc/systemd/system/azcluster-server.service.d/resource-group.conf <<EOF
