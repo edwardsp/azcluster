@@ -17,15 +17,13 @@ You do **not** need the repo checked out to operate clusters — install the CLI
 
 ## 1. Install the CLI (latest release, no repo)
 
-The CLI is published per-tag to GitHub Releases. **Each release ships a versioned tarball plus a `SHA256SUMS` file** — use these (they are the authoritative, CI-guaranteed assets):
+The CLI is published per-tag to GitHub Releases. Each release ships a versioned tarball plus a `SHA256SUMS` file. Each tarball contains a single top-level `azcluster` binary.
 
 | Asset | Example (v0.24.12) |
 |---|---|
 | Linux x86_64 CLI | `azcluster-cli-v0.24.12-x86_64-linux.tar.gz` |
 | macOS arm64 CLI | `azcluster-cli-v0.24.12-aarch64-darwin.tar.gz` |
 | Checksums | `SHA256SUMS` |
-
-> ⚠️ The README's install snippet (`azcluster-cli-${ARCH}`, raw binary, no version) is **stale** — that asset does not exist. Always use the versioned `.tar.gz` below. Each tarball contains a single top-level `azcluster` binary.
 
 ### Recommended: fetch latest tag, verify checksum, install
 
