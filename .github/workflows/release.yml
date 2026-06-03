@@ -188,6 +188,10 @@ jobs:
             set -e
             echo "==> target OS: $(. /etc/os-release && echo "$PRETTY_NAME")"
             ldd --version | head -1
+            # Realistic operator install path: install runtime deps the README documents.
+            # Ubuntu minimal images ship libssl3 + ca-certificates; Debian minimal does not.
+            apt-get update -qq
+            apt-get install -y --no-install-recommends libssl3 ca-certificates >/dev/null
             cd /tmp
             tar -xzf "/dist/azcluster-cli-'"${VERSION}"'-x86_64-linux.tar.gz"
             ./azcluster --version

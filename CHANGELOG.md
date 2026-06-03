@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.19] - 2026-06-03
+
+### Fixed
+- **Release CI `compat-test` job failed on `debian:12` matrix entry with `./azcluster: error while loading shared libraries: libssl.so.3: cannot open shared object file`.** The minimal `debian:12` Docker image doesn't preinstall `libssl3`, but Ubuntu's minimal images do — so v0.24.18 caught Ubuntu compat but flagged Debian as a false positive. The CLI legitimately dynamic-links libssl.so.3 (via `reqwest` + `rustls-native-certs` indirectly through some transitive crate); operators install it from `apt`. v0.24.19 prepends `apt-get install -y libssl3 ca-certificates` to every compat-test matrix entry — this mirrors the realistic operator install path and is a no-op on Ubuntu (already present). Now exercises the binary against the actual runtime-deps surface the README implicitly expects.
+- `--azcluster-version` CLI default bumped from `v0.24.18` to `v0.24.19`.
+
 ## [0.24.18] - 2026-06-03
 
 ### Fixed
