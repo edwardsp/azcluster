@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.17] - 2026-06-03
+
+### Added
+- **Release CI `compat-test` job runs the built `azcluster` binary inside Ubuntu 22.04, Ubuntu 24.04, and Debian 12 Docker containers** before the `release` job publishes. Guards against the v0.24.13–v0.24.16 regression class where the runner OS (`ubuntu-latest` or the explicit `ubuntu-24.04`) silently produced binaries with `GLIBC_2.38/2.39` symbol requirements that broke on 22.04 hosts. The smoke step on the runner OS (added in v0.24.14) only validated the runner's own glibc; the new matrix job validates the binary inside a clean rootfs of each target distro, so a future runner-OS bump can't silently break compatibility without failing the release.
+
+### Changed
+- `--azcluster-version` CLI default bumped from `v0.24.16` to `v0.24.17`.
+
 ## [0.24.16] - 2026-06-03
 
 ### Fixed
