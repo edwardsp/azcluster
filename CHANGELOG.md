@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.18] - 2026-06-03
+
+### Fixed
+- **Release CI `compat-test` job aborted with `bash: line 7: file: command not found` on every matrix entry.** The minimal `ubuntu:22.04`, `ubuntu:24.04`, and `debian:12` Docker base images don't ship the `file(1)` utility. The smoke script in v0.24.17 ran `file ./azcluster` for diagnostic info before `./azcluster --version`, and `set -e` killed the script before the binary itself was exercised. Dropped the `file` call — the meaningful test is `./azcluster --version` actually running, which proves glibc symbol resolution against the target distro's libc. The job otherwise correctly downloaded the artifact, extracted it, and reached the binary.
+- `--azcluster-version` CLI default bumped from `v0.24.17` to `v0.24.18`.
+
 ## [0.24.17] - 2026-06-03
 
 ### Added

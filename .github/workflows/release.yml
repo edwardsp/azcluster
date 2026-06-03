@@ -190,7 +190,6 @@ jobs:
             ldd --version | head -1
             cd /tmp
             tar -xzf "/dist/azcluster-cli-'"${VERSION}"'-x86_64-linux.tar.gz"
-            file ./azcluster
             ./azcluster --version
             ./azcluster --help > /dev/null
             echo "==> azcluster runs on $(. /etc/os-release && echo "$PRETTY_NAME")"
