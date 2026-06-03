@@ -184,6 +184,7 @@ module scheduler 'modules/scheduler.bicep' = {
     monUaiId: enableMonitoring ? monitoring!.outputs.monUaiId : ''
     monUaiClientId: enableMonitoring ? monitoring!.outputs.monUaiClientId : ''
     amwIngestionEndpoint: enableMonitoring ? monitoring!.outputs.ingestionEndpoint : ''
+    grafanaEndpoint: enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
     enableAccounting: enableAccounting
     accountingMysqlFqdn: enableAccounting ? accounting!.outputs.fqdn : ''
     accountingMysqlUser: enableAccounting ? accounting!.outputs.adminLogin : ''

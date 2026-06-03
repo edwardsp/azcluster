@@ -128,7 +128,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.13")]
+    #[arg(long, default_value = "v0.24.14")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -895,18 +895,6 @@ fn get_vault_token() -> Result<String> {
     provider.get_vault_token()
 }
 
-fn get_grafana_token() -> Result<String> {
-    let cache = auth::TokenCache::load()?;
-    let account = cache
-        .accounts
-        .values()
-        .max_by_key(|a| a.expires_at)
-        .ok_or_else(|| anyhow!("not logged in to Azure. Run: azcluster login"))?;
-    let mut provider =
-        auth::TokenProvider::new(account.subscription_id.clone(), account.tenant_id.clone())?;
-    provider.get_grafana_token()
-}
-
 fn resolve_cluster(name: &str) -> Result<ClusterState> {
     let arm = arm_client()?;
     let vault_token = get_vault_token()?;
@@ -1618,7 +1606,7 @@ fn finalize_deploy(
     resolved_rg: &str,
     sub_id: &str,
     accounting_enabled: bool,
-    monitoring_enabled: bool,
+    _monitoring_enabled: bool,
     ldap_password: &str,
     mysql_password: &str,
     existing_secrets: Option<&cluster_state::ClusterSecrets>,
@@ -1738,13 +1726,9 @@ fn finalize_deploy(
         eprintln!("==> warning: timing capture failed: {e:#}");
     }
 
-    if monitoring_enabled {
-        if let Some(grafana_name) = pick("grafanaName") {
-            import_dashboards(&state.resource_group, &grafana_name)?;
-        } else {
-            eprintln!("==> warning: monitoring enabled but grafanaName output missing; skipping dashboard import");
-        }
-    }
+    // Dashboard import moved server-side in v0.24.14 (issue #1): the
+    // scheduler's azcluster-grafana-import.service POSTs dashboards via
+    // an IMDS token for the monitoring UAI which holds Grafana Admin.
 
     Ok(())
 }
@@ -1771,155 +1755,6 @@ fn current_principal() -> Result<(String, String)> {
     let token = get_access_token()?;
     let (oid, ptype) = auth::token_provider::extract_principal(&token)?;
     Ok((oid, ptype.as_arm_str().to_string()))
-}
-
-const DASHBOARDS: &[(&str, &str)] = &[
-    (
-        "azcluster-node-health",
-        include_str!("../../../grafana/dashboards/node.json"),
-    ),
-    (
-        "azcluster-slurm-scheduler",
-        include_str!("../../../grafana/dashboards/slurm.json"),
-    ),
-    (
-        "azcluster-gpu-ib",
-        include_str!("../../../grafana/dashboards/gpu_ib.json"),
-    ),
-    (
-        "azcluster-health",
-        include_str!("../../../grafana/dashboards/health.json"),
-    ),
-];
-
-fn ensure_grafana_folder(
-    http: &reqwest::blocking::Client,
-    endpoint: &str,
-    token: &str,
-    folder_title: &str,
-    started: std::time::Instant,
-) -> Result<String> {
-    let folder_uid = format!("azc-{folder_title}");
-    let create_url = format!("{endpoint}/api/folders");
-    let body = serde_json::json!({"uid": folder_uid, "title": folder_title});
-    let mut last_print_elapsed: u64 = 0;
-    loop {
-        let resp = http
-            .post(&create_url)
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .with_context(|| "POST grafana folder")?;
-        let status = resp.status();
-        if status.is_success() || status.as_u16() == 409 || status.as_u16() == 412 {
-            return Ok(folder_uid);
-        }
-        let body_text = resp.text().unwrap_or_default();
-        let propagating = status.as_u16() == 401
-            || status.as_u16() == 403
-            || body_text.contains("NoRoleAssignedException")
-            || body_text.contains("Unauthorized");
-        if !propagating {
-            bail!("create grafana folder failed (non-retryable {status}): {body_text}");
-        }
-        let elapsed = started.elapsed().as_secs();
-        let now_min = elapsed / 60;
-        if now_min != last_print_elapsed / 60 && now_min % 5 == 0 {
-            eprintln!("    waiting for Grafana Admin role propagation (folder create): {now_min}m elapsed");
-            last_print_elapsed = elapsed;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(30));
-    }
-}
-
-fn import_dashboards(resource_group: &str, grafana_name: &str) -> Result<()> {
-    eprintln!(
-        "==> importing {} Grafana dashboards into {} (folder: azcluster)",
-        DASHBOARDS.len(),
-        grafana_name
-    );
-    let client = arm_client()?;
-    let endpoint = client
-        .get_grafana_endpoint(resource_group, grafana_name)
-        .with_context(|| format!("resolve Grafana endpoint for {grafana_name}"))?;
-    let endpoint = endpoint.trim_end_matches('/').to_string();
-    let token = get_grafana_token()?;
-    let http = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .context("build Grafana HTTP client")?;
-
-    const POLL_INTERVAL_SECS: u64 = 30;
-    let started = std::time::Instant::now();
-
-    let folder_uid = ensure_grafana_folder(&http, &endpoint, &token, "azcluster", started)?;
-
-    for (slug, body) in DASHBOARDS {
-        let dashboard: serde_json::Value =
-            serde_json::from_str(body).with_context(|| format!("parse dashboard {slug}"))?;
-        let envelope = serde_json::json!({
-            "dashboard": dashboard,
-            "overwrite": true,
-            "folderUid": folder_uid,
-        });
-        let url = format!("{endpoint}/api/dashboards/db");
-        let mut last_status_line_len = 0usize;
-        let mut last_print_elapsed: u64 = 0;
-        loop {
-            let resp = http
-                .post(&url)
-                .bearer_auth(&token)
-                .json(&envelope)
-                .send()
-                .with_context(|| format!("POST grafana dashboard {slug}"))?;
-            let status = resp.status();
-            if status.is_success() {
-                let elapsed = started.elapsed().as_secs();
-                eprintln!(
-                    "\r{:width$}\r    imported {slug} (after {elapsed}s)",
-                    "",
-                    width = last_status_line_len
-                );
-                break;
-            }
-            let body_text = resp.text().unwrap_or_default();
-            let propagating = status.as_u16() == 401
-                || status.as_u16() == 403
-                || body_text.contains("NoRoleAssignedException")
-                || body_text.contains("Unauthorized");
-            let elapsed = started.elapsed().as_secs();
-            if !propagating {
-                eprintln!(
-                    "    FAILED {slug} ({status}): {}",
-                    body_text.lines().last().unwrap_or("")
-                );
-                bail!("dashboard import {slug} failed (non-retryable {status})");
-            }
-            last_status_line_len = {
-                let s = format!(
-                    "    waiting for Grafana Admin role propagation: {}m{}s elapsed, last response: {} {}",
-                    elapsed / 60,
-                    elapsed % 60,
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or(""),
-                );
-                use std::io::IsTerminal;
-                if std::io::stderr().is_terminal() {
-                    eprint!("\r{s}");
-                } else {
-                    let prev_min = last_print_elapsed / 60;
-                    let now_min = elapsed / 60;
-                    if now_min != prev_min && now_min % 5 == 0 {
-                        eprintln!("{s}");
-                        last_print_elapsed = elapsed;
-                    }
-                }
-                s.len()
-            };
-            std::thread::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS));
-        }
-    }
-    Ok(())
 }
 
 fn utc_stamp() -> String {
