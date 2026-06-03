@@ -971,8 +971,11 @@ write_files:
         install -d -m 0700 -o $UID_N -g $GID_N $HOME_DIR
         install -d -m 0700 -o $UID_N -g $GID_N $SSH_DIR
         if [ ! -f $KEY ]; then
-          sudo -u \#$UID_N -g \#$GID_N ssh-keygen -t ed25519 -N '' -f $KEY \
+          ssh-keygen -t ed25519 -N '' -f $KEY \
             -C "azcluster-internal-{{CLUSTER_NAME}}-$U" >/dev/null
+          chown $UID_N:$GID_N $KEY $KEY.pub
+          chmod 0600 $KEY
+          chmod 0644 $KEY.pub
         fi
         PUB=$(cat $KEY.pub)
         AUTH=$SSH_DIR/authorized_keys

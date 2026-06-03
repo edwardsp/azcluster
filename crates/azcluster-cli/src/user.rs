@@ -455,7 +455,8 @@ pub fn build_internal_keypair_provision_cmd(
          install -d -m 0700 -o {uid} -g {gid} $HOME_DIR; \
          install -d -m 0700 -o {uid} -g {gid} $SSH_DIR; \
          if [ ! -f $KEY ]; then \
-           sudo -u \\#{uid} -g \\#{gid} ssh-keygen -t ed25519 -N '' -f $KEY -C 'azcluster-internal-{cluster}-{user}' >/dev/null; \
+           ssh-keygen -t ed25519 -N '' -f $KEY -C 'azcluster-internal-{cluster}-{user}' >/dev/null; \
+           chown {uid}:{gid} $KEY $KEY.pub; chmod 0600 $KEY; chmod 0644 $KEY.pub; \
          fi; \
          PUB=$(cat $KEY.pub); \
          AUTH=$SSH_DIR/authorized_keys; \
@@ -1066,7 +1067,8 @@ gecos: Alice A
         let cmd = build_internal_keypair_provision_cmd("hunter2", "alice", 20005, 20000, "demo");
         assert!(cmd.contains("install -d -m 0700 -o 20005 -g 20000 $HOME_DIR"));
         assert!(cmd.contains("install -d -m 0700 -o 20005 -g 20000 $SSH_DIR"));
-        assert!(cmd.contains("sudo -u \\#20005 -g \\#20000 ssh-keygen -t ed25519"));
+        assert!(cmd.contains("ssh-keygen -t ed25519"));
+        assert!(cmd.contains("chown 20005:20000 $KEY $KEY.pub"));
         assert!(cmd.contains("'azcluster-internal-demo-alice'"));
         assert!(cmd.contains("authorized_keys"));
         assert!(cmd.contains("uid=alice,ou=people,dc=azcluster,dc=local"));

@@ -5,6 +5,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.16] - 2026-06-03
+
+### Fixed
+- **Cluster-internal keypair provisioning aborted with `sudo: unknown user #20001` on the scheduler.** v0.24.15 generated each LDAP user's internal ed25519 keypair via `sudo -u \#$UID -g \#$GID ssh-keygen ...`, copying the same pattern used elsewhere. The pattern requires the UID to be resolvable via NSS — which works on login + compute (SSSD clients) but **not on the scheduler**, which hosts slapd itself and runs no SSSD client (`getent passwd 20001` returns empty on scheduler). `sudo -u '#20001'` therefore errored, `set -e` aborted the bootstrap, and no keypair was created. Fix: run `ssh-keygen` as root, then `chown $UID:$GID` + explicit `chmod 0600/0644` on the resulting files. Applied identically in `cloud-init/scheduler.yaml.tmpl` (default-user provisioning at boot) and `crates/azcluster-cli/src/user.rs::build_internal_keypair_provision_cmd` (operator-driven `azcluster user add`). Live-verified on a 2-node H200 NDv5 cluster in mexicocentral: both default users (`clusteradmin` uid 20001 / `clusteruser` uid 20002) get correctly-owned `/shared/home/<u>/.ssh/id_ed25519` (mode 0600) + `.pub` (0644) + `authorized_keys` (0600), and LDAP `sshPublicKey` correctly contains two values — operator-supplied (no restriction) + `from="10.42.0.0/16,127.0.0.1/32" ssh-ed25519 ... azcluster-internal-<cluster>-<user>`.
+- AGENTS.md gotcha "`sudo -u \#UID ssh-keygen` is the only reliable way" corrected — that's only true on SSSD-client nodes (login + compute), NOT on the scheduler where slapd is local but no NSS client resolves LDAP uids.
+- `--azcluster-version` CLI default bumped from `v0.24.15` to `v0.24.16`.
+
 ## [0.24.15] - 2026-06-02
 
 ### Added
