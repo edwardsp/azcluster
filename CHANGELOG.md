@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.24.20] - 2026-06-09
+
+### Added
+- **End-to-end live walkthrough captured for v0.24.20** under [`doc/full-walkthrough-v0.24.20.md`](doc/full-walkthrough-v0.24.20.md) + chart directory `doc/full-walkthrough-v0.24.20/`. Clean 2-node `Standard_ND96isr_H100_v5` eastus run covering: deploy → smoke → NCCL all-reduce (plain VM **440.21 GB/s** busbw) → matched-params containerised NCCL multi-node (NeMo `nvcr.io/nvidia/nemo:25.07.02`, **451.08 GB/s** — reproduces the plain-VM result with identical `-b 16G -e 16G -f 2 -g 1 -N 10` params, confirming zero container fabric penalty) → DGXC Megatron-Bridge Llama-3.1-8B BF16 pretraining (**541.81 MODEL_TFLOP/s/GPU** at 16 GPUs / **542.66** at 8 GPUs, 99.84% single→2-node scaling) → Llama-3.1-8B-FP8 vLLM inference (**9,863 tok/s** @ 12.38 ms median TPOT, 1280/1280 requests) → DeepSeek-R1-0528 FP8 SGLang TP=16 inference (**487.81 tok/s** @ 123.34 ms median TPOT, 640/640 requests) → observability → tear-down.
+- **DGXC training walkthrough section** documents the Megatron-Bridge log format + the `parse_train_timing_mbridge.sh` parser (distinct from NeMo's `parse_train_timing.sh`; takes the experiments directory, averages iterations 35-44), and the mock-token-data caveat (lm loss converges in ~50 steps because the dataset is synthetic — the headline metric is MODEL_TFLOP/s/GPU + step-time stability, not the loss curve).
+
+### Changed
+- `doc/full-walkthrough-plan.md` §4 rewritten so the plain-VM and containerised NCCL benchmarks use identical parameters and the container result reproduces the plain-VM busbw (previously a 16 GiB×10-iter plain run was compared against a 1 GiB×20-iter container smoke, which made the container look slower).
+- `--azcluster-version` CLI default bumped from `v0.24.19` to `v0.24.20`.
+
 ## [0.24.19] - 2026-06-03
 
 ### Fixed

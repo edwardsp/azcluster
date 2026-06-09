@@ -2,9 +2,9 @@
 
 **Fast Rust-based Slurm cluster deployer for Azure.** Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~15 minutes wall-clock, no daemons on your laptop.
 
-> **Current release:** `v0.24.19`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
+> **Current release:** `v0.24.20`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-v0.24.12.md`](doc/full-walkthrough-v0.24.12.md) (latest live results: NCCL plain VM 461.6 GB/s, NeMo container multinode 428.0 GB/s, Llama-3.1-8B-FP8 vLLM 10,118 tok/s @ 12.06 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 491.8 tok/s @ 122.6 ms TPOT).
+> **End-to-end walkthrough:** [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-v0.24.20.md`](doc/full-walkthrough-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT).
 
 ## What it is
 
@@ -40,7 +40,7 @@ A deployed cluster has:
 Grab the prebuilt CLI from the latest release. Each release ships a versioned tarball plus a `SHA256SUMS` file:
 
 ```bash
-VERSION=v0.24.19
+VERSION=v0.24.20
 ARCH=x86_64-linux                       # or aarch64-darwin
 BASE=https://github.com/edwardsp/azcluster/releases/download/${VERSION}
 curl -fsSLO "${BASE}/azcluster-cli-${VERSION}-${ARCH}.tar.gz"
@@ -389,8 +389,8 @@ cloud-init/
 grafana/dashboards/     node, slurm, gpu+ib, health (auto-imported post-deploy)
 doc/
   full-walkthrough-plan.md       canonical version-agnostic walkthrough
-  full-walkthrough-v0.24.12.md   latest version-specific live run
-  full-walkthrough-v0.24.12/     PNG charts for above
+  full-walkthrough-v0.24.20.md   latest version-specific live run
+  full-walkthrough-v0.24.20/     PNG charts for above
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
 .sisyphus/              planning artifacts (gitignored)

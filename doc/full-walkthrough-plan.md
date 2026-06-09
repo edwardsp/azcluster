@@ -12,8 +12,9 @@ This is the **plan** — the version-agnostic description of what we run and why
 4. Show NCCL working on the plain VM and inside a Pyxis container collective performance.
 5. Capture thermal/throttle/error telemetry under load.
 6. Run a production-realistic inference benchmark single-node and multi-node.
-7. Compare to published external numbers where they exist.
-8. View live metrics in Grafana.
+7. Run a distributed training benchmark single-node and multi-node and confirm near-linear strong scaling over the IB fabric.
+8. Compare to published external numbers where they exist.
+9. View live metrics in Grafana.
 
 ## Cluster shape
 
@@ -50,8 +51,9 @@ Each run is independent and idempotent. Run them in order on a fresh cluster; la
 | 5 | Containerised NCCL — multi-node | PMIx across two containers, IB visible inside container (via Mellanox enroot hook) | ~2 min run |
 | 6 | Small-model inference (Llama 3.1 8B FP8) | Tests the full storage pipeline at small scale: `hf download` → NVMe → `azcp` → blob → `azcp-cluster` → all-node NVMe → vLLM serve → InferenceX bench client | ~10 min |
 | 7 | Large-model inference (DeepSeek-R1-0528 FP8, 671B) | Same pipeline at production scale (~640 GB model), then SGLang TP=16 across both nodes | ~80 min total (most of it model download from HuggingFace) |
-| 8 | Observability tour | Read the same data we just generated via Grafana dashboards in the `azcluster` folder | n/a |
-| 9 | Tear-down | `azcluster delete` removes the resource group asynchronously | ~10 min async |
+| 8 | Distributed training benchmark (DGXC Llama 3.1 8B BF16) | NVIDIA `dgxc-benchmarking` `llmb-run`: NeMo/Megatron-Bridge pretraining single-node (8 GPU) then multi-node (16 GPU); strong-scaling efficiency of the data-parallel gradient all-reduce over the IB fabric | ~25-30 min one-time sqsh build+broadcast + ~10 min/scale |
+| 9 | Observability tour | Read the same data we just generated via Grafana dashboards in the `azcluster` folder | n/a |
+| 10 | Tear-down | `azcluster delete` removes the resource group asynchronously | ~10 min async |
 
 ## Storage pipeline (used by runs 6 + 7)
 
@@ -143,8 +145,8 @@ The walkthrough pulls container images and model weights from third-party regist
 
 | Secret | Where it's used | How to set it on the cluster |
 |---|---|---|
-| **NGC API key** (for `nvcr.io/nvidia/...` pulls) | `dgxc-nemo-{container,multinode}-smoke.sbatch`, anything that imports a NeMo / NGC container under `nvcr.io/nvidia/` | NGC public images can pull anonymously (this walkthrough's runs all worked without a key) but anonymous pulls are heavily rate-limited and some images are gated. To set a key for an LDAP user: `azcluster ssh <name> --user clusteradmin` then `mkdir -p ~/.config/enroot && cat > ~/.config/enroot/.credentials <<EOF`<br/>`machine nvcr.io login $oauthtoken password <NGC_API_KEY>`<br/>`EOF`<br/>`chmod 0600 ~/.config/enroot/.credentials`<br/><br/>Get an NGC API key at `https://ngc.nvidia.com/setup/api-key` (free signup). The login is literally the string `$oauthtoken` (NGC convention). Set this if `enroot import` returns HTTP 401/403, or pre-emptively for production runs. |
-| **Hugging Face token** (gated models only) | `llama-pipeline.sbatch`, `dsr1-pipeline.sbatch` if pulling a gated repo | `azcluster ssh <name> --user clusteradmin` then store at `~/.hf-token` (mode 0600). In the sbatch, `export HF_TOKEN=$(cat ~/.hf-token)` before the `hf download`. The two models we use (`neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8`, `deepseek-ai/DeepSeek-R1-0528`) are public and don't need a token; gated models (Meta's own Llama, Qwen3.5-FP8) do. |
+| **NGC API key** (for `nvcr.io/nvidia/...` pulls) | `dgxc-nemo-{container,multinode}-smoke.sbatch`; the DGXC training run (step 7 — `llmb-install`/`llmb-run` pull `nvcr.io/nvidia/nemo`); anything that imports a NeMo / NGC container under `nvcr.io/nvidia/` | NGC public images can pull anonymously (this walkthrough's runs all worked without a key) but anonymous pulls are heavily rate-limited and some images are gated. To set a key for an LDAP user: `azcluster ssh <name> --user clusteradmin` then `mkdir -p ~/.config/enroot && cat > ~/.config/enroot/.credentials <<EOF`<br/>`machine nvcr.io login $oauthtoken password <NGC_API_KEY>`<br/>`EOF`<br/>`chmod 0600 ~/.config/enroot/.credentials`<br/><br/>Get an NGC API key at `https://ngc.nvidia.com/setup/api-key` (free signup). The login is literally the string `$oauthtoken` (NGC convention). Set this if `enroot import` returns HTTP 401/403, or pre-emptively for production runs. |
+| **Hugging Face token** (gated models only) | `llama-pipeline.sbatch`, `dsr1-pipeline.sbatch` if pulling a gated repo; **required** for the DGXC training run (step 7) because the `Meta-Llama-3.1` NeMo configs are gated | `azcluster ssh <name> --user clusteradmin` then store at `~/.hf-token` (mode 0600). In the sbatch, `export HF_TOKEN=$(cat ~/.hf-token)` before the `hf download`. The two inference models we use (`neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8`, `deepseek-ai/DeepSeek-R1-0528`) are public and don't need a token; gated models (Meta's own Llama configs used by DGXC, Qwen3.5-FP8) do. The DGXC training flow (step 7) reads the token from `$HOME/.config/azcluster/hf_token` instead — see that section. |
 | **Azure access** | Everything | `azcluster login` once on the operator's laptop — token cache lives at `~/.azure/azcli_tokens.json`. The cluster itself uses managed identities for blob and AMW access; no operator action needed. |
 
 Without an NGC key, anonymous pulls from `nvcr.io` may succeed for public images but get heavily rate-limited (and some images require it outright). When `enroot import` fails with HTTP 401 or 403, the credentials file is the fix.
@@ -210,15 +212,19 @@ azcluster scp <name> --user clusteradmin nccl-N10.sbatch :/shared/home/clusterad
 azcluster exec <name> --user clusteradmin -- "sbatch nccl-N10.sbatch"
 ```
 
-Expect `# Avg bus bandwidth : 460-466 GB/s`.
+Expect `# Avg bus bandwidth : 440-466 GB/s` (live runs land in this band with `-b 16G -e 16G -N 10`: `v0.24.12` 461.6, `v2420walk` job 28 440.21 — node-to-node variance, not a regression).
 
-### 3. NCCL in a NeMo container, 2 nodes × 16 ranks
+### 3. NCCL in a NeMo container, 2 nodes × 16 ranks (apples-to-apples with §2)
 
-Two sbatches; both shipped by cloud-init at `/shared/examples/`. Reproduced here for reference (and in case the operator wants to modify the model/container/iters without re-deploying).
+This is the containerised counterpart of §2. To make the bare-metal-vs-container comparison meaningful, run the **identical** `all_reduce_perf -b 16G -e 16G -N 10` binary inside the NeMo container via Pyxis — the only variable is the execution environment (the in-image HPC-X on the bare VM vs the same HPC-X shipped inside the container). The NeMo image (`nvcr.io/nvidia/nemo:25.07.02`) ships `all_reduce_perf` and `all_reduce_perf_mpi` prebuilt, so nothing is compiled.
 
-#### 3a. Single-node smoke (`dgxc-nemo-container-smoke.sbatch`)
+**Consistency note (why not the Python helper).** Earlier walkthroughs measured the container path with a Python `torchrun` helper (`nccl_allreduce_smoke.py`, a 1 GiB fp16 tensor × 20 iters). That drives a *different* message size and collective path than §2's `all_reduce_perf -b 16G -e 16G`, so its IB-throughput chart was **not** comparable to the plain-VM chart — on the 1 GiB payload the per-NIC receive rates stayed near the noise floor and the chart looked empty next to §2's multi-Gbps spike. The Python helper remains a fine quick functional smoke (3a), but the `all_reduce_perf` container run (3b) is the benchmark of record: it reproduces §2 exactly, so the two NCCL charts in §8 are a true matched pair. Live `v2420walk` result: §2 (bare metal) **440.21 GB/s** vs §3b (container) **451.08 GB/s** — within ~2.5%, i.e. the Pyxis/Enroot path adds no measurable NCCL overhead.
 
-Drops the `nccl_allreduce_smoke.py` helper into `/shared/dgxc/`, then runs an 8-rank intra-node all-reduce inside the NeMo container. First-run import of `nvcr.io/nvidia/nemo:25.07.02` (~16 GB) takes ~25 min on a cold node; subsequent runs are seconds.
+The smoke sbatch (3a) and the legacy Python multinode smoke are shipped by cloud-init at `/shared/examples/`; `nccl-N10-container.sbatch` (3b) is reproduced here and scp'd by the operator (it mirrors `nccl-N10.sbatch` from §2).
+
+#### 3a. Container import + single-node smoke (`dgxc-nemo-container-smoke.sbatch`)
+
+Optional warm-up. Drops the `nccl_allreduce_smoke.py` helper into `/shared/dgxc/`, then runs an 8-rank intra-node all-reduce inside the NeMo container. Its real value is warming the squashfs cache: first-run import of `nvcr.io/nvidia/nemo:25.07.02` (~16 GB) takes ~25 min on a cold node, so running this first means 3b's import is seconds. This is a functional check (Pyxis import + IB-in-container), not the benchmark of record — see the consistency note above.
 
 ```bash
 #!/usr/bin/env bash
@@ -285,46 +291,46 @@ srun \
 
 Success criteria: `pyxis: imported docker image: ...` + `rank 0 / world 8` + `all_reduce avg busbw` > 100 GB/s + `NCCL_DEBUG INFO` mentions `IBext_v11` + `mlx5_ib` (not `via SOCKET`).
 
-#### 3b. Multinode (`dgxc-nemo-multinode-smoke.sbatch`)
+#### 3b. Consistent multinode (`nccl-N10-container.sbatch`) — reproduces §2
 
-Reuses the python script the single-node smoke dropped. Runs across 2 nodes via `srun --mpi=pmix` — exercises cross-container PMIx world (v0.13.6 unblocked this) + IB device visibility inside container (v0.13.8 `MELLANOX_VISIBLE_DEVICES=all` enroot hook).
+The benchmark of record. Identical `all_reduce_perf -b 16G -e 16G -N 10` as §2, run across 2 nodes inside the NeMo container via `srun --mpi=pmix`. Exercises cross-container PMIx world (v0.13.6) + IB device visibility inside the container (v0.13.8 `MELLANOX_VISIBLE_DEVICES=all` enroot hook). Unlike §2 the sbatch sets **no** NCCL env itself: the NCCL/UCX/IB vars (`NCCL_IB_HCA`, `NCCL_TOPO_FILE`, `UCX_NET_DEVICES`, `MELLANOX_VISIBLE_DEVICES=all`) are injected inside the container by `/etc/enroot/environ.d/50-nccl.env`, and `/opt/microsoft` is bind-mounted by `/etc/enroot/mounts.d/50-azcluster.fstab` so `NCCL_TOPO_FILE` resolves.
 
 ```bash
-#!/usr/bin/env bash
-#SBATCH --job-name=dgxc-nemo-multi
-#SBATCH --output=dgxc-nemo-multi-%j.out
+#!/bin/bash -l
+#SBATCH --job-name=nccl-N10-container
+#SBATCH --output=nccl-N10-container-%j.out
 #SBATCH --partition=gpu
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
 #SBATCH --exclusive
-#SBATCH --time=00:30:00
+#SBATCH --time=00:50:00
 
+# Containerised mirror of nccl-N10.sbatch: identical all_reduce_perf -b 16G -e 16G -N 10,
+# run inside the NeMo container via Pyxis instead of bare-metal HPC-X.
 NEMO_IMAGE=${NEMO_IMAGE:-nvcr.io/nvidia/nemo:25.07.02}
-
-if [ ! -f /shared/dgxc/nccl_allreduce_smoke.py ]; then
-  echo "Missing /shared/dgxc/nccl_allreduce_smoke.py; run dgxc-nemo-container-smoke.sbatch first." >&2
-  exit 1
-fi
 
 srun --mpi=pmix \
   --container-image="${NEMO_IMAGE}" \
   --container-mounts=/shared:/shared,/mnt/nvme:/mnt/nvme \
   --no-container-mount-home \
   --export=ALL,NCCL_DEBUG=INFO \
-  bash -c 'set -euo pipefail; cd /; python /shared/dgxc/nccl_allreduce_smoke.py'
+  bash -c 'set -e; BIN=$(command -v all_reduce_perf_mpi || command -v all_reduce_perf || echo /usr/local/bin/all_reduce_perf_mpi); [ "${SLURM_PROCID:-0}" = "0" ] && echo "[rank0] using $BIN on $(hostname)"; exec "$BIN" -b 16G -e 16G -N 10 -g 1'
 ```
 
-Submit:
+Submit (warm the container first via 3a so the import is seconds):
 
 ```bash
-# Single-node smoke first (drops the python script + imports the NeMo container)
+# Optional: warm the squashfs cache + container sanity (first import ~25 min)
 azcluster exec <name> --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-container-smoke.sbatch"
-# Wait for that to finish (~25 min first time, ~1 min after), then:
-azcluster exec <name> --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch"
+# Then the consistent measured run:
+azcluster scp <name> --user clusteradmin nccl-N10-container.sbatch :/shared/home/clusteradmin/
+azcluster exec <name> --user clusteradmin -- "sbatch nccl-N10-container.sbatch"
 ```
 
-Expect `all_reduce ... avg busbw 425-435 GB/s` in `dgxc-nemo-multi-<jobid>.out`. The single-node smoke produces ~465 GB/s (intra-NVLink-only, no IB hops).
+Expect `# Avg bus bandwidth :` within a few % of §2 (live `v2420walk` job 29: **451.08 GB/s** vs §2 job 28: 440.21 GB/s). The binary auto-resolves to `all_reduce_perf_mpi` (the MPI-launcher build NeMo ships); the `srun --mpi=pmix` launcher provides the PMIx world.
+
+> The legacy Python multinode smoke (`dgxc-nemo-multinode-smoke.sbatch`, shipped at `/shared/examples/`) still works as a quick 2-node functional check and produces ~425-435 GB/s on its 1 GiB payload, but it is **not** apples-to-apples with §2 — prefer `nccl-N10-container.sbatch` for the §8 chart.
 
 ### 4. Storage pipeline — small model (Llama 3.1 8B FP8)
 
@@ -539,7 +545,157 @@ srun --mpi=pmix \
 date -u
 ```
 
-### 7. Verification — check chart panels actually have data
+### 7. DGXC Llama 3.1 8B BF16 pretraining (NVIDIA `dgxc-benchmarking`, `llmb-run`)
+
+This is the one **training** run in the walkthrough. Everything above is inference or a micro-benchmark; here we run a real data-parallel pretraining step loop and measure strong-scaling efficiency of the gradient all-reduce over the IB fabric. Tool: NVIDIA's [`dgxc-benchmarking`](https://github.com/NVIDIA/dgxc-benchmarking) harness (`llmb-install` + `llmb-run`), which drives a NeMo / Megatron-Bridge container.
+
+Unlike the earlier version of this run, the NeMo container is **not** pulled onto `/shared` by `llmb-install`. Instead we stage it as a squashfs through the same NVMe → blob → `azcp-cluster` pipeline as the inference runs above: build the `.sqsh` once on a compute node, publish to the per-cluster blob, broadcast to every node's NVMe over IB, then point `llmb-run` at the local squashfs via `RUN_CONF_IMAGE`. The container never touches `/shared`, so a fast `--shared-storage nfs-scheduler` deploy stays viable.
+
+**Prerequisites:**
+
+- Deploy with `--extra-package python3.12-venv` (the `llmb` installer builds a uv venv on login + compute).
+- **Storage must be on** (the default — do NOT pass `--no-storage`). The `azcp-build-and-publish-sqsh.sbatch` + `azcp-cluster-distribute-sqsh.sbatch` templates only exist under `/shared/examples/` when the cluster has a blob account.
+- `--shared-storage nfs-scheduler` is **fine** here (reversed from older guidance). The squashfs lives on per-node NVMe, not `/shared`; the only `llmb` footprint on `/shared` is the uv venv + recipe clone + dataset/config staging (a few GB). The old "17 GiB NeMo import ENOSPCs a 64 GiB scheduler-NFS export" warning no longer applies because we skip the install-time import (see 7a).
+- NGC API key (NeMo container pull) AND a HuggingFace token (the `Meta-Llama-3.1` NeMo configs are gated). See the credentials table above.
+
+#### 7a. One-time setup (login VM, as `clusteradmin`)
+
+```bash
+azcluster ssh <name> --user clusteradmin
+
+# Stash credentials where the harness expects them (mode 0600).
+mkdir -p "$HOME/.config/azcluster" && chmod 0700 "$HOME/.config/azcluster"
+printf '%s' '<NGC_API_KEY>' > "$HOME/.config/azcluster/ngc_key"  && chmod 0600 "$HOME/.config/azcluster/ngc_key"
+printf '%s' '<HF_TOKEN>'    > "$HOME/.config/azcluster/hf_token" && chmod 0600 "$HOME/.config/azcluster/hf_token"
+export NGC_API_KEY="$(cat "$HOME/.config/azcluster/ngc_key")"
+export HF_TOKEN="$(cat "$HOME/.config/azcluster/hf_token")"
+
+# enroot needs NGC credentials to import the (gated, rate-limited) NeMo image in 7b.
+# $HOME is on /shared, so this file is visible to the compute node that runs the import.
+# Note the LITERAL `$oauthtoken` (NGC's required username); only NGC_API_KEY expands.
+mkdir -p "$HOME/.config/enroot"
+cat > "$HOME/.config/enroot/.credentials" <<EOF
+machine nvcr.io login \$oauthtoken password ${NGC_API_KEY}
+EOF
+chmod 0600 "$HOME/.config/enroot/.credentials"
+
+# Clone + build the llmb tooling into a uv venv on /shared (visible to all nodes).
+mkdir -p "$HOME/dgxc" && cd "$HOME/dgxc"
+git clone https://github.com/NVIDIA/dgxc-benchmarking.git
+export LLMB_INSTALL="$HOME/dgxc/llmb"
+python3 -m venv "$LLMB_INSTALL/llmb_venv"
+. "$LLMB_INSTALL/llmb_venv/bin/activate"
+pip install --upgrade pip uv
+uv pip install ./dgxc-benchmarking/cli/llmb-install ./dgxc-benchmarking/cli/llmb-run
+```
+
+The recipe pins the NeMo container tag. Read it from the recipe rather than hardcoding — it changes between `dgxc-benchmarking` releases:
+
+```bash
+# llama3.1/launch.sh hardcodes e.g. FW_VERSION=26.04.00; llama3.1/metadata.yaml
+# carries the matching `nvcr.io#nvidia/nemo:<tag>`. Confirm both agree.
+FW_VERSION=$(sed -n 's/^FW_VERSION=//p' "$HOME/dgxc/dgxc-benchmarking/llama3.1/launch.sh" | head -1)
+echo "recipe NeMo tag: ${FW_VERSION}"          # expect 26.04.00 for the v0.24.20-era recipe
+NEMO_TAG="nvcr.io/nvidia/nemo:${FW_VERSION}"
+SQSH_NAME="nemo-${FW_VERSION}"
+```
+
+Write the non-interactive install playfile. Note `account: clusteradmin` (the per-user Slurm account created at deploy time — NOT the old `default` account, which only exists for `azureuser`) and the default pool name `gpu` for both partitions:
+
+```bash
+cat > "$HOME/dgxc/playfile.yaml" <<'YAML'
+venv_type: uv
+gpu_type: h100
+node_architecture: x86_64
+install_method: slurm
+account: clusteradmin
+gpu_partition: gpu
+cpu_partition: gpu
+selected_workloads:
+  - pretrain_llama3.1
+YAML
+
+# Sanity: confirm the account/partition assoc actually exists for clusteradmin.
+sacctmgr -n show assoc user=clusteradmin format=account,partition
+
+# Pre-place an empty placeholder at the path llmb-install would import the NeMo
+# squashfs to. llmb-install skips the (17 GiB, /shared-bound) import when the
+# target file already exists, so `express` only stages datasets + configs.
+# We stage the real container as a per-node NVMe squashfs in 7b instead.
+mkdir -p "$LLMB_INSTALL/images"
+touch "$LLMB_INSTALL/images/nvidia+nemo+${FW_VERSION}.sqsh"
+
+# Express install: stages datasets/configs (image import skipped by the placeholder).
+llmb-install --play "$HOME/dgxc/playfile.yaml" express
+```
+
+#### 7b. Stage the NeMo container as a per-node squashfs (NVMe → blob → broadcast)
+
+Same pipeline as the inference runs above. Build once on one compute node, publish to blob, then broadcast to every node's NVMe over IB. Both templates ship under `/shared/examples/`.
+
+```bash
+# (1) Import nvcr.io/nvidia/nemo:<tag> to /mnt/nvme/.../sqsh/<name>.sqsh on one
+#     node and upload to the per-cluster blob. ~25-30 min, NGC-CDN bound (17 GiB).
+build=$(sbatch --parsable /shared/examples/azcp-build-and-publish-sqsh.sbatch \
+  "${SQSH_NAME}" "${NEMO_TAG}")
+echo "build+publish job: ${build}"
+
+# (2) Broadcast the published sqsh to every node's NVMe over IB once (1) succeeds.
+#     ~seconds at N=2 (NVMe-read-bound; see the storage-pipeline note above).
+dist=$(sbatch --parsable --dependency=afterok:${build} \
+  /shared/examples/azcp-cluster-distribute-sqsh.sbatch "${SQSH_NAME}")
+echo "distribute job: ${dist}"
+
+# Watch both to completion.
+watch -n 10 "squeue -u $USER"
+```
+
+After both jobs report `COMPLETED`, every compute node has the squashfs at
+`${AZCLUSTER_USER_NVME}/sqsh/${SQSH_NAME}/${SQSH_NAME}.sqsh`
+(= `/mnt/nvme/users/clusteradmin/sqsh/nemo-<tag>/nemo-<tag>.sqsh`).
+
+#### 7c. Submit the strong-scaling pair
+
+`RUN_CONF_IMAGE` overrides the recipe's default `$LLMB_INSTALL/images/...` path (the empty placeholder from 7a) with the per-node NVMe squashfs. `llmb-run` passes it verbatim to `srun --container-image=`, and Pyxis treats the leading-`/` path as a local squashfs — no per-job import.
+
+```bash
+. "$LLMB_INSTALL/llmb_venv/bin/activate"
+export LLMB_INSTALL="$HOME/dgxc/llmb"
+export RUN_CONF_IMAGE="${AZCLUSTER_USER_NVME}/sqsh/${SQSH_NAME}/${SQSH_NAME}.sqsh"
+RUN_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Single node, 8 GPUs.
+llmb-run submit -w pretrain_llama3.1 --model-size 8b -d bf16 --scale 8
+
+# Both nodes, 16 GPUs.
+llmb-run submit -w pretrain_llama3.1 --model-size 8b -d bf16 --scale 16
+
+RUN_END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "training window: ${RUN_START} .. ${RUN_END}"
+```
+
+Per-step throughput is in the experiment logs:
+
+```bash
+ls "$LLMB_INSTALL"/workloads/pretrain_llama3.1/experiments/*/log-default-*_*.out
+grep -E 'iteration .*/50|MODEL_TFLOP/s/GPU' \
+  "$LLMB_INSTALL"/workloads/pretrain_llama3.1/experiments/*/log-default-*_*.out | tail
+```
+
+**Reference baseline** (v0.13.9, southafricanorth, 2× ND96isr_H100_v5 — replace with fresh numbers for this release):
+
+| Scale | GPUs | GBS | Step time | Throughput | MODEL_TFLOP/s/GPU |
+|---|---|---|---|---|---|
+| `--scale 8`  | 8 (1 node)  | 128 | 12522.40 ms | 83,737 tok/s  | ~537 |
+| `--scale 16` | 16 (2 node) | 256 | 12513.10 ms | 167,594 tok/s | ~538 |
+
+Strong-scaling 8→16 GPU = **2.001×** (100.07% efficiency) — the BF16 gradient all-reduce is fully hidden behind compute on the IB fabric, so doubling the node count doubles throughput at constant per-GPU step time. That near-perfect number is the headline result of this run.
+
+#### 7d. Observability
+
+The GPU + InfiniBand dashboard shows the training signature distinct from inference: sustained `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` near 1.0 on all 16 GPUs plus periodic IB-receive bursts at every gradient all-reduce. Capture the `${RUN_START}`/`${RUN_END}` window above and feed it to the chart appendix (Appendix A `INFERENCE_PANELS` + the NCCL IB-recv panel) the same way as the inference runs; cross-check live in Grafana via the `## Observability` queries.
+
+### 8. Verification — check chart panels actually have data
 
 After every run, before declaring success, query AMW directly with `curl` + the management-scope token:
 
@@ -561,7 +717,9 @@ curl -sG "${ENDPOINT}/api/v1/query_range" \
 
 Returning `0` = blank chart (scrape interval too long for run window, or wrong metric name). Returning `16` (= 2 nodes × 8 GPUs) = good. Don't render a matplotlib PNG without first confirming this returns the expected series count.
 
-### 8. Job-accounting capture
+**Matched-pair check for the NCCL charts.** Because §3b runs the *identical* `all_reduce_perf -b 16G -e 16G -N 10` as §2, the two NCCL charts (`nccl-plain-vm` and `nccl-container-multinode`) must come out as a true matched pair: same panel set (`NCCL_PANELS`), comparable series counts, and IB-receive spikes within a few percent of each other. If the container chart looks visibly emptier or its IB peak is an order of magnitude lower, the container run used a different payload (a small-tensor `torchrun` Python smoke rather than `all_reduce_perf`) — re-run §3b, not the Python helper. Live `v2420walk`: both charts rendered 52 series, container IB peak ~1230 Gbps vs plain-VM ~1270 Gbps, busbw 451.08 vs 440.21 GB/s.
+
+### 9. Job-accounting capture
 
 After every walkthrough run completes (before tearing down), capture the full Slurm accounting record. This goes at the end of every version-specific walkthrough doc so reviewers can verify the actual job timing and exit status without re-running.
 
@@ -580,7 +738,7 @@ Field meanings:
 - `State` — `COMPLETED` is the only success
 - `ExitCode` — `0:0` is success; first number is the highest exit code returned by `srun`, second is the killing signal
 
-### 9. Tear-down
+### 10. Tear-down
 
 ```bash
 azcluster delete <name>
@@ -713,11 +871,20 @@ INFERENCE_PANELS = [
 
 # Example invocation — replace timestamps with what you recorded
 if __name__ == "__main__":
-    # NCCL plain VM
+    # NCCL plain VM (§2)
     plot_run("nccl-plain-vm",
         f"NCCL all-reduce 16 GiB x N=10 on plain VM, 16 ranks across 2 nodes — {CLUSTER}",
         datetime(2026,5,29,0,0,tzinfo=timezone.utc),   # REPLACE with date -u from sbatch
         datetime(2026,5,29,0,5,tzinfo=timezone.utc),
+        NCCL_PANELS)
+
+    # NCCL containerised (§3b) — SAME panel set as plain VM so the two charts
+    # form a true matched pair (see §8). Only the run window differs; the
+    # all_reduce_perf payload is identical (-b 16G -e 16G -N 10).
+    plot_run("nccl-container-multinode",
+        f"NCCL all-reduce 16 GiB x N=10 in NeMo container, 16 ranks across 2 nodes — {CLUSTER}",
+        datetime(2026,5,29,0,0,tzinfo=timezone.utc),   # REPLACE with date -u from sbatch
+        datetime(2026,5,29,0,6,tzinfo=timezone.utc),
         NCCL_PANELS)
 
     # ... repeat plot_run() per run window ...
