@@ -153,7 +153,7 @@ azcluster deploy --target aks --name demo \
   --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
 ```
 
-The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. `azcluster validate <aks-cluster>` runs a 2-node NCCL MPIJob through Kueue and fails unless bus bandwidth is at least 400 GB/s with IB/SHARP selected (no TCP fallback). AKS `status`/operate command branches are still separate follow-up work.
+The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. `azcluster validate <aks-cluster>` runs a 2-node NCCL MPIJob through Kueue and fails unless bus bandwidth is at least 400 GB/s with IB/SHARP selected (no TCP fallback). `azcluster train <aks-cluster> --wait` runs a 2-node Llama-3.1-8B Megatron-Bridge pretraining benchmark as a Kubeflow PyTorchJob and reports steady-state MODEL_TFLOP/s/GPU (~500 on 2× ND H200). AKS `status`/operate command branches are still separate follow-up work.
 
 **Mixed CPU + GPU pools** (Slurm sees both partitions):
 
@@ -198,6 +198,7 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command |
 | `azcluster tunnel <name> <local:remote>` | Local TCP forward through login |
 | `azcluster validate <name> [--gpu] [--multi-node]` | Slurm: `sinfo` + `srun hostname` + Pyxis import + optional NCCL; AKS: 2-node NCCL MPIJob with >=400 GB/s busbw + IB/SHARP gate |
+| `azcluster train <name> [--nodes N] [--iters N] [--gbs N] [--cp N] [--wait]` | AKS only: Llama-3.1-8B Megatron-Bridge pretraining benchmark via PyTorchJob; `--wait` reports steady-state MODEL_TFLOP/s/GPU |
 | `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl` |
 | `azcluster monitor <name>` | Print the AMG Grafana URL |
 | `azcluster timings <name> [--last N] [--trend]` | Per-resource deploy times; sorted table or trend TSV |

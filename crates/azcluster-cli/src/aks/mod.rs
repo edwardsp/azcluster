@@ -2,6 +2,7 @@ pub mod deploy;
 pub mod feature;
 pub mod operators;
 pub mod status;
+pub mod train;
 pub mod validate;
 
 use anyhow::{bail, Context, Result};

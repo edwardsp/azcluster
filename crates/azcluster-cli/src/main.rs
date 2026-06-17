@@ -45,6 +45,8 @@ enum CliCommand {
     Scp(ScpArgs),
     Logs(LogsArgs),
     Validate(ValidateArgs),
+    /// Submit a Llama-3.1-8B Megatron-Bridge pretraining benchmark (AKS target only).
+    Train(TrainArgs),
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
@@ -683,6 +685,26 @@ struct StatusArgs {
 }
 
 #[derive(Args)]
+struct TrainArgs {
+    name: String,
+    /// Number of GPU nodes (each 8 GPUs). Default 2.
+    #[arg(long, default_value_t = 2)]
+    nodes: u32,
+    /// Training iterations to run. Default 50.
+    #[arg(long, default_value_t = 50)]
+    iters: u32,
+    /// Global batch size. Default nodes*128.
+    #[arg(long)]
+    gbs: Option<u32>,
+    /// Context-parallel size. Default 2 (recommended for Llama-3.1-8B at seq 8192).
+    #[arg(long, default_value_t = 2)]
+    cp: u32,
+    /// Block until the run reaches steady state and report MODEL_TFLOP/s/GPU.
+    #[arg(long, default_value_t = false)]
+    wait: bool,
+}
+
+#[derive(Args)]
 struct DeleteArgs {
     name: String,
     #[arg(long, default_value_t = false)]
@@ -813,6 +835,7 @@ fn main() -> Result<()> {
         CliCommand::Scp(args) => scp(args),
         CliCommand::Logs(args) => logs(args),
         CliCommand::Validate(args) => validate(args),
+        CliCommand::Train(args) => train(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
         CliCommand::TimingsCapture(args) => {
@@ -2611,6 +2634,14 @@ fn logs(args: LogsArgs) -> Result<()> {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn train(args: TrainArgs) -> Result<()> {
+    let state = resolve_cluster(&args.name)?;
+    if state.target != cluster_state::Target::Aks {
+        bail!("`azcluster train` is only supported on AKS clusters (deploy with --target aks)");
+    }
+    aks::train::train_aks(&state, &args)
 }
 
 fn validate(args: ValidateArgs) -> Result<()> {
