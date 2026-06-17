@@ -28,6 +28,25 @@ pub(crate) fn status_aks(state: &ClusterState) -> Result<()> {
             aks.stages_completed.join(", ")
         }
     );
+    if state.storage_enabled {
+        println!(
+            "storage account:   {}",
+            state.storage_account_name.as_deref().unwrap_or("<none>")
+        );
+        println!(
+            "data container:    {}",
+            state
+                .storage_data_container_url
+                .as_deref()
+                .unwrap_or("<none>")
+        );
+        println!(
+            "kubelet client id: {}",
+            aks.kubelet_identity_client_id
+                .as_deref()
+                .unwrap_or("<none>")
+        );
+    }
 
     println!("live health (runCommand, best-effort):");
     let arm = crate::arm_client()?;
