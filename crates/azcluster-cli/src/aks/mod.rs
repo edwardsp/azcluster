@@ -1,3 +1,4 @@
+pub mod azcp;
 pub mod blobcache;
 pub mod deploy;
 pub mod feature;

@@ -52,6 +52,9 @@ enum CliCommand {
     /// Render a per-job blobcache probe manifest (AKS debug; pipe to kubectl apply).
     #[command(hide = true)]
     BlobcacheProbe(BlobcacheProbeArgs),
+    /// Render an azcp upload Job manifest (AKS debug; pipe to kubectl apply).
+    #[command(hide = true)]
+    AzcpUpload(AzcpUploadArgs),
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
@@ -732,6 +735,17 @@ struct BlobcacheProbeArgs {
 }
 
 #[derive(Args)]
+struct AzcpUploadArgs {
+    name: String,
+    /// Destination blob prefix within the data container (e.g. checkpoints/run1).
+    #[arg(long, default_value = "azcp-test")]
+    dest_prefix: String,
+    /// ACStor NVMe scratch size in GiB requested for the upload pod.
+    #[arg(long, default_value_t = 64)]
+    scratch_gib: u32,
+}
+
+#[derive(Args)]
 struct DeleteArgs {
     name: String,
     #[arg(long, default_value_t = false)]
@@ -865,6 +879,7 @@ fn main() -> Result<()> {
         CliCommand::Train(args) => train(args),
         CliCommand::Kubeconfig(args) => kubeconfig(args),
         CliCommand::BlobcacheProbe(args) => blobcache_probe(args),
+        CliCommand::AzcpUpload(args) => azcp_upload(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
         CliCommand::TimingsCapture(args) => {
@@ -2722,6 +2737,13 @@ fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
 fn blobcache_probe(args: BlobcacheProbeArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
     let manifest = aks::blobcache::render_probe(&state, &args.prefix, args.cache_gib)?;
+    print!("{manifest}");
+    Ok(())
+}
+
+fn azcp_upload(args: AzcpUploadArgs) -> Result<()> {
+    let state = resolve_cluster(&args.name)?;
+    let manifest = aks::azcp::render_upload(&state, &args.dest_prefix, args.scratch_gib)?;
     print!("{manifest}");
     Ok(())
 }
