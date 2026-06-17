@@ -4,6 +4,7 @@
 //! Replaces shell-out calls to `az` CLI with direct REST API calls.
 
 use anyhow::{anyhow, bail, Context, Result};
+use base64::Engine;
 use serde_json::{json, Value};
 use std::time::Duration;
 /// API versions for different Azure resource providers.
@@ -866,6 +867,29 @@ impl ArmClient {
             bail!("ARM POST failed ({status}): {body}");
         }
         unreachable!()
+    }
+
+    pub fn list_cluster_admin_credential(
+        &self,
+        resource_group: &str,
+        cluster: &str,
+    ) -> Result<String> {
+        const AKS_API: &str = "2024-09-01";
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.ContainerService/managedClusters/{}/listClusterAdminCredential?api-version={}",
+            self.subscription_id, resource_group, cluster, AKS_API
+        );
+        let resp = self.post_empty(&url)?;
+        let b64 = resp
+            .get("kubeconfigs")
+            .and_then(|k| k.get(0))
+            .and_then(|k| k.get("value"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("listClusterAdminCredential returned no kubeconfig"))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("decode kubeconfig base64")?;
+        String::from_utf8(bytes).context("kubeconfig is not valid UTF-8")
     }
 
     pub fn register_feature(&self, provider_ns: &str, feature: &str) -> Result<Value> {

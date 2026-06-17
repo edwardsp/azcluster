@@ -47,6 +47,8 @@ enum CliCommand {
     Validate(ValidateArgs),
     /// Submit a Llama-3.1-8B Megatron-Bridge pretraining benchmark (AKS target only).
     Train(TrainArgs),
+    /// Fetch the AKS cluster-admin kubeconfig and write it locally (AKS target only).
+    Kubeconfig(KubeconfigArgs),
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
@@ -705,6 +707,17 @@ struct TrainArgs {
 }
 
 #[derive(Args)]
+struct KubeconfigArgs {
+    name: String,
+    /// Write the kubeconfig to this path instead of ~/.azcluster/kube/<name>.config.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Print the kubeconfig to stdout instead of writing a file.
+    #[arg(long, default_value_t = false)]
+    print: bool,
+}
+
+#[derive(Args)]
 struct DeleteArgs {
     name: String,
     #[arg(long, default_value_t = false)]
@@ -836,6 +849,7 @@ fn main() -> Result<()> {
         CliCommand::Logs(args) => logs(args),
         CliCommand::Validate(args) => validate(args),
         CliCommand::Train(args) => train(args),
+        CliCommand::Kubeconfig(args) => kubeconfig(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
         CliCommand::TimingsCapture(args) => {
@@ -2642,6 +2656,52 @@ fn train(args: TrainArgs) -> Result<()> {
         bail!("`azcluster train` is only supported on AKS clusters (deploy with --target aks)");
     }
     aks::train::train_aks(&state, &args)
+}
+
+fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
+    let state = resolve_cluster(&args.name)?;
+    let aks = state.aks.as_ref().ok_or_else(|| {
+        anyhow!(
+            "`azcluster kubeconfig` is only supported on AKS clusters (deploy with --target aks)"
+        )
+    })?;
+    let arm = arm_client()?;
+    let kubeconfig =
+        arm.list_cluster_admin_credential(&state.resource_group, &aks.aks_cluster_name)?;
+    if args.print {
+        print!("{kubeconfig}");
+        return Ok(());
+    }
+    let path = match args.path {
+        Some(p) => p,
+        None => {
+            let dir = dirs::home_dir()
+                .ok_or_else(|| anyhow!("could not determine HOME"))?
+                .join(".azcluster")
+                .join("kube");
+            std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+            }
+            dir.join(format!("{}.config", state.name))
+        }
+    };
+    std::fs::write(&path, &kubeconfig).with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", path.display()))?;
+    }
+    eprintln!(
+        "==> wrote admin kubeconfig for '{}' -> {}",
+        state.name,
+        path.display()
+    );
+    eprintln!("    export KUBECONFIG={}", path.display());
+    Ok(())
 }
 
 fn validate(args: ValidateArgs) -> Result<()> {
