@@ -28,6 +28,8 @@ pub struct AksState {
     #[serde(default)]
     pub kubelet_identity_object_id: Option<String>,
     #[serde(default)]
+    pub kubelet_identity_client_id: Option<String>,
+    #[serde(default)]
     pub oidc_issuer_url: Option<String>,
     /// Operator stages already applied, for idempotent `resume`.
     /// Ids: `cert-manager`, `network-operator`, `gpu-operator`, `kueue`, `mpi-operator`.
@@ -267,6 +269,7 @@ scheduler_private_ip = ""
             gpu_sku: "Standard_ND96isr_H200_v5".into(),
             gpu_node_count: 2,
             kubelet_identity_object_id: None,
+            kubelet_identity_client_id: None,
             oidc_issuer_url: None,
             stages_completed: vec!["cert-manager".into(), "gpu-operator".into()],
         });

@@ -1,3 +1,4 @@
+pub mod blobcache;
 pub mod deploy;
 pub mod feature;
 pub mod operators;

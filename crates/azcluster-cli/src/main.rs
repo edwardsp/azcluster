@@ -49,6 +49,9 @@ enum CliCommand {
     Train(TrainArgs),
     /// Fetch the AKS cluster-admin kubeconfig and write it locally (AKS target only).
     Kubeconfig(KubeconfigArgs),
+    /// Render a per-job blobcache probe manifest (AKS debug; pipe to kubectl apply).
+    #[command(hide = true)]
+    BlobcacheProbe(BlobcacheProbeArgs),
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
@@ -718,6 +721,17 @@ struct KubeconfigArgs {
 }
 
 #[derive(Args)]
+struct BlobcacheProbeArgs {
+    name: String,
+    /// Blob prefix within the data container to hydrate (default: whole container).
+    #[arg(long, default_value = "")]
+    prefix: String,
+    /// ACStor NVMe cache size in GiB requested for the probe pod.
+    #[arg(long, default_value_t = 64)]
+    cache_gib: u32,
+}
+
+#[derive(Args)]
 struct DeleteArgs {
     name: String,
     #[arg(long, default_value_t = false)]
@@ -850,6 +864,7 @@ fn main() -> Result<()> {
         CliCommand::Validate(args) => validate(args),
         CliCommand::Train(args) => train(args),
         CliCommand::Kubeconfig(args) => kubeconfig(args),
+        CliCommand::BlobcacheProbe(args) => blobcache_probe(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
         CliCommand::TimingsCapture(args) => {
@@ -2701,6 +2716,13 @@ fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
         path.display()
     );
     eprintln!("    export KUBECONFIG={}", path.display());
+    Ok(())
+}
+
+fn blobcache_probe(args: BlobcacheProbeArgs) -> Result<()> {
+    let state = resolve_cluster(&args.name)?;
+    let manifest = aks::blobcache::render_probe(&state, &args.prefix, args.cache_gib)?;
+    print!("{manifest}");
     Ok(())
 }
 

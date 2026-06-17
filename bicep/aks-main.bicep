@@ -149,6 +149,7 @@ output aksClusterName string = aksCluster.outputs.aksClusterName
 output nodeResourceGroup string = aksCluster.outputs.nodeResourceGroup
 output fqdn string = aksCluster.outputs.fqdn
 output kubeletIdentityObjectId string = aksCluster.outputs.kubeletIdentityObjectId
+output kubeletIdentityClientId string = aksCluster.outputs.kubeletIdentityClientId
 output oidcIssuerUrl string = aksCluster.outputs.oidcIssuerUrl
 output gpuPoolName string = aksCluster.outputs.gpuPoolName
 output gpuSku string = aksCluster.outputs.gpuSku

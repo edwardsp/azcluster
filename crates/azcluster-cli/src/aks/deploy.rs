@@ -344,6 +344,8 @@ fn finalize_deploy_aks(
             gpu_node_count: output_u32(outputs, "gpuNodeCount")?,
             kubelet_identity_object_id: output_string(outputs, "kubeletIdentityObjectId")?
                 .filter(|s| !s.is_empty()),
+            kubelet_identity_client_id: output_string(outputs, "kubeletIdentityClientId")?
+                .filter(|s| !s.is_empty()),
             oidc_issuer_url: output_string(outputs, "oidcIssuerUrl")?.filter(|s| !s.is_empty()),
             stages_completed,
         }),

@@ -97,6 +97,7 @@ output aksClusterName string = aks.name
 output nodeResourceGroup string = aks.properties.nodeResourceGroup
 output fqdn string = aks.properties.fqdn
 output kubeletIdentityObjectId string = aks.properties.?identityProfile.?kubeletidentity.?objectId ?? ''
+output kubeletIdentityClientId string = aks.properties.?identityProfile.?kubeletidentity.?clientId ?? ''
 output oidcIssuerUrl string = aks.properties.oidcIssuerProfile.issuerURL
 output gpuPoolName string = gpuPoolName
 output gpuSku string = gpuSku
