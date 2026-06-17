@@ -171,8 +171,13 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
     let aks_cluster_name = require_output(&outputs, "aksClusterName")?;
     let cluster_rg = output_string(&outputs, "resourceGroupName")?.unwrap_or(resolved_rg.clone());
     let gpu_node_count = output_u32(&outputs, "gpuNodeCount")?;
-    let stages_completed =
-        operators::install_all(&client, &cluster_rg, &aks_cluster_name, gpu_node_count)?;
+    let stages_completed = operators::install_all(
+        &client,
+        &cluster_rg,
+        &aks_cluster_name,
+        gpu_node_count,
+        storage_enabled,
+    )?;
 
     finalize_deploy_aks(
         &args,

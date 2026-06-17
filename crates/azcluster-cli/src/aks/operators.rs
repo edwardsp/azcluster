@@ -8,6 +8,7 @@ const NFD_NETWORK_RULE: &str = include_str!("manifests/nfd-network-rule.yaml");
 const NIC_CLUSTER_POLICY: &str = include_str!("manifests/nic-cluster-policy.yaml");
 const KUEUE_VALUES: &str = include_str!("manifests/kueue-values.yaml");
 const KUEUE_QUEUES: &str = include_str!("manifests/kueue-queues.yaml");
+const ACSTOR_STORAGECLASS: &str = include_str!("manifests/local-csi-storageclass.yaml");
 
 pub const STAGES: &[&str] = &[
     "gpu-nodes-ready",
@@ -23,6 +24,7 @@ pub fn install_all(
     resource_group: &str,
     cluster: &str,
     gpu_node_count: u32,
+    storage_enabled: bool,
 ) -> Result<Vec<String>> {
     let mut completed = Vec::with_capacity(STAGES.len());
     run_stage(
@@ -79,6 +81,17 @@ pub fn install_all(
         mpi_operator_script(),
     )?;
     completed.push("mpi-operator".to_string());
+    if storage_enabled {
+        run_stage(
+            arm,
+            resource_group,
+            cluster,
+            "6",
+            "Azure Container Storage local-csi-driver v0.2.13",
+            &acstor_script(),
+        )?;
+        completed.push("acstor".to_string());
+    }
     Ok(completed)
 }
 
@@ -200,6 +213,18 @@ kubectl -n kueue-system wait --for=condition=Available deploy/kueue-controller-m
     ))
 }
 
+fn acstor_script() -> String {
+    let sc = single_quote(ACSTOR_STORAGECLASS);
+    script_with_body(&format!(
+        r#"helm upgrade --install local-csi-driver \
+  oci://localcsidriver.azurecr.io/acstor/charts/local-csi-driver \
+  --version 0.2.13 --namespace kube-system --wait --timeout 10m
+printf %s {sc} | kubectl apply --server-side -f -
+kubectl get storageclass local-csi"#,
+        sc = sc,
+    ))
+}
+
 fn mpi_operator_script() -> &'static str {
     r#"set -eu
 kubectl apply --server-side -f https://raw.githubusercontent.com/kubeflow/mpi-operator/v0.6.0/deploy/v2beta1/mpi-operator.yaml
@@ -229,5 +254,14 @@ mod tests {
         assert!(gpu_operator_script().contains("--version v26.3.0"));
         assert!(kueue_script(1).contains("--version 0.13.0"));
         assert!(mpi_operator_script().contains("/v0.6.0/"));
+    }
+
+    #[test]
+    fn acstor_script_installs_local_csi_and_storageclass() {
+        let s = acstor_script();
+        assert!(s.contains("oci://localcsidriver.azurecr.io/acstor/charts/local-csi-driver"));
+        assert!(s.contains("--version 0.2.13"));
+        assert!(s.contains("localdisk.csi.acstor.io"));
+        assert!(s.contains("name: local-csi"));
     }
 }
