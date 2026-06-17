@@ -49,7 +49,7 @@ mod tests {
         assert!(PROBE_MANIFEST.contains("mountPropagation: Bidirectional"));
         assert!(PROBE_MANIFEST.contains("mountPropagation: HostToContainer"));
         assert!(PROBE_MANIFEST.contains("privileged: true"));
-        assert!(PROBE_MANIFEST.contains("ghcr.io/edwardsp/blobcache:v2.9.1"));
+        assert!(PROBE_MANIFEST.contains("ghcr.io/edwardsp/blobcache:main"));
         assert!(PROBE_MANIFEST.contains("/hydrate"));
     }
 

@@ -24,11 +24,13 @@ pub(crate) fn render_upload(
             state.name
         )
     })?;
-    let dest = format!(
-        "{}/{}",
-        container_url.trim_end_matches('/'),
-        dest_prefix.trim_start_matches('/')
-    );
+    let dest_prefix = dest_prefix.trim_matches('/');
+    let base = container_url.trim_end_matches('/');
+    let dest = if dest_prefix.is_empty() {
+        format!("{base}/")
+    } else {
+        format!("{base}/{dest_prefix}/")
+    };
     let prep = "head -c 104857600 /dev/urandom > /scratch/upload/azcp-test.bin";
     Ok(render_upload_str(client_id, &dest, prep, scratch_gib))
 }
@@ -59,13 +61,13 @@ mod tests {
     fn render_fills_every_token() {
         let out = render_upload_str(
             "11111111-2222-3333-4444-555555555555",
-            "https://stazcabc.blob.core.windows.net/data/checkpoints/run1",
+            "https://stazcabc.blob.core.windows.net/data/checkpoints/run1/",
             "true",
             128,
         );
         assert!(!out.contains("{{"));
         assert!(out.contains("11111111-2222-3333-4444-555555555555"));
-        assert!(out.contains("https://stazcabc.blob.core.windows.net/data/checkpoints/run1"));
+        assert!(out.contains("https://stazcabc.blob.core.windows.net/data/checkpoints/run1/"));
         assert!(out.contains("storage: 128Gi"));
     }
 }
