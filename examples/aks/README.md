@@ -85,11 +85,19 @@ kubectl delete -f blobcache-rdma.yaml
 kubectl delete job/azcp-upload
 ```
 
-## Using blobcache from a training job
+## Using blobcache from a training job — [`training-blobcache.yaml`](training-blobcache.yaml)
 
-For a benchmark, run blobcache as a **per-job sidecar** in the training pod
-(same privileged + IPC_LOCK + RDMA config, cache on an ACStor ephemeral volume,
-FUSE shared with the trainer via `mountPropagation`). The training container
-reads its model/dataset from the shared `/mnt/blobcache/...` path. See the
-end-to-end walkthrough in [`../../doc/`](../../doc/) for the full benchmark
-recipe and how checkpoints are written back to Blob with `azcp`.
+For a benchmark, run blobcache as a **per-job sidecar** in the training pod: a
+`PyTorchJob` whose pods each carry the blobcached RDMA sidecar (cache on an
+ACStor ephemeral volume, FUSE shared with the trainer via `mountPropagation`)
+and an azcp checkpoint-save sidecar. The trainer reads its model/dataset from
+`/mnt/blobcache/...` and writes checkpoints to a shared ACStor `/scratch`, which
+the azcp sidecar uploads to Blob on a `.DONE`/`.UPLOADED` handshake.
+
+The trainer container in the manifest is a placeholder that proves the data path
+(reads the staged bytes from blobcache, writes a checkpoint, runs the handshake);
+replace it with your real launcher (e.g. the Megatron-Bridge pretrain used by
+`azcluster train`). The constituent mechanisms are each live-validated by the two
+examples above and the checkpoint handshake; wire in your model + GPU launcher to
+run the full benchmark.
+
