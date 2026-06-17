@@ -1,0 +1,64 @@
+# azcp upload Job: stage a local/NVMe directory to the cluster's blob container.
+#
+# EXAMPLE run with kubectl against an azcluster AKS cluster (not embedded in the
+# binary). Authenticates to Blob via the node's kubelet managed identity (IMDS);
+# no keys or SAS. Fill ${MI_CLIENT_ID} + ${DEST_URL} from `azcluster status`:
+#
+#   azcluster kubeconfig <cluster> && export KUBECONFIG=~/.azcluster/kube/<cluster>.config
+#   export MI_CLIENT_ID=$(azcluster status <cluster> | awk '/kubelet client id:/{print $4}')
+#   export DEST_URL=$(azcluster status <cluster> | awk '/data container:/{print $3}')/models/llama/
+#   envsubst '${MI_CLIENT_ID} ${DEST_URL}' < azcp-upload.yaml | kubectl apply -f -
+#   kubectl wait --for=condition=complete job/azcp-upload --timeout=1800s
+#   kubectl logs job/azcp-upload
+#
+# This sample populates an ACStor NVMe scratch volume with a 100 MiB test file
+# and uploads it; for real data replace PREP_CMD (the block under "prep:") with
+# your own download/stage step (e.g. huggingface-cli download ... /scratch/upload).
+# Note the trailing slash on DEST_URL so files nest under the prefix.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: azcp-upload
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        agentpool: gpu
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: azcp
+          image: ghcr.io/edwardsp/azcp/azcp-cluster:v0.4.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+            - { name: DEST_URL, value: "${DEST_URL}" }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -xeuo pipefail
+              mkdir -p /scratch/upload
+              # prep: replace this line with your real download/stage step
+              head -c 104857600 /dev/urandom > /scratch/upload/azcp-test.bin
+              azcp copy /scratch/upload/ "${DEST_URL}" \
+                --recursive --workers 4 --concurrency 32 --block-size 16777216
+              echo AZCP_UPLOAD_OK
+          volumeMounts:
+            - { name: scratch, mountPath: /scratch }
+      volumes:
+        - name: scratch
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                annotations:
+                  localdisk.csi.acstor.io/accept-ephemeral-storage: "true"
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: local-csi
+                resources:
+                  requests:
+                    storage: 64Gi
