@@ -71,6 +71,29 @@ param grafanaLocation string = location
 @description('Deploy timestamp in UTC ISO8601, stamped into the azcluster:deployed-at RG tag for operator-facing discovery.')
 param deployedAt string = utcNow('yyyy-MM-ddTHH:mm:ssZ')
 
+@description('Provision a per-cluster Blob storage account for the blob-first training data flow. Default off; the CLI enables it and derives the name.')
+param enableStorage bool = false
+
+@description('Globally unique storage account name (3-24 lowercase alphanumeric). Derived by the CLI; ignored when enableStorage is false.')
+param storageAccountName string = ''
+
+@description('Storage account SKU.')
+@allowed([
+  'Standard_LRS'
+  'Standard_ZRS'
+  'Standard_GRS'
+  'Standard_RAGRS'
+  'Premium_LRS'
+])
+param storageSku string = 'Standard_LRS'
+
+@description('Storage account default access tier. Ignored for Premium SKUs.')
+@allowed([
+  'Hot'
+  'Cool'
+])
+param storageAccessTier string = 'Hot'
+
 var rgName = empty(existingResourceGroup) ? 'rg-azcluster-${clusterName}' : existingResourceGroup
 var commonTags = {
   azcluster: 'true'
@@ -113,6 +136,10 @@ module aksCluster 'aks-cluster.bicep' = {
     keyVaultName: keyVaultName
     enableMonitoring: enableMonitoring
     grafanaLocation: grafanaLocation
+    enableStorage: enableStorage
+    storageAccountName: storageAccountName
+    storageSku: storageSku
+    storageAccessTier: storageAccessTier
     tags: commonTags
   }
 }
@@ -129,3 +156,6 @@ output gpuNodeCount int = aksCluster.outputs.gpuNodeCount
 output keyVaultName string = aksCluster.outputs.keyVaultName
 output keyVaultUri string = aksCluster.outputs.keyVaultUri
 output keyVaultId string = aksCluster.outputs.keyVaultId
+output storageAccountName string = aksCluster.outputs.storageAccountName
+output storageBlobEndpoint string = aksCluster.outputs.storageBlobEndpoint
+output storageDataContainerUrl string = aksCluster.outputs.storageDataContainerUrl

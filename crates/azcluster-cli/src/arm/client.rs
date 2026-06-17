@@ -210,31 +210,45 @@ impl ArmClient {
         self
     }
 
-    /// Make a GET request to the ARM API. On 401 ExpiredAuthenticationToken,
-    /// transparently refresh the OAuth2 token (if a callback was installed) and
-    /// retry once. Long deploy polls (>75 min) outlive the token TTL otherwise.
+    /// Make a GET request to the ARM API. Retries transparently on (a) transient
+    /// network errors (connection reset / timeout during long polls), (b) 401
+    /// ExpiredAuthenticationToken (refreshing the OAuth2 token once), and (c) 429
+    /// / 5xx throttling. Long deploy/runCommand polls run for tens of minutes and
+    /// must not die on a single network blip.
     fn get(&self, url: &str) -> Result<Value> {
-        for attempt in 0..=1 {
-            let response = self
-                .client
-                .get(url)
-                .bearer_auth(self.access_token())
-                .send()
-                .context("Failed to send GET request")?;
+        const MAX_ATTEMPTS: usize = 6;
+        let mut refreshed = false;
+        for attempt in 0..MAX_ATTEMPTS {
+            let last = attempt + 1 == MAX_ATTEMPTS;
+            let response = match self.client.get(url).bearer_auth(self.access_token()).send() {
+                Ok(r) => r,
+                Err(e) => {
+                    if last {
+                        return Err(e).context("Failed to send GET request");
+                    }
+                    std::thread::sleep(Duration::from_secs(2 * (attempt as u64 + 1)));
+                    continue;
+                }
+            };
             let status = response.status();
             if status.is_success() {
                 return response.json().context("Failed to parse ARM response");
             }
             let body = response.text().unwrap_or_default();
-            if attempt == 0
+            if !refreshed
                 && Self::is_expired_token_error(status, &body)
                 && self.try_refresh_token()?
             {
+                refreshed = true;
+                continue;
+            }
+            if !last && (status.as_u16() == 429 || status.is_server_error()) {
+                std::thread::sleep(Duration::from_secs(2 * (attempt as u64 + 1)));
                 continue;
             }
             bail!("ARM GET failed ({status}): {body}");
         }
-        unreachable!()
+        bail!("ARM GET to {url} failed after {MAX_ATTEMPTS} attempts")
     }
 
     /// Make a PUT request to the ARM API.

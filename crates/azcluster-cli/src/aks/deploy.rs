@@ -16,6 +16,21 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
 
     let gpu_pool = select_gpu_pool(&args)?;
     let gpu_pool_name = sanitize_agent_pool_name(&gpu_pool.name)?;
+    let storage_enabled = args.storage && !args.no_storage;
+    let storage_account_name = if storage_enabled {
+        match args.storage_name.as_deref() {
+            Some(name) => {
+                crypto::validate_storage_account_name(name)?;
+                name.to_string()
+            }
+            None => crypto::derive_storage_account_name(&sub_id, &args.name, &args.location),
+        }
+    } else {
+        String::new()
+    };
+    if storage_enabled {
+        eprintln!("==> [aks] per-cluster Blob storage account: {storage_account_name}");
+    }
     let existing_secrets = ClusterSecrets::load_optional(&args.name)?;
     if existing_secrets.is_some() {
         eprintln!(
@@ -53,12 +68,16 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
 
     let params_json = build_params(
         &args,
-        &gpu_pool,
-        &gpu_pool_name,
-        &secrets.admin_ssh_public_key,
-        &deployer_oid,
-        &deployer_ptype,
-        &key_vault_name,
+        &AksParams {
+            gpu_pool: &gpu_pool,
+            gpu_pool_name: &gpu_pool_name,
+            ssh_public_key: &secrets.admin_ssh_public_key,
+            deployer_oid: &deployer_oid,
+            deployer_ptype: &deployer_ptype,
+            key_vault_name: &key_vault_name,
+            storage_enabled,
+            storage_account_name: &storage_account_name,
+        },
     );
 
     if args.what_if {
@@ -216,15 +235,18 @@ fn ensure_admin_secrets(name: &str, existing: Option<&ClusterSecrets>) -> Result
     })
 }
 
-fn build_params(
-    args: &DeployArgs,
-    gpu_pool: &PoolSpec,
-    gpu_pool_name: &str,
-    ssh_public_key: &str,
-    deployer_oid: &str,
-    deployer_ptype: &str,
-    key_vault_name: &str,
-) -> Value {
+struct AksParams<'a> {
+    gpu_pool: &'a PoolSpec,
+    gpu_pool_name: &'a str,
+    ssh_public_key: &'a str,
+    deployer_oid: &'a str,
+    deployer_ptype: &'a str,
+    key_vault_name: &'a str,
+    storage_enabled: bool,
+    storage_account_name: &'a str,
+}
+
+fn build_params(args: &DeployArgs, p: &AksParams) -> Value {
     let params: Vec<(&str, Value)> = vec![
         ("clusterName", json!(args.name)),
         ("location", json!(args.location)),
@@ -236,15 +258,15 @@ fn build_params(
         ("kubernetesVersion", json!("")),
         ("systemNodeSku", json!("Standard_D8s_v5")),
         ("systemNodeCount", json!(2)),
-        ("gpuPoolName", json!(gpu_pool_name)),
-        ("gpuSku", json!(gpu_pool.sku)),
-        ("gpuNodeCount", json!(gpu_pool.count)),
+        ("gpuPoolName", json!(p.gpu_pool_name)),
+        ("gpuSku", json!(p.gpu_pool.sku)),
+        ("gpuNodeCount", json!(p.gpu_pool.count)),
         ("vnetAddressPrefix", json!("10.42.0.0/16")),
-        ("sshPublicKey", json!(ssh_public_key.trim())),
+        ("sshPublicKey", json!(p.ssh_public_key.trim())),
         ("adminUsername", json!("azureuser")),
-        ("deployerPrincipalId", json!(deployer_oid)),
-        ("deployerPrincipalType", json!(deployer_ptype)),
-        ("keyVaultName", json!(key_vault_name)),
+        ("deployerPrincipalId", json!(p.deployer_oid)),
+        ("deployerPrincipalType", json!(p.deployer_ptype)),
+        ("keyVaultName", json!(p.key_vault_name)),
         ("enableMonitoring", json!(false)),
         (
             "grafanaLocation",
@@ -253,6 +275,10 @@ fn build_params(
                 .clone()
                 .unwrap_or_else(|| args.location.clone())),
         ),
+        ("enableStorage", json!(p.storage_enabled)),
+        ("storageAccountName", json!(p.storage_account_name)),
+        ("storageSku", json!(args.storage_sku)),
+        ("storageAccessTier", json!(args.storage_tier)),
     ];
     let mut params_obj = serde_json::Map::new();
     for (k, v) in params {
@@ -292,11 +318,15 @@ fn finalize_deploy_aks(
         bastion_name: None,
         bastion_dns_name: None,
         bastion_resource_id: None,
-        storage_enabled: false,
-        storage_account_name: None,
-        storage_blob_endpoint: None,
+        storage_enabled: output_string(outputs, "storageAccountName")?
+            .is_some_and(|s| !s.is_empty()),
+        storage_account_name: output_string(outputs, "storageAccountName")?
+            .filter(|s| !s.is_empty()),
+        storage_blob_endpoint: output_string(outputs, "storageBlobEndpoint")?
+            .filter(|s| !s.is_empty()),
         storage_dfs_endpoint: None,
-        storage_data_container_url: None,
+        storage_data_container_url: output_string(outputs, "storageDataContainerUrl")?
+            .filter(|s| !s.is_empty()),
         storage_hns: false,
         storage_public_access: false,
         azcp_version: None,

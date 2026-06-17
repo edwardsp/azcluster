@@ -17,6 +17,10 @@ param deployerPrincipalType string = 'User'
 param keyVaultName string
 param enableMonitoring bool = false
 param grafanaLocation string = location
+param enableStorage bool = false
+param storageAccountName string = ''
+param storageSku string = 'Standard_LRS'
+param storageAccessTier string = 'Hot'
 param tags object
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
@@ -78,12 +82,32 @@ module aks 'modules/aks.bicep' = {
     sshPublicKey: sshPublicKey
     adminUsername: adminUsername
     enableMonitoring: enableMonitoring
+    enableStorage: enableStorage
     tags: tags
   }
 }
 
 // TODO(M5): wire azureMonitorProfile DCR association into the reused AMW.
 var grafanaEndpoint = enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
+
+// Per-cluster Blob account for the blob-first data flow (training data + checkpoints
+// staged to Blob, consumed via azcp/blobfuse). The AKS kubelet (node) identity is
+// granted Storage Blob Data Contributor so in-pod azcp authenticates through IMDS.
+module storage 'modules/storage.bicep' = if (enableStorage) {
+  name: 'storage'
+  params: {
+    storageAccountName: storageAccountName
+    location: location
+    enableHns: false
+    sku: storageSku
+    accessTier: storageAccessTier
+    allowPublicAccess: false
+    uaiPrincipalId: aks.outputs.kubeletIdentityObjectId
+    peSubnetId: '${vnet.id}/subnets/aks-nodes'
+    vnetId: vnet.id
+    tags: tags
+  }
+}
 
 output aksClusterName string = aks.outputs.aksClusterName
 output nodeResourceGroup string = aks.outputs.nodeResourceGroup
@@ -97,3 +121,6 @@ output grafanaEndpoint string = grafanaEndpoint
 output keyVaultName string = keyvault.outputs.vaultName
 output keyVaultUri string = keyvault.outputs.vaultUri
 output keyVaultId string = keyvault.outputs.vaultId
+output storageAccountName string = enableStorage ? storage!.outputs.storageAccountName : ''
+output storageBlobEndpoint string = enableStorage ? storage!.outputs.blobEndpoint : ''
+output storageDataContainerUrl string = enableStorage ? storage!.outputs.dataContainerUrl : ''

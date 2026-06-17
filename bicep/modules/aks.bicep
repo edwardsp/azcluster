@@ -11,6 +11,7 @@ param subnetId string
 param sshPublicKey string
 param adminUsername string
 param enableMonitoring bool = false
+param enableStorage bool = false
 param tags object
 
 var aksName = 'aks-${clusterName}'
@@ -37,6 +38,11 @@ resource aks 'Microsoft.ContainerService/managedClusters@2025-10-01' = {
     azureMonitorProfile: {
       metrics: {
         enabled: enableMonitoring
+      }
+    }
+    storageProfile: {
+      blobCSIDriver: {
+        enabled: enableStorage
       }
     }
     agentPoolProfiles: [
