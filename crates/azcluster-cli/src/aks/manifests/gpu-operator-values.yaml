@@ -1,0 +1,22 @@
+nfd:
+  enabled: false
+
+driver:
+  rdma:
+    enabled: true
+
+migManager:
+  enabled: false
+
+vgpuDeviceManager:
+  enabled: false
+
+vfioManager:
+  enabled: false
+
+sandboxDevicePlugin:
+  enabled: false
+
+dcgmExporter:
+  serviceMonitor:
+    enabled: false

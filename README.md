@@ -51,7 +51,7 @@ sudo install -m 0755 azcluster /usr/local/bin/azcluster
 azcluster --version
 ```
 
-Or build from source: `cargo build --release --workspace` → `target/release/azcluster`. Building from source requires the Bicep CLI (`az bicep` or standalone `bicep`) to generate `bicep/main.json` first — see [Development](#development). End users installing the prebuilt tarball need neither `az` nor Bicep.
+Or build from source: `cargo build --release --workspace` → `target/release/azcluster`. Building from source requires the Bicep CLI (`az bicep` or standalone `bicep`) to generate `bicep/main.json` and `bicep/aks-main.json` first — see [Development](#development). End users installing the prebuilt tarball need neither `az` nor Bicep.
 
 ### Prerequisites
 
@@ -145,6 +145,16 @@ azcluster deploy --name demo \
   --bastion
 ```
 
+**AKS target preview** (AKS + ND GPU pool + NVIDIA operators + Kueue; no Slurm commands yet):
+
+```bash
+azcluster deploy --target aks --name demo \
+  --location mexicocentral \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
+```
+
+The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. `azcluster validate <aks-cluster>` runs a 2-node NCCL MPIJob through Kueue and fails unless bus bandwidth is at least 400 GB/s with IB/SHARP selected (no TCP fallback). AKS `status`/operate command branches are still separate follow-up work.
+
 **Mixed CPU + GPU pools** (Slurm sees both partitions):
 
 ```bash
@@ -187,7 +197,7 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp (remote paths: `[node]:path`, empty node = login) |
 | `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command |
 | `azcluster tunnel <name> <local:remote>` | Local TCP forward through login |
-| `azcluster validate <name> [--gpu] [--multi-node]` | `sinfo` + `srun hostname` + Pyxis import + (optionally) 2-node NCCL all-reduce |
+| `azcluster validate <name> [--gpu] [--multi-node]` | Slurm: `sinfo` + `srun hostname` + Pyxis import + optional NCCL; AKS: 2-node NCCL MPIJob with >=400 GB/s busbw + IB/SHARP gate |
 | `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl` |
 | `azcluster monitor <name>` | Print the AMG Grafana URL |
 | `azcluster timings <name> [--last N] [--trend]` | Per-resource deploy times; sorted table or trend TSV |
@@ -379,9 +389,12 @@ crates/
 bicep/
   main.bicep            subscription-scope entry, creates RG
   cluster.bicep         orchestrates per-cluster modules
+  aks-main.bicep        subscription-scope AKS target entry, creates RG
+  aks-cluster.bicep     AKS target orchestrator (AKS + VNet + KV)
   modules/              network, scheduler, login, compute, anf, amlfs,
-                        accounting, monitoring, keyvault, storage, bastion
+                        accounting, monitoring, keyvault, storage, bastion, aks
   main.json             ARM template embedded into the CLI binary (generated from main.bicep; not committed)
+  aks-main.json         AKS ARM template generated for the future --target aks path (not committed)
 cloud-init/
   scheduler.yaml.tmpl   slurmctld, slurmdbd, slapd LDAP, prometheus, NFS exports (test mode)
   login.yaml.tmpl       mounts /shared + /amlfs; slurm client + Pyxis + SSSD
@@ -404,16 +417,17 @@ AGENTS.md               operating manual for AI agents
 # Generate the ARM template first — the CLI build embeds it via include_str!
 # and fails with instructions if it is missing.
 az bicep build --file bicep/main.bicep --outfile bicep/main.json
+az bicep build --file bicep/aks-main.bicep --outfile bicep/aks-main.json
 
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-for f in bicep/main.bicep bicep/cluster.bicep bicep/modules/*.bicep; do
+for f in bicep/main.bicep bicep/cluster.bicep bicep/aks-main.bicep bicep/aks-cluster.bicep bicep/modules/*.bicep; do
   az bicep build --file "$f" --stdout > /dev/null
 done
 ```
 
-`bicep/main.json` is **generated, not committed** (it's gitignored). The CLI's `build.rs` embeds it via `include_str!` at compile time and fails the build with actionable instructions if it's absent, so anyone building from source must run `az bicep build --file bicep/main.bicep --outfile bicep/main.json` (or the standalone `bicep build bicep/main.bicep --outfile bicep/main.json`) after editing any `bicep/*.bicep`. CI and the release pipeline regenerate it from a pinned Bicep version on every run. End users who install the prebuilt tarball never need `az` or Bicep — the template is already baked into the published binary.
+`bicep/main.json` and `bicep/aks-main.json` are **generated, not committed** (they're gitignored). The CLI's `build.rs` checks both at compile time and fails with actionable instructions if either is absent, so anyone building from source must run the matching `az bicep build --file ... --outfile ...` command after editing Slurm or AKS Bicep. CI and the release pipeline regenerate templates from a pinned Bicep version on every run. End users who install the prebuilt tarball never need `az` or Bicep — generated templates are already baked into published binaries when their CLI path uses them.
 
 ## Releasing
 

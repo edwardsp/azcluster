@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+- **AKS deployment target ARM template tree (M1/T1.2)**: new parallel Bicep entrypoints `bicep/aks-main.bicep` → `bicep/aks-cluster.bicep` → `bicep/modules/aks.bicep` provision an AKS control plane, system node pool, ND-series GPU node pool, VNet node subnet, Key Vault, and optional AMW/AMG monitoring without touching the existing Slurm `main.bicep` / `cluster.bicep` path. `crates/azcluster-cli/build.rs` now also guards the generated `bicep/aks-main.json` template so future `--target aks` CLI work can embed it safely.
+- **AKS deploy path (M1/T1.3/T1.5/T1.6)**: `azcluster deploy --target aks` now registers the `Microsoft.ContainerService/AKSInfinibandSupport` feature, submits the embedded `aks-main.json` ARM template, installs cert-manager v1.18.2, NVIDIA Network Operator v26.1.0, NVIDIA GPU Operator v26.3.0, Kueue v0.13.0, and Kubeflow MPI Operator v0.6.0 through AKS `runCommand`, then finalizes an AKS-flavored `ClusterState` + Key Vault manifest. Operator Helm values and Kubernetes manifests are embedded under `crates/azcluster-cli/src/aks/manifests/` and written into the runCommand pod via heredocs/stdin, so no laptop-side `helm`, `kubectl`, or `az` dependency is introduced.
+- **AKS validation gate (M1/T1.7)**: `azcluster validate <aks-cluster>` now runs a 2-node Kubeflow MPIJob through Kueue's `gpu-local-queue`, fetches the NCCL launcher logs via AKS `runCommand`, and fails unless `# Avg bus bandwidth` is at least **400 GB/s** and the log shows at least eight `mlx5_*` `/IB/SHARP` devices with no TCP fallback (`NET/Socket` or `NET/IB : No device found`). The embedded MPIJob mirrors the reference `nccl-test` helm chart (full NGC/UCX/SHARP env, `all_reduce_perf_mpi`, `-mca coll_hcoll_enable 0`, `/dev/shm` memory volume, worker-DNS wait).
+- **AKS `status`/`delete` (M1/T1.8/T1.9)**: `azcluster status <aks-cluster>` renders node-pool/operator/Kueue health via `runCommand`; `delete` reuses the generic RG-delete path (cascades the managed cluster + node RG).
+
+### Live-validated
+- First clean end-to-end `azcluster deploy --target aks` + `azcluster validate` on **2× Standard_ND96isr_H200_v5 / mexicocentral**: NCCL all-reduce **481.5 GB/s avg busbw** at 16 GiB / 16 ranks, all 8 `mlx5_0..7` IB/SHARP devices, no TCP fallback — matching/exceeding the Slurm H100 baseline (440 GB/s). Bugs found & fixed live are documented in `AGENTS.md` (K8s version pin, `gpuProfile.driver`, runCommand 202/`/bin/sh`, NFD PCI-class match + GPU-pool taint, `mlx5_*` device naming, worker-DNS race, `/dev/shm`, `all_reduce_perf_mpi` env).
+
+
 ## [0.24.20] - 2026-06-09
 
 ### Added

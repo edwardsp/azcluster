@@ -3,12 +3,46 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Deployment backend a cluster was provisioned with. Added in the AKS-target work;
+/// pre-existing Slurm manifests have no `target` field and deserialize as `Slurm`
+/// via `#[serde(default)]`, keeping their on-disk representation byte-identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Target {
+    #[default]
+    Slurm,
+    Aks,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AksState {
+    pub aks_cluster_name: String,
+    /// Azure-managed node resource group (`MC_<rg>_<cluster>_<region>`).
+    pub node_resource_group: String,
+    #[serde(default)]
+    pub fqdn: Option<String>,
+    /// AKS agentpool name: lowercase alnum, <= 12 chars.
+    pub gpu_pool_name: String,
+    pub gpu_sku: String,
+    pub gpu_node_count: u32,
+    #[serde(default)]
+    pub kubelet_identity_object_id: Option<String>,
+    #[serde(default)]
+    pub oidc_issuer_url: Option<String>,
+    /// Operator stages already applied, for idempotent `resume`.
+    /// Ids: `cert-manager`, `network-operator`, `gpu-operator`, `kueue`, `mpi-operator`.
+    #[serde(default)]
+    pub stages_completed: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterState {
     pub name: String,
     pub subscription_id: String,
     pub resource_group: String,
     pub location: String,
+    #[serde(default)]
+    pub target: Target,
     pub admin_username: String,
     pub login_public_ip: Option<String>,
     pub scheduler_private_ip: String,
@@ -43,6 +77,8 @@ pub struct ClusterState {
     pub storage_public_access: bool,
     #[serde(default)]
     pub azcp_version: Option<String>,
+    #[serde(default)]
+    pub aks: Option<AksState>,
 }
 
 fn project_dirs() -> Result<ProjectDirs> {
@@ -194,6 +230,55 @@ impl ClusterState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cluster_state_without_target_defaults_to_slurm() {
+        let body = r#"
+name = "demo"
+subscription_id = "00000000-0000-0000-0000-000000000000"
+resource_group = "rg-azcluster-demo"
+location = "eastus"
+admin_username = "azureuser"
+scheduler_private_ip = "10.42.1.4"
+"#;
+        let s: ClusterState = toml::from_str(body).unwrap();
+        assert_eq!(s.target, Target::Slurm);
+        assert!(s.aks.is_none());
+        assert_eq!(s.name, "demo");
+    }
+
+    #[test]
+    fn cluster_state_aks_target_round_trips() {
+        let body = r#"
+name = "demo"
+subscription_id = "00000000-0000-0000-0000-000000000000"
+resource_group = "rg-azcluster-demo"
+location = "mexicocentral"
+admin_username = "azureuser"
+scheduler_private_ip = ""
+"#;
+        let mut s: ClusterState = toml::from_str(body).unwrap();
+        s.target = Target::Aks;
+        s.aks = Some(AksState {
+            aks_cluster_name: "demo".into(),
+            node_resource_group: "MC_rg-azcluster-demo_demo_mexicocentral".into(),
+            fqdn: Some("demo-xyz.hcp.mexicocentral.azmk8s.io".into()),
+            gpu_pool_name: "gpu".into(),
+            gpu_sku: "Standard_ND96isr_H200_v5".into(),
+            gpu_node_count: 2,
+            kubelet_identity_object_id: None,
+            oidc_issuer_url: None,
+            stages_completed: vec!["cert-manager".into(), "gpu-operator".into()],
+        });
+        let ser = toml::to_string(&s).unwrap();
+        assert!(ser.contains("target = \"aks\""));
+        let de: ClusterState = toml::from_str(&ser).unwrap();
+        assert_eq!(de.target, Target::Aks);
+        let aks = de.aks.expect("aks state present");
+        assert_eq!(aks.gpu_sku, "Standard_ND96isr_H200_v5");
+        assert_eq!(aks.gpu_node_count, 2);
+        assert_eq!(aks.stages_completed, vec!["cert-manager", "gpu-operator"]);
+    }
 
     #[test]
     fn secrets_backward_compat_without_mysql_field() {

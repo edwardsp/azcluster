@@ -1,3 +1,4 @@
+mod aks;
 mod arm;
 mod auth;
 mod bastion;
@@ -117,7 +118,7 @@ struct LoginArgs {
 }
 
 #[derive(Args)]
-struct DeployArgs {
+pub(crate) struct DeployArgs {
     #[arg(long)]
     name: String,
     #[arg(long)]
@@ -214,6 +215,9 @@ struct DeployArgs {
     /// azcp version to install on login + compute (https://github.com/edwardsp/azcp). Pinned per release; override for testing newer azcp builds.
     #[arg(long, default_value = "v0.4.5")]
     azcp_version: String,
+    /// Deployment backend. `slurm` (default) provisions a Slurm/Pyxis/Enroot HPC cluster; `aks` provisions an AKS GPU cluster with NVIDIA network + GPU operators and Kueue.
+    #[arg(long, default_value = "slurm", value_parser = ["slurm", "aks"])]
+    target: String,
 }
 
 #[derive(Args)]
@@ -223,8 +227,8 @@ struct ResumeArgs {
     name: String,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-struct PoolSpec {
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct PoolSpec {
     name: String,
     sku: String,
     count: u32,
@@ -407,6 +411,8 @@ mod tests {
             subscription_id: "s".into(),
             resource_group: "rg".into(),
             location: "loc".into(),
+            target: cluster_state::Target::Slurm,
+            aks: None,
             admin_username: "azureuser".into(),
             scheduler_private_ip: "10.42.1.4".into(),
             login_public_ip: public_ip.map(String::from),
@@ -643,7 +649,7 @@ struct LogsArgs {
 }
 
 #[derive(Args)]
-struct ValidateArgs {
+pub(crate) struct ValidateArgs {
     name: String,
     #[arg(long)]
     identity: Option<PathBuf>,
@@ -828,6 +834,7 @@ fn main() -> Result<()> {
 }
 
 const EMBEDDED_MAIN_TEMPLATE: &str = include_str!("../../../bicep/main.json");
+pub(crate) const EMBEDDED_AKS_TEMPLATE: &str = include_str!("../../../bicep/aks-main.json");
 
 fn resolve_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
     if let Some(p) = explicit {
@@ -850,6 +857,29 @@ fn resolve_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
             .with_context(|| format!("parse ARM JSON {}", p.display()));
     }
     serde_json::from_str(EMBEDDED_MAIN_TEMPLATE).context("parse embedded main.json")
+}
+
+pub(crate) fn resolve_aks_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
+    if let Some(p) = explicit {
+        if !p.exists() {
+            bail!("template {} not found", p.display());
+        }
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        if ext.as_deref() != Some("json") {
+            bail!(
+                "--template {} must be an ARM JSON file (.json). Transpile bicep with: az bicep build --file <input>.bicep --outfile <output>.json",
+                p.display()
+            );
+        }
+        let raw = std::fs::read_to_string(&p)
+            .with_context(|| format!("read template {}", p.display()))?;
+        return serde_json::from_str(&raw)
+            .with_context(|| format!("parse ARM JSON {}", p.display()));
+    }
+    serde_json::from_str(EMBEDDED_AKS_TEMPLATE).context("parse embedded aks-main.json")
 }
 
 /// Get a valid Azure access token from the cache populated by `azcluster login`.
@@ -1135,7 +1165,14 @@ fn login(args: LoginArgs) -> Result<()> {
     Ok(())
 }
 
+fn deploy_aks(args: DeployArgs) -> Result<()> {
+    aks::deploy::deploy_aks(args)
+}
+
 fn deploy(args: DeployArgs) -> Result<()> {
+    if args.target == "aks" {
+        return deploy_aks(args);
+    }
     let template = resolve_template(args.template.clone())?;
 
     let sub_id = current_subscription_id()?;
@@ -1521,6 +1558,7 @@ fn resume(args: ResumeArgs) -> Result<()> {
                     .azcp_version
                     .clone()
                     .unwrap_or_else(|| "v0.4.5".into()),
+                target: "slurm".into(),
             };
             finalize_deploy(
                 &synthetic_args,
@@ -1577,6 +1615,17 @@ fn tag_resource_group_for_cluster(
     kv_name: &str,
     version: &str,
 ) -> Result<()> {
+    tag_resource_group_for_cluster_target(arm, rg_name, cluster_name, kv_name, version, None)
+}
+
+fn tag_resource_group_for_cluster_target(
+    arm: &arm::client::ArmClient,
+    rg_name: &str,
+    cluster_name: &str,
+    kv_name: &str,
+    version: &str,
+    target: Option<&str>,
+) -> Result<()> {
     let mut tags = std::collections::HashMap::new();
     tags.insert(
         cluster_resolver::TAG_MANAGED.to_string(),
@@ -1595,6 +1644,9 @@ fn tag_resource_group_for_cluster(
         cluster_resolver::TAG_DEPLOYED_AT.to_string(),
         chrono::Utc::now().to_rfc3339(),
     );
+    if let Some(target) = target {
+        tags.insert("azcluster:target".to_string(), target.to_string());
+    }
     arm.patch_resource_group_tags(rg_name, tags)
         .with_context(|| format!("patch tags on {rg_name}"))
 }
@@ -1635,6 +1687,8 @@ fn finalize_deploy(
         subscription_id: sub_id.to_string(),
         resource_group: resolved_rg.to_string(),
         location: args.location.clone(),
+        target: cluster_state::Target::Slurm,
+        aks: None,
         admin_username: "azureuser".into(),
         login_public_ip,
         scheduler_private_ip,
@@ -2108,6 +2162,10 @@ fn status(args: StatusArgs) -> Result<()> {
         return Ok(());
     };
 
+    if state.target == cluster_state::Target::Aks {
+        return aks::status::status_aks(&state);
+    }
+
     println!("name:              {}", state.name);
     println!("resource group:    {}", state.resource_group);
     println!("location:          {}", state.location);
@@ -2557,6 +2615,9 @@ fn shell_quote(s: &str) -> String {
 
 fn validate(args: ValidateArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        return aks::validate::validate_aks(&state, &args);
+    }
     let use_bastion = should_use_bastion(&state, false);
     let login_target = if use_bastion {
         format!("{}@127.0.0.1", state.admin_username)

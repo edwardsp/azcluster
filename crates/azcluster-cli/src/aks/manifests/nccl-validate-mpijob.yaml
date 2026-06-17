@@ -1,0 +1,95 @@
+apiVersion: kubeflow.org/v2beta1
+kind: MPIJob
+metadata:
+  name: azcluster-nccl-validate
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: gpu-local-queue
+spec:
+  slotsPerWorker: 8
+  launcherCreationPolicy: WaitForWorkersReady
+  runPolicy:
+    cleanPodPolicy: Running
+    backoffLimit: 0
+    suspend: true
+  mpiReplicaSpecs:
+    Launcher:
+      replicas: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: mpi-launcher
+              image: ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest
+              env:
+                - { name: OMPI_ALLOW_RUN_AS_ROOT, value: "1" }
+                - { name: OMPI_ALLOW_RUN_AS_ROOT_CONFIRM, value: "1" }
+                - { name: CUDA_DEVICE_ORDER, value: "PCI_BUS_ID" }
+                - { name: NCCL_SOCKET_IFNAME, value: "eth0" }
+                - { name: NCCL_DEBUG, value: "INFO" }
+                - { name: NCCL_TOPO_FILE, value: "/etc/topology/ndv5-topo.xml" }
+                - { name: NCCL_IB_PCI_RELAXED_ORDERING, value: "1" }
+                - { name: NCCL_IB_QPS_PER_CONNECTION, value: "4" }
+                - { name: NCCL_IGNORE_CPU_AFFINITY, value: "1" }
+                - { name: NCCL_P2P_NET_CHUNKSIZE, value: "524288" }
+                - { name: NCCL_PXN_DISABLE, value: "1" }
+                - { name: NCCL_MIN_NCHANNELS, value: "32" }
+                - { name: UCX_TLS, value: "rc" }
+                - { name: UCX_NET_DEVICES, value: "mlx5_0:1" }
+                - { name: NCCL_COLLNET_ENABLE, value: "1" }
+                - { name: SHARP_SMX_UCX_INTERFACE, value: "mlx5_0:1" }
+                - { name: SHARP_COLL_ENABLE_SAT, value: "1" }
+                - { name: SHARP_COLL_ENABLE_PCI_RELAXED_ORDERING, value: "1" }
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -eu
+                  NP=$(awk -F'slots=' '{s+=$2} END{print s}' /etc/mpi/hostfile)
+                  echo "azcluster-nccl-validate: NP=${NP} ranks; waiting for worker DNS..."
+                  while read -r host _; do
+                    [ -n "${host}" ] || continue
+                    i=0
+                    until getent hosts "${host}" >/dev/null 2>&1; do
+                      i=$((i + 1))
+                      if [ "${i}" -gt 90 ]; then echo "DNS timeout for ${host}" >&2; exit 1; fi
+                      sleep 2
+                    done
+                  done < /etc/mpi/hostfile
+                  echo "all workers resolvable; launching mpirun"
+                  mpirun --allow-run-as-root -np "${NP}" \
+                    --map-by ppr:8:node:pe=12 --bind-to core \
+                    -hostfile /etc/mpi/hostfile \
+                    -mca plm_rsh_no_tree_spawn 1 \
+                    -mca plm_rsh_num_concurrent 800 \
+                    -mca coll_hcoll_enable 0 \
+                    -x LD_LIBRARY_PATH \
+                    -x OMPI_ALLOW_RUN_AS_ROOT -x OMPI_ALLOW_RUN_AS_ROOT_CONFIRM \
+                    -x CUDA_DEVICE_ORDER -x NCCL_SOCKET_IFNAME -x NCCL_DEBUG \
+                    -x NCCL_TOPO_FILE -x NCCL_IB_PCI_RELAXED_ORDERING \
+                    -x NCCL_IB_QPS_PER_CONNECTION -x NCCL_IGNORE_CPU_AFFINITY \
+                    -x NCCL_P2P_NET_CHUNKSIZE -x NCCL_PXN_DISABLE -x NCCL_MIN_NCHANNELS \
+                    -x UCX_TLS -x UCX_NET_DEVICES -x NCCL_COLLNET_ENABLE \
+                    -x SHARP_SMX_UCX_INTERFACE -x SHARP_COLL_ENABLE_SAT \
+                    -x SHARP_COLL_ENABLE_PCI_RELAXED_ORDERING \
+                    all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10
+    Worker:
+      replicas: {{NODES}}
+      template:
+        spec:
+          containers:
+            - name: mpi-worker
+              image: ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest
+              securityContext:
+                capabilities:
+                  add: ["IPC_LOCK"]
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  rdma/ib: 8
+              volumeMounts:
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: shm
+              emptyDir:
+                medium: Memory
