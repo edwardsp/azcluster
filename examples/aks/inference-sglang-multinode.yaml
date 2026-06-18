@@ -12,12 +12,21 @@
 #   export MODEL_PREFIX=dsr1-fp8           # blob prefix under <data>/models/
 #   envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID} ${MODEL_PREFIX}' < inference-sglang-multinode.yaml | kubectl apply -f -
 #   kubectl rollout status statefulset/sglang --timeout=600s   # TP=16 load + DeepGEMM JIT warmup can take 20-40 min for DeepSeek
-#   # once sglang-0 /health is 200, benchmark against the serving cluster:
-#   kubectl exec sglang-0 -c sglang -- env TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 \
+#   # once sglang-0 /health is 200, benchmark against the serving cluster.
+#   # Two gotchas (live-validated): (1) do NOT set HF_HUB_OFFLINE=1 — sglang's
+#   # `--dataset-name random` downloads ShareGPT from the Hub to seed prompts;
+#   # (2) DeepSeek's tokenizer_config.json carries an `auto_map` that the bench's
+#   # tokenizer loader tries to fetch from the Hub, so strip it into a writable dir:
+#   kubectl exec sglang-0 -c sglang -- bash -c 'mkdir -p /tmp/tok && \
+#     cp /mnt/blobcache/data/models/'"$MODEL_PREFIX"'/tokenizer.json \
+#        /mnt/blobcache/data/models/'"$MODEL_PREFIX"'/tokenizer_config.json /tmp/tok/ && \
+#     python3 -c "import json;p=\"/tmp/tok/tokenizer_config.json\";d=json.load(open(p));d.pop(\"auto_map\",None);json.dump(d,open(p,\"w\"))"'
+#   kubectl exec sglang-0 -c sglang -- \
 #     python3 -m sglang.bench_serving --backend sglang --host 127.0.0.1 --port 8888 \
-#     --model model --tokenizer /mnt/blobcache/data/models/${MODEL_PREFIX} \
+#     --model model --tokenizer /tmp/tok \
 #     --dataset-name random --random-input-len 1024 --random-output-len 1024 \
 #     --random-range-ratio 0.2 --num-prompts 640 --max-concurrency 64
+#   # Live (2x ND H200): 640 reqs, output 1258.84 tok/s, median TPOT 47.92 ms, TTFT 184.56 ms.
 #
 # sglang-0 is the TP head (dist-init-addr sglang-0.sglang:5000); both pods run
 # sglang.launch_server --tp 16 --nnodes 2 --node-rank {0,1}. Each pod has a

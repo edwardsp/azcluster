@@ -165,11 +165,15 @@ pub(crate) fn block_on<F, T>(future: F) -> Result<T>
 where
     F: std::future::Future<Output = Result<T>>,
 {
-    tokio::runtime::Builder::new_current_thread()
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .context("build tokio runtime for Kubernetes WebSocket")?
-        .block_on(future)
+        .context("build tokio runtime for Kubernetes WebSocket")?;
+    let result = rt.block_on(future);
+    // Detach instead of dropping: an interactive `tokio::io::stdin()` read is a
+    // spawn_blocking stuck in the tty syscall that a runtime drop would wait on forever.
+    rt.shutdown_background();
+    result
 }
 
 fn parse_kubeconfig(kubeconfig: &str) -> Result<KubeIdentity> {

@@ -136,7 +136,12 @@ async fn attach_loop(client: &K8sClient, url: String, tty: bool) -> Result<i32> 
                     CH_STDERR => std::io::stderr()
                         .write_all(payload)
                         .context("write stderr")?,
-                    CH_ERROR => error_payload.extend_from_slice(payload),
+                    CH_ERROR => {
+                        // ch3 carries the terminal metav1.Status; the server may not
+                        // send a WS Close in tty mode, so this frame ends the session.
+                        error_payload.extend_from_slice(payload);
+                        break;
+                    }
                     _ => {}
                 }
             }

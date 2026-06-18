@@ -2,9 +2,9 @@
 
 **Fast Rust-based Slurm cluster deployer for Azure.** Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~15 minutes wall-clock, no daemons on your laptop.
 
-> **Current release:** `v0.24.20`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
+> **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.24.20.md`](doc/full-walkthrough-slurm-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT).
+> **End-to-end walkthrough:** [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.24.20.md`](doc/full-walkthrough-slurm-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (2× ND H200: NCCL 483.4 GB/s, training 506.4 TFLOP/s/GPU, vLLM 9,912 tok/s, DeepSeek SGLang TP=16 1,258.8 tok/s, DCGM→AMW observability).
 
 ## What it is
 
@@ -40,7 +40,7 @@ A deployed cluster has:
 Grab the prebuilt CLI from the latest release. Each release ships a versioned tarball plus a `SHA256SUMS` file:
 
 ```bash
-VERSION=v0.24.20
+VERSION=v0.25.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 BASE=https://github.com/edwardsp/azcluster/releases/download/${VERSION}
 curl -fsSLO "${BASE}/azcluster-cli-${VERSION}-${ARCH}.tar.gz"

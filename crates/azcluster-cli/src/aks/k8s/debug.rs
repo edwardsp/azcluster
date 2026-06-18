@@ -19,13 +19,15 @@ pub(crate) fn node_shell(client: &K8sClient, node: &str) -> Result<()> {
             "hostIPC": true,
             "restartPolicy": "Never",
             "tolerations": [{ "operator": "Exists" }],
+            "volumes": [{ "name": "host", "hostPath": { "path": "/", "type": "Directory" } }],
             "containers": [{
                 "name": "debugger",
                 "image": DEBUG_IMAGE,
                 "securityContext": { "privileged": true },
                 "stdin": true,
                 "tty": true,
-                "command": ["nsenter", "--target", "1", "--mount", "--uts", "--ipc", "--net", "--pid", "--", "bash"]
+                "volumeMounts": [{ "name": "host", "mountPath": "/host" }],
+                "command": ["chroot", "/host", "bash"]
             }]
         }
     });
@@ -70,10 +72,13 @@ struct DebugPodCleanup<'a> {
 
 impl Drop for DebugPodCleanup<'_> {
     fn drop(&mut self) {
-        let _ = self
-            .client
-            .api_delete(&format!("/api/v1/namespaces/default/pods/{}", self.pod));
-        // best-effort cleanup
+        let path = format!(
+            "/api/v1/namespaces/default/pods/{}?gracePeriodSeconds=0",
+            self.pod
+        );
+        if let Err(e) = self.client.api_delete(&path) {
+            eprintln!("warning: failed to delete debug pod {}: {e:#}", self.pod);
+        }
     }
 }
 

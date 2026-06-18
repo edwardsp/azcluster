@@ -133,7 +133,7 @@ pub(crate) struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.20")]
+    #[arg(long, default_value = "v0.25.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -2075,18 +2075,20 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
     if state.target == cluster_state::Target::Aks {
         let target = args.host.as_deref().ok_or_else(|| {
-            anyhow!("AKS tunnel requires --host <[namespace/]pod> --local-port <local> --remote-port <podPort>")
+            anyhow!("AKS tunnel: pass --host <[namespace/]pod> --remote-port <podPort>")
         })?;
-        let remote_port = args.remote_port.ok_or_else(|| {
-            anyhow!("AKS tunnel requires --remote-port <podPort> (Slurm tunnels default to scheduler:8443)")
-        })?;
+        let remote_port = args
+            .remote_port
+            .ok_or_else(|| anyhow!("AKS tunnel: pass --remote-port <podPort>"))?;
         let (ns, pod) = aks::operate::split_ns_pod(target);
-        let client = aks::k8s::client::K8sClient::from_state(&state)?;
-        return aks::k8s::portforward::run(
-            &client,
-            &ns,
-            &pod,
-            &format!("{}:{remote_port}", args.local_port),
+        bail!(
+            "native port-forward to {ns}/{pod}:{remote_port} is not yet implemented: \
+             the Kubernetes WebSocket port-forward uses the `SPDY/3.1+portforward.k8s.io` \
+             tunneling subprotocol (a SPDY framing layer over the socket), tracked as a \
+             follow-up. Interim: `azcluster kubeconfig {}` then \
+             `kubectl port-forward -n {ns} {pod} {}:{remote_port}`.",
+            args.name,
+            args.local_port
         );
     }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
