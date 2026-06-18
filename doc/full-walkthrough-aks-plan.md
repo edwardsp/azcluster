@@ -6,10 +6,10 @@ AKS-native. Version-specific live captures live alongside (e.g.
 [`full-walkthrough-aks-v0.25.0.md`](full-walkthrough-aks-v0.25.0.md)).
 
 **AKS is pod-native.** There is no bare-metal job path, so each Slurm step maps to a
-Kubernetes equivalent: an `azcluster` verb (`validate`/`train`) or an
-[`examples/aks/`](../examples/aks/) manifest run with `kubectl`/`helm`. The Slurm
-walkthrough's two NCCL runs (plain-VM + container) collapse to the single
-containerised `azcluster validate` MPIJob — there is no plain-VM variant on AKS.
+Kubernetes equivalent: an [`examples/aks/`](../examples/aks/) manifest run with
+`kubectl`/`helm`. The Slurm walkthrough's two NCCL runs (plain-VM + container)
+collapse to the single containerised `examples/aks/nccl-allreduce-mpijob.yaml`
+MPIJob — there is no plain-VM variant on AKS.
 
 Convention: cluster name `aks<MAJOR><MINOR><PATCH>` (e.g. `aksm5`), 2× ND H200 in a
 region with H200 capacity (`mexicocentral` as of v0.25.0). Managed Grafana is not in
@@ -63,7 +63,10 @@ it bails with the interim `kubectl port-forward` command.
 ## 2. NCCL validation (2-node, container)
 
 ```bash
-azcluster validate <name>
+export NODES=2
+envsubst '${NODES}' < examples/aks/nccl-allreduce-mpijob.yaml | kubectl apply -f -
+kubectl wait --for=condition=complete job/azcluster-nccl-validate-launcher --timeout=1800s
+kubectl logs job/azcluster-nccl-validate-launcher
 ```
 
 Submits a 2-node MPIJob through Kueue (`all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10`,
@@ -72,7 +75,15 @@ Submits a 2-node MPIJob through Kueue (`all_reduce_perf_mpi -b 16G -e 16G -f 2 -
 ## 3. Training (DGXC Megatron-Bridge, Llama-3.1-8B)
 
 ```bash
-azcluster train <name> --wait
+kubectl apply -f examples/aks/training-operator.yaml
+kubectl wait -n kubeflow --for=condition=available deploy/training-operator --timeout=300s
+kubectl create configmap azcluster-llama-pretrain \
+  --from-file=pretrain.py=examples/megatron-pretrain.py \
+  --dry-run=client -o yaml | kubectl apply -f -
+export WORKER_REPLICAS=1 TRAIN_ITERS=50 GBS=256 CP=2
+envsubst '${WORKER_REPLICAS} ${TRAIN_ITERS} ${GBS} ${CP}' \
+  < examples/aks/training-megatron-pytorchjob.yaml | kubectl apply -f -
+kubectl logs -f -l training.kubeflow.org/job-name=azcluster-llama-train,training.kubeflow.org/replica-type=master
 ```
 
 PyTorchJob, 16 GPUs / 2 nodes; reports steady-state `MODEL_TFLOP/s/GPU`.
@@ -168,8 +179,8 @@ azcluster purge-kv --name <name> --location <region> --yes
 >   more than memory bandwidth predicts), and H200's larger KV-cache capacity lets it
 >   *sustain* high concurrency on the 671B model where H100 is capacity-throttled.
 > - **Harness:** the **training** rows are not the same benchmark — Slurm used the DGXC
->   `dgxc-benchmarking` `llmb-run` harness; AKS used `azcluster train` (the CLI's own
->   embedded Megatron-Bridge pretrain). Same model/precision/gbs nominally, different harness.
+>   `dgxc-benchmarking` `llmb-run` harness; AKS used `examples/aks/training-megatron-pytorchjob.yaml`
+>   with the shared `examples/megatron-pretrain.py` launcher. Same model/precision/gbs nominally, different harness.
 >
 > A clean apples-to-apples comparison would require the same GPU SKU, the same container
 > image/library versions, and the same benchmark harness + bench parameters on both targets.
@@ -178,7 +189,7 @@ azcluster purge-kv --name <name> --location <region> --yes
 |---|---|---|
 | NCCL all-reduce (2-node, 16 GiB) | 440.21 GB/s plain-VM · 451.08 GB/s container | 483.36 GB/s container |
 | IB/SHARP | 8 NICs/node, no TCP fallback | 8 NICs/node, no TCP fallback |
-| Training Llama-3.1-8B (16 GPU) — **different harness** | 541.81 TFLOP/s/GPU (DGXC llmb-run) | 506.4 TFLOP/s/GPU (`azcluster train`) |
+| Training Llama-3.1-8B (16 GPU) — **different harness** | 541.81 TFLOP/s/GPU (DGXC llmb-run) | 506.4 TFLOP/s/GPU (example PyTorchJob) |
 | vLLM Llama-3.1-8B-FP8 | 9,863 tok/s @ 12.38 ms TPOT | 9,912 tok/s @ 12.55 ms TPOT |
 | DeepSeek-R1 SGLang TP=16 (640 prompts, c64) — **diff. SGLang ver.** | 487.81 tok/s @ 123.34 ms TPOT | 1,258.84 tok/s @ 47.92 ms TPOT |
 | Storage stage (azcp upload) | ~8.78 Gbps | 15.91 Gbps |

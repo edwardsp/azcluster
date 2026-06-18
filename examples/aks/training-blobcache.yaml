@@ -29,7 +29,7 @@
 # The trainer command below is a PLACEHOLDER that proves the data path (reads the
 # staged bytes from blobcache, writes a checkpoint, runs the handshake). Replace
 # it with your real launcher — e.g. the Megatron-Bridge pretrain used by
-# `azcluster train` — keeping the /mnt/blobcache read and the /scratch/ckpt +
+# the Megatron training example — keeping the /mnt/blobcache read and the /scratch/ckpt +
 # .DONE/.UPLOADED handshake.
 ---
 apiVersion: v1

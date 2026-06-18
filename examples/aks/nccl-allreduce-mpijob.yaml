@@ -1,3 +1,19 @@
+# Containerized NCCL all-reduce MPIJob, matched to ../slurm/nccl-allreduce.sbatch.
+#
+# Run with kubectl after `azcluster deploy --target aks` and `azcluster kubeconfig`:
+#
+#   export NODES=2
+#   envsubst '${NODES}' < nccl-allreduce-mpijob.yaml | kubectl apply -f -
+#   kubectl wait --for=condition=complete job/azcluster-nccl-validate-launcher --timeout=1800s
+#   kubectl logs job/azcluster-nccl-validate-launcher
+#
+# Pass criteria:
+#   - `# Avg bus bandwidth` >= 400 GB/s
+#   - NCCL logs show at least 8 mlx5_* or mlx5_ib* IB/SHARP devices per node
+#   - no `NET/Socket` fallback and no `NET/IB : No device found`
+#
+# Matched payload: ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest,
+# 2 nodes × 8 GPUs = 16 ranks, all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10.
 apiVersion: kubeflow.org/v2beta1
 kind: MPIJob
 metadata:
@@ -73,7 +89,7 @@ spec:
                     -x SHARP_COLL_ENABLE_PCI_RELAXED_ORDERING \
                     all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10
     Worker:
-      replicas: {{NODES}}
+      replicas: ${NODES}
       template:
         spec:
           containers:

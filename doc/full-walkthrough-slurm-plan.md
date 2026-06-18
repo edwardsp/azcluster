@@ -220,7 +220,7 @@ This is the containerised counterpart of §2. To make the bare-metal-vs-containe
 
 **Consistency note (why not the Python helper).** Earlier walkthroughs measured the container path with a Python `torchrun` helper (`nccl_allreduce_smoke.py`, a 1 GiB fp16 tensor × 20 iters). That drives a *different* message size and collective path than §2's `all_reduce_perf -b 16G -e 16G`, so its IB-throughput chart was **not** comparable to the plain-VM chart — on the 1 GiB payload the per-NIC receive rates stayed near the noise floor and the chart looked empty next to §2's multi-Gbps spike. The Python helper remains a fine quick functional smoke (3a), but the `all_reduce_perf` container run (3b) is the benchmark of record: it reproduces §2 exactly, so the two NCCL charts in §8 are a true matched pair. Live `v2420walk` result: §2 (bare metal) **440.21 GB/s** vs §3b (container) **451.08 GB/s** — within ~2.5%, i.e. the Pyxis/Enroot path adds no measurable NCCL overhead.
 
-The smoke sbatch (3a) and the legacy Python multinode smoke are shipped by cloud-init at `/shared/examples/`; `nccl-N10-container.sbatch` (3b) is reproduced here and scp'd by the operator (it mirrors `nccl-N10.sbatch` from §2).
+The quick examples now live under `examples/slurm/`; copy them with `azcluster scp` before submitting. `nccl-N10-container.sbatch` (3b) is reproduced here and scp'd by the operator (it mirrors `nccl-N10.sbatch` from §2).
 
 #### 3a. Container import + single-node smoke (`dgxc-nemo-container-smoke.sbatch`)
 
@@ -322,7 +322,8 @@ Submit (warm the container first via 3a so the import is seconds):
 
 ```bash
 # Optional: warm the squashfs cache + container sanity (first import ~25 min)
-azcluster exec <name> --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-container-smoke.sbatch"
+azcluster scp <name> --user clusteradmin examples/slurm/nccl-allreduce.sbatch :/shared/home/clusteradmin/
+azcluster exec <name> --user clusteradmin -- "sbatch nccl-allreduce.sbatch"
 # Then the consistent measured run:
 azcluster scp <name> --user clusteradmin nccl-N10-container.sbatch :/shared/home/clusteradmin/
 azcluster exec <name> --user clusteradmin -- "sbatch nccl-N10-container.sbatch"
@@ -330,7 +331,7 @@ azcluster exec <name> --user clusteradmin -- "sbatch nccl-N10-container.sbatch"
 
 Expect `# Avg bus bandwidth :` within a few % of §2 (live `v2420walk` job 29: **451.08 GB/s** vs §2 job 28: 440.21 GB/s). The binary auto-resolves to `all_reduce_perf_mpi` (the MPI-launcher build NeMo ships); the `srun --mpi=pmix` launcher provides the PMIx world.
 
-> The legacy Python multinode smoke (`dgxc-nemo-multinode-smoke.sbatch`, shipped at `/shared/examples/`) still works as a quick 2-node functional check and produces ~425-435 GB/s on its 1 GiB payload, but it is **not** apples-to-apples with §2 — prefer `nccl-N10-container.sbatch` for the §8 chart.
+> Older walkthroughs used a Python multinode smoke for a quick 2-node functional check, but it is **not** apples-to-apples with §2 — prefer the matched `examples/slurm/nccl-allreduce.sbatch` or `nccl-N10-container.sbatch` for the §8 chart.
 
 ### 4. Storage pipeline — small model (Llama 3.1 8B FP8)
 
@@ -378,7 +379,7 @@ time azcp copy "$SRC" "$DST" --recursive
 date -u
 ```
 
-Then broadcast to every compute node via `azcp-cluster` (uses the shipped template at `/shared/examples/azcp-cluster-distribute-sqsh.sbatch`, but the template is sqsh-pathed; for models we use an inline sbatch):
+Then broadcast to every compute node via `azcp-cluster` (for models we use an inline sbatch; the reusable sqsh template lives at `examples/slurm/distribute-azcp-cluster.sbatch`):
 
 ```bash
 #!/bin/bash -l
@@ -554,7 +555,7 @@ Unlike the earlier version of this run, the NeMo container is **not** pulled ont
 **Prerequisites:**
 
 - Deploy with `--extra-package python3.12-venv` (the `llmb` installer builds a uv venv on login + compute).
-- **Storage must be on** (the default — do NOT pass `--no-storage`). The `azcp-build-and-publish-sqsh.sbatch` + `azcp-cluster-distribute-sqsh.sbatch` templates only exist under `/shared/examples/` when the cluster has a blob account.
+- **Storage must be on** (the default — do NOT pass `--no-storage`). Copy the storage templates from `examples/slurm/` with `azcluster scp` before submitting them.
 - `--shared-storage nfs-scheduler` is **fine** here (reversed from older guidance). The squashfs lives on per-node NVMe, not `/shared`; the only `llmb` footprint on `/shared` is the uv venv + recipe clone + dataset/config staging (a few GB). The old "17 GiB NeMo import ENOSPCs a 64 GiB scheduler-NFS export" warning no longer applies because we skip the install-time import (see 7a).
 - NGC API key (NeMo container pull) AND a HuggingFace token (the `Meta-Llama-3.1` NeMo configs are gated). See the credentials table above.
 
@@ -631,19 +632,20 @@ llmb-install --play "$HOME/dgxc/playfile.yaml" express
 
 #### 7b. Stage the NeMo container as a per-node squashfs (NVMe → blob → broadcast)
 
-Same pipeline as the inference runs above. Build once on one compute node, publish to blob, then broadcast to every node's NVMe over IB. Both templates ship under `/shared/examples/`.
+Same pipeline as the inference runs above. Build once on one compute node, publish to blob, then broadcast to every node's NVMe over IB. Copy the templates from `examples/slurm/` before submitting them.
 
 ```bash
 # (1) Import nvcr.io/nvidia/nemo:<tag> to /mnt/nvme/.../sqsh/<name>.sqsh on one
 #     node and upload to the per-cluster blob. ~25-30 min, NGC-CDN bound (17 GiB).
-build=$(sbatch --parsable /shared/examples/azcp-build-and-publish-sqsh.sbatch \
-  "${SQSH_NAME}" "${NEMO_TAG}")
+azcluster scp <name> --user clusteradmin examples/slurm/stage-model.sbatch :/shared/home/clusteradmin/
+azcluster scp <name> --user clusteradmin examples/slurm/distribute-azcp-cluster.sbatch :/shared/home/clusteradmin/
+build=$(sbatch --parsable stage-model.sbatch "${NEMO_TAG}" "sqsh/${SQSH_NAME}")
 echo "build+publish job: ${build}"
 
 # (2) Broadcast the published sqsh to every node's NVMe over IB once (1) succeeds.
 #     ~seconds at N=2 (NVMe-read-bound; see the storage-pipeline note above).
 dist=$(sbatch --parsable --dependency=afterok:${build} \
-  /shared/examples/azcp-cluster-distribute-sqsh.sbatch "${SQSH_NAME}")
+  distribute-azcp-cluster.sbatch "${SQSH_NAME}")
 echo "distribute job: ${dist}"
 
 # Watch both to completion.

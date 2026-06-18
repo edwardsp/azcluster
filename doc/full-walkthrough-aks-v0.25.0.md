@@ -5,10 +5,10 @@ v0.25.0 build, mirroring the Slurm walkthrough AKS-native. Captured on cluster
 `aksm5`, **2× Standard_ND96isr_H200_v5 / mexicocentral** (Grafana in `eastus2`).
 
 The AKS target is pod-native: there is no bare-metal job path, so each Slurm
-walkthrough step maps to a Kubernetes equivalent (`azcluster validate`/`train`,
-or an `examples/aks/` manifest run with `kubectl`/`helm`). The AKS analog of the
-Slurm walkthrough's two NCCL runs (plain-VM + container) is the single containerised
-`azcluster validate` MPIJob — there is no plain-VM variant on AKS.
+walkthrough step maps to an `examples/aks/` manifest run with `kubectl`/`helm`.
+The AKS analog of the Slurm walkthrough's two NCCL runs (plain-VM + container) is
+the single containerised `examples/aks/nccl-allreduce-mpijob.yaml` MPIJob — there
+is no plain-VM variant on AKS.
 
 ## 0. Deploy + monitoring
 
@@ -49,7 +49,10 @@ azcluster ssh  aksm5 --host aks-gpu-...-vmss000000                      # host-r
 ## 2. NCCL validation (2-node, container)
 
 ```bash
-azcluster validate aksm5
+export NODES=2
+envsubst '${NODES}' < examples/aks/nccl-allreduce-mpijob.yaml | kubectl apply -f -
+kubectl wait --for=condition=complete job/azcluster-nccl-validate-launcher --timeout=1800s
+kubectl logs job/azcluster-nccl-validate-launcher
 ```
 
 - 2-node MPIJob through Kueue, `all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10`,
@@ -60,7 +63,15 @@ azcluster validate aksm5
 ## 3. Training (DGXC Megatron-Bridge, Llama-3.1-8B)
 
 ```bash
-azcluster train aksm5 --wait
+kubectl apply -f examples/aks/training-operator.yaml
+kubectl wait -n kubeflow --for=condition=available deploy/training-operator --timeout=300s
+kubectl create configmap azcluster-llama-pretrain \
+  --from-file=pretrain.py=examples/megatron-pretrain.py \
+  --dry-run=client -o yaml | kubectl apply -f -
+export WORKER_REPLICAS=1 TRAIN_ITERS=50 GBS=256 CP=2
+envsubst '${WORKER_REPLICAS} ${TRAIN_ITERS} ${GBS} ${CP}' \
+  < examples/aks/training-megatron-pytorchjob.yaml | kubectl apply -f -
+kubectl logs -f -l training.kubeflow.org/job-name=azcluster-llama-train,training.kubeflow.org/replica-type=master
 ```
 
 - PyTorchJob, 16 GPUs / 2 nodes, gbs=256, 50 iters.

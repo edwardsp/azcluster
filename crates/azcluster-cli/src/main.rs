@@ -44,9 +44,6 @@ enum CliCommand {
     Exec(ExecArgs),
     Scp(ScpArgs),
     Logs(LogsArgs),
-    Validate(ValidateArgs),
-    /// Submit a Llama-3.1-8B Megatron-Bridge pretraining benchmark (AKS target only).
-    Train(TrainArgs),
     /// Fetch the AKS cluster-admin kubeconfig and write it locally (AKS target only).
     Kubeconfig(KubeconfigArgs),
     Monitor(MonitorArgs),
@@ -656,28 +653,6 @@ struct LogsArgs {
 }
 
 #[derive(Args)]
-pub(crate) struct ValidateArgs {
-    name: String,
-    #[arg(long)]
-    identity: Option<PathBuf>,
-    /// Skip the container (Pyxis) smoke test.
-    #[arg(long, default_value_t = false)]
-    no_container: bool,
-    /// Run nvidia-smi via srun (requires a GPU pool with nodes up).
-    #[arg(long, default_value_t = false)]
-    gpu: bool,
-    /// Run 2-node variants: cross-node hostname, cross-node Pyxis container,
-    /// and (with --gpu) a bounded NCCL all-reduce via HPC-X. Requires >=2
-    /// idle nodes in the target partition. The NCCL check is tuned for
-    /// Azure ND H100 v5 (mlx5_ib + ndv5-topo.xml).
-    #[arg(long, default_value_t = false)]
-    multi_node: bool,
-    /// Slurm partition to target (defaults to the cluster's default partition).
-    #[arg(long)]
-    partition: Option<String>,
-}
-
-#[derive(Args)]
 struct ScaleArgs {
     name: String,
     pool: String,
@@ -687,26 +662,6 @@ struct ScaleArgs {
 #[derive(Args)]
 struct StatusArgs {
     name: String,
-}
-
-#[derive(Args)]
-struct TrainArgs {
-    name: String,
-    /// Number of GPU nodes (each 8 GPUs). Default 2.
-    #[arg(long, default_value_t = 2)]
-    nodes: u32,
-    /// Training iterations to run. Default 50.
-    #[arg(long, default_value_t = 50)]
-    iters: u32,
-    /// Global batch size. Default nodes*128.
-    #[arg(long)]
-    gbs: Option<u32>,
-    /// Context-parallel size. Default 2 (recommended for Llama-3.1-8B at seq 8192).
-    #[arg(long, default_value_t = 2)]
-    cp: u32,
-    /// Block until the run reaches steady state and report MODEL_TFLOP/s/GPU.
-    #[arg(long, default_value_t = false)]
-    wait: bool,
 }
 
 #[derive(Args)]
@@ -850,8 +805,6 @@ fn main() -> Result<()> {
         CliCommand::Exec(args) => exec(args),
         CliCommand::Scp(args) => scp(args),
         CliCommand::Logs(args) => logs(args),
-        CliCommand::Validate(args) => validate(args),
-        CliCommand::Train(args) => train(args),
         CliCommand::Kubeconfig(args) => kubeconfig(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
@@ -2711,14 +2664,6 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn train(args: TrainArgs) -> Result<()> {
-    let state = resolve_cluster(&args.name)?;
-    if state.target != cluster_state::Target::Aks {
-        bail!("`azcluster train` is only supported on AKS clusters (deploy with --target aks)");
-    }
-    aks::train::train_aks(&state, &args)
-}
-
 fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
     let aks = state.aks.as_ref().ok_or_else(|| {
@@ -2788,127 +2733,6 @@ fn aks_logs(state: &cluster_state::ClusterState, args: &LogsArgs) -> Result<()> 
     let (ns, pod) = aks::operate::split_ns_pod(&args.component);
     let client = aks::k8s::client::K8sClient::from_state(state)?;
     aks::k8s::logs::run(&client, &ns, &pod, None, args.tail, args.follow)
-}
-
-fn validate(args: ValidateArgs) -> Result<()> {
-    let state = resolve_cluster(&args.name)?;
-    if state.target == cluster_state::Target::Aks {
-        return aks::validate::validate_aks(&state, &args);
-    }
-    let use_bastion = should_use_bastion(&state, false);
-    let login_target = if use_bastion {
-        format!("{}@127.0.0.1", state.admin_username)
-    } else {
-        let host = state.login_public_ip.as_deref().ok_or_else(|| {
-            anyhow!(
-                "cluster '{}' has no login public IP and bastion is not enabled. \
-                 Redeploy with --login-public-ip or --bastion.",
-                args.name
-            )
-        })?;
-        format!("{}@{}", state.admin_username, host)
-    };
-
-    let part = args
-        .partition
-        .as_deref()
-        .map(|p| format!(" --partition={p}"))
-        .unwrap_or_default();
-
-    let mut checks: Vec<(&str, String)> = vec![
-        ("sinfo", "sinfo -h -o '%P %D %T %N'".into()),
-        (
-            "srun hostname",
-            format!("timeout 60 srun{part} -N1 --time=1 hostname"),
-        ),
-    ];
-    if !args.no_container {
-        checks.push((
-            "srun pyxis alpine",
-            format!(
-                "timeout 180 srun{part} -N1 --time=2 \
-                 --container-image=docker://alpine:latest hostname"
-            ),
-        ));
-    }
-    if args.gpu {
-        checks.push((
-            "srun gpu nvidia-smi",
-            format!("timeout 180 srun{part} -N1 --gres=gpu:1 --time=2 nvidia-smi -L"),
-        ));
-    }
-    if args.multi_node {
-        checks.push((
-            "srun 2-node hostname",
-            format!(
-                "timeout 120 srun{part} -N2 --ntasks-per-node=1 --time=2 \
-                 bash -c 'hostname; sleep 1'"
-            ),
-        ));
-        if !args.no_container {
-            checks.push((
-                "srun 2-node pyxis alpine",
-                format!(
-                    "timeout 300 srun{part} -N2 --ntasks-per-node=1 --time=4 \
-                     --container-image=docker://alpine:latest hostname"
-                ),
-            ));
-        }
-        if args.gpu {
-            let script = "set -euo pipefail\n\
-                 HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 \
-                 2>/dev/null | head -1)\n\
-                 if [ -z \"$HPCX_DIR\" ]; then echo 'HPC-X not found' >&2; exit 1; fi\n\
-                 if [ ! -x /opt/nccl-tests/build/all_reduce_perf ]; then \
-                 echo 'nccl-tests not found' >&2; exit 1; fi\n\
-                 source \"$HPCX_DIR/hpcx-init.sh\"; hpcx_load\n\
-                 export NCCL_IB_HCA=mlx5_ib\n\
-                 export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml\n\
-                 export UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,\
-                 mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1\n\
-                 timeout 300 srun --mpi=pmix -N2 --ntasks-per-node=8 \
-                 --gpus-per-node=8 --exclusive --time=5 \
-                 /opt/nccl-tests/build/all_reduce_perf -b 8M -e 64M -f 2 -g 1";
-            let script = script.replace("\n                 ", "\n");
-            let script = if part.is_empty() {
-                script
-            } else {
-                script.replace("srun --mpi=pmix", &format!("srun{part} --mpi=pmix"))
-            };
-            let remote = format!("bash -lc {}", shell_quote(&script));
-            checks.push(("srun 2-node nccl-allreduce (NDv5)", remote));
-        }
-    }
-
-    let mut all_ok = true;
-    for (label, remote) in &checks {
-        eprintln!("==> [{label}] {remote}");
-        let mut cmd = Command::new("ssh");
-        cmd.args(["-A", "-o", "StrictHostKeyChecking=accept-new"]);
-        let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
-        cmd.args(["-i", &identity.display().to_string()]);
-        if use_bastion {
-            let exe = self_exe_path()?;
-            let proxy = format!(
-                "{} bastion-proxy --cluster {} --target login",
-                exe, args.name
-            );
-            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
-        }
-        cmd.arg(&login_target).arg(remote);
-        let st = cmd.status().context("spawn ssh validate")?;
-        if !st.success() {
-            eprintln!("==> [{label}] FAILED ({})", st);
-            all_ok = false;
-        } else {
-            eprintln!("==> [{label}] OK");
-        }
-    }
-    if !all_ok {
-        bail!("one or more validation checks failed");
-    }
-    eprintln!("==> all checks passed");
-    Ok(())
 }
 
 fn monitor(args: MonitorArgs) -> Result<()> {

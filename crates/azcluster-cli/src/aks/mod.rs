@@ -4,8 +4,6 @@ pub mod k8s;
 pub mod operate;
 pub mod operators;
 pub mod status;
-pub mod train;
-pub mod validate;
 
 use anyhow::{bail, Context, Result};
 

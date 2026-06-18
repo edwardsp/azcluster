@@ -4,7 +4,7 @@
 
 > **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.24.20.md`](doc/full-walkthrough-slurm-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (2× ND H200: NCCL 483.4 GB/s, training 506.4 TFLOP/s/GPU, vLLM 9,912 tok/s, DeepSeek SGLang TP=16 1,258.8 tok/s, DCGM→AMW observability).
+> **End-to-end walkthrough:** [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.24.20.md`](doc/full-walkthrough-slurm-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (2× ND H200 example runs from `examples/aks/`: NCCL 483.4 GB/s, training 506.4 TFLOP/s/GPU, vLLM 9,912 tok/s, DeepSeek SGLang TP=16 1,258.8 tok/s, DCGM→AMW observability).
 
 ## What it is
 
@@ -91,8 +91,9 @@ azcluster timings demo                         # per-resource ARM timings
 Submit a job from the cluster:
 
 ```bash
-azcluster exec demo --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch"
-# 16-rank NCCL all-reduce across 2 nodes in a NeMo container, ~430 GB/s avg busbw
+azcluster scp demo --user clusteradmin examples/slurm/nccl-allreduce.sbatch :/shared/home/clusteradmin/
+azcluster exec demo --user clusteradmin -- "sbatch nccl-allreduce.sbatch"
+# 16-rank NCCL all-reduce across 2 nodes in a NeMo container
 ```
 
 Tear down (releases H100 capacity quota immediately):
@@ -153,7 +154,7 @@ azcluster deploy --target aks --name demo \
   --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
 ```
 
-The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. Monitoring is on by default: AKS managed Prometheus is linked to the per-cluster Azure Monitor Workspace, a DCGM ServiceMonitor scrapes `nvidia-dcgm-exporter`, and GPU/IB metrics are visible in Azure Managed Grafana; pass `--no-monitoring` to skip AMW/AMG and that scrape config. `azcluster validate <aks-cluster>` runs a 2-node NCCL MPIJob through Kueue and fails unless bus bandwidth is at least 400 GB/s with IB/SHARP selected (no TCP fallback). `azcluster train <aks-cluster> --wait` runs a 2-node Llama-3.1-8B Megatron-Bridge pretraining benchmark as a Kubeflow PyTorchJob and reports steady-state MODEL_TFLOP/s/GPU (~500 on 2× ND H200). With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; `azcluster kubeconfig <name>` gives local `kubectl`, and the storage examples under [`examples/aks/`](examples/aks/) (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are run with `kubectl`/`helm`, not embedded in the binary. AKS `status`/operate command branches are still separate follow-up work.
+The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. Monitoring is on by default: AKS managed Prometheus is linked to the per-cluster Azure Monitor Workspace, a DCGM ServiceMonitor scrapes `nvidia-dcgm-exporter`, and GPU/IB metrics are visible in Azure Managed Grafana; pass `--no-monitoring` to skip AMW/AMG and that scrape config. Workloads live under [`examples/aks/`](examples/aks/): run `nccl-allreduce-mpijob.yaml` with `envsubst ... | kubectl apply -f -` for the 2-node NCCL MPIJob, then install `training-operator.yaml`, create the `examples/megatron-pretrain.py` ConfigMap, and apply `training-megatron-pytorchjob.yaml` for the Llama-3.1-8B Megatron-Bridge benchmark. With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; the storage examples (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are also run with `kubectl`/`helm`, not embedded in the binary. `azcluster` provisions infrastructure only.
 
 **Mixed CPU + GPU pools** (Slurm sees both partitions):
 
@@ -197,8 +198,6 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp (remote paths: `[node]:path`, empty node = login) |
 | `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command. **AKS**: `--host [namespace/]pod -- <cmd>` runs native Kubernetes exec (no local kubectl); omit `<cmd>` for `/bin/sh`. |
 | `azcluster tunnel <name> <local:remote>` | Local TCP forward through login. **AKS**: `--host [namespace/]pod --local-port <local> --remote-port <podPort>` forwards to an arbitrary pod port via the Kubernetes API. |
-| `azcluster validate <name> [--gpu] [--multi-node]` | Slurm: `sinfo` + `srun hostname` + Pyxis import + optional NCCL; AKS: 2-node NCCL MPIJob with >=400 GB/s busbw + IB/SHARP gate |
-| `azcluster train <name> [--nodes N] [--iters N] [--gbs N] [--cp N] [--wait]` | AKS only: Llama-3.1-8B Megatron-Bridge pretraining benchmark via PyTorchJob; `--wait` reports steady-state MODEL_TFLOP/s/GPU |
 | `azcluster kubeconfig <name> [--path P] [--print]` | AKS only: fetch the cluster-admin kubeconfig to `~/.azcluster/kube/<name>.config` for local `kubectl` |
 | `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl`. **AKS**: `--component [namespace/]pod` streams native Kubernetes pod logs. |
 | `azcluster monitor <name>` | Print the AMG Grafana URL |
@@ -222,7 +221,8 @@ azcluster ssh demo --user alice                              # → login VM
 azcluster ssh demo --host demo-gpu-0001 --user alice         # → compute via ProxyJump
 
 # Submit jobs as alice
-azcluster ssh demo --user alice -- sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch
+azcluster scp demo --user alice examples/slurm/nccl-allreduce.sbatch :/shared/home/alice/
+azcluster ssh demo --user alice -- sbatch nccl-allreduce.sbatch
 ```
 
 Notes:
@@ -303,7 +303,7 @@ flowchart LR
 
 Big datasets and model weights follow a two-phase canonical path. Phase 1 happens **once per model**: download from HuggingFace to NVMe, upload to the per-cluster blob. Phase 2 happens **every time you start a job**: broadcast from blob across all compute nodes in parallel over IB, then bind-mount into the container. The model persists in blob for the lifetime of the cluster, so phase 2 is the fast path — phase 1 is amortised.
 
-Two example sbatch templates ship under `/shared/examples/`.
+Runnable Slurm examples ship in the repo under [`examples/slurm/`](examples/slurm/); copy them to `/shared/home/<user>/` with `azcluster scp` before submitting.
 
 ### Phase 1 — one-time ingest (per model)
 
@@ -402,6 +402,9 @@ cloud-init/
   login.yaml.tmpl       mounts /shared + /amlfs; slurm client + Pyxis + SSSD
   compute.yaml.tmpl     slurmd, Pyxis, Enroot, NCCL+IB tunings, dcgm-exporter, NVMe RAID-0
 grafana/dashboards/     node, slurm, gpu+ib, health (auto-imported post-deploy)
+examples/
+  slurm/                 runnable Slurm sbatch workloads (NCCL, training, inference)
+  aks/                   runnable AKS manifests (NCCL, training, inference, storage)
 doc/
   full-walkthrough-slurm-plan.md       canonical version-agnostic walkthrough
   full-walkthrough-slurm-v0.24.20.md   latest version-specific live run

@@ -1,10 +1,14 @@
-# AKS storage examples
+# AKS examples
 
 These are **examples you run with `kubectl`** against an AKS cluster deployed by
 `azcluster deploy --target aks`. They are intentionally **not** compiled into the
 `azcluster` binary — `azcluster` provisions the infrastructure (AKS, NVIDIA
 operators, **Azure Container Storage / local-csi**, the per-cluster Blob account)
 and you drive the data plane with these manifests.
+
+The benchmark examples are matched to `../slurm/`: same container images, models,
+node/GPU counts, and command-line parameters so Slurm-vs-AKS results are a
+controlled comparison.
 
 The storage pipeline mirrors the Slurm side, AKS-native:
 
@@ -39,6 +43,47 @@ azcluster status <cluster>
 
 `envsubst` (from `gettext`) substitutes the `${...}` placeholders. Restrict it to
 the named vars so the shell `${...}` inside pod scripts is left intact.
+
+## NCCL all-reduce — [`nccl-allreduce-mpijob.yaml`](nccl-allreduce-mpijob.yaml)
+
+Kubernetes MPIJob equivalent of `../slurm/nccl-allreduce.sbatch`:
+`ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest`, 2 nodes × 8 GPUs,
+`all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10`.
+
+```bash
+export NODES=2
+envsubst '${NODES}' < nccl-allreduce-mpijob.yaml | kubectl apply -f -
+kubectl wait --for=condition=complete job/azcluster-nccl-validate-launcher --timeout=1800s
+kubectl logs job/azcluster-nccl-validate-launcher
+```
+
+Pass criteria: average bus bandwidth ≥ 400 GB/s, at least eight `mlx5_*`
+IB/SHARP devices per node in NCCL logs, and no `NET/Socket` / `NET/IB : No device
+found` fallback.
+
+## Megatron training — operator + shared script + PyTorchJob
+
+Install the trimmed PyTorch-only training operator, create a ConfigMap from the
+shared launcher, then submit `training-megatron-pytorchjob.yaml`. This replaces
+the former embedded training path with visible files.
+
+```bash
+kubectl apply -f training-operator.yaml
+kubectl wait -n kubeflow --for=condition=available deploy/training-operator --timeout=300s
+
+kubectl create configmap azcluster-llama-pretrain \
+  --from-file=pretrain.py=../megatron-pretrain.py \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+export WORKER_REPLICAS=1 TRAIN_ITERS=50 GBS=256 CP=2
+envsubst '${WORKER_REPLICAS} ${TRAIN_ITERS} ${GBS} ${CP}' \
+  < training-megatron-pytorchjob.yaml | kubectl apply -f -
+kubectl logs -f -l training.kubeflow.org/job-name=azcluster-llama-train,training.kubeflow.org/replica-type=master
+```
+
+Matched payload: `nvcr.io/nvidia/nemo:26.04.00`, `../megatron-pretrain.py`,
+TP=1 PP=1 CP=2 GBS=256 MBS=1 TRAIN_ITERS=50. Watch the master logs for
+`MODEL_TFLOP/s/GPU`.
 
 ## 1. Stage data to Blob — [`azcp-upload.yaml`](azcp-upload.yaml)
 
@@ -127,7 +172,6 @@ the azcp sidecar uploads to Blob on a `.DONE`/`.UPLOADED` handshake.
 The trainer container in the manifest is a placeholder that proves the data path
 (reads the staged bytes from blobcache, writes a checkpoint, runs the handshake);
 replace it with your real launcher (e.g. the Megatron-Bridge pretrain used by
-`azcluster train`). The constituent mechanisms are each live-validated by the two
+the Megatron training examples). The constituent mechanisms are each live-validated by the two
 examples above and the checkpoint handshake; wire in your model + GPU launcher to
 run the full benchmark.
-
