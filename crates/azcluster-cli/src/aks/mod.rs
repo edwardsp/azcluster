@@ -1,5 +1,6 @@
 pub mod deploy;
 pub mod feature;
+pub mod operate;
 pub mod operators;
 pub mod status;
 pub mod train;

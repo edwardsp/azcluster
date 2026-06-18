@@ -195,12 +195,12 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster scale <name> <pool> <count>` | Resize a pool to an absolute node count: `azcluster scale demo gpu 2` |
 | `azcluster ssh <name> [--scheduler\|--host <node>] [--user <ldap>]` | Interactive shell |
 | `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp (remote paths: `[node]:path`, empty node = login) |
-| `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command |
+| `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command. **AKS**: `--host [namespace/]pod -- <cmd>` shells `kubectl exec` (needs local kubectl). |
 | `azcluster tunnel <name> <local:remote>` | Local TCP forward through login |
 | `azcluster validate <name> [--gpu] [--multi-node]` | Slurm: `sinfo` + `srun hostname` + Pyxis import + optional NCCL; AKS: 2-node NCCL MPIJob with >=400 GB/s busbw + IB/SHARP gate |
 | `azcluster train <name> [--nodes N] [--iters N] [--gbs N] [--cp N] [--wait]` | AKS only: Llama-3.1-8B Megatron-Bridge pretraining benchmark via PyTorchJob; `--wait` reports steady-state MODEL_TFLOP/s/GPU |
 | `azcluster kubeconfig <name> [--path P] [--print]` | AKS only: fetch the cluster-admin kubeconfig to `~/.azcluster/kube/<name>.config` for local `kubectl` |
-| `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl` |
+| `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl`. **AKS**: `--component [namespace/]pod` shells `kubectl logs`. |
 | `azcluster monitor <name>` | Print the AMG Grafana URL |
 | `azcluster timings <name> [--last N] [--trend]` | Per-resource deploy times; sorted table or trend TSV |
 | `azcluster delete <name>` | Delete the resource group (async) |

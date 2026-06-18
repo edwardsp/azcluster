@@ -2380,6 +2380,9 @@ fn delete(args: DeleteArgs) -> Result<()> {
 
 fn exec(args: ExecArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        return aks_exec(&state, &args);
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
     let jump_user = connect_user;
@@ -2607,6 +2610,9 @@ fn resolve_scp_route(
 
 fn logs(args: LogsArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        return aks_logs(&state, &args);
+    }
     let host = state.login_public_ip.as_deref().ok_or_else(|| {
         anyhow!(
             "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
@@ -2702,6 +2708,57 @@ fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
     );
     eprintln!("    export KUBECONFIG={}", path.display());
     Ok(())
+}
+
+fn ensure_kubeconfig(state: &cluster_state::ClusterState) -> Result<PathBuf> {
+    let aks = state
+        .aks
+        .as_ref()
+        .ok_or_else(|| anyhow!("cluster '{}' is not an AKS cluster", state.name))?;
+    let arm = arm_client()?;
+    let kc = arm.list_cluster_admin_credential(&state.resource_group, &aks.aks_cluster_name)?;
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow!("could not determine HOME"))?
+        .join(".azcluster")
+        .join("kube");
+    std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
+    let path = dir.join(format!("{}.config", state.name));
+    std::fs::write(&path, &kc).with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+    Ok(path)
+}
+
+fn run_kubectl(state: &cluster_state::ClusterState, args: Vec<String>) -> Result<()> {
+    let kc = ensure_kubeconfig(state)?;
+    let status = Command::new("kubectl")
+        .env("KUBECONFIG", &kc)
+        .args(&args)
+        .status()
+        .context("failed to run `kubectl` — install kubectl and ensure it is on PATH (`azcluster kubeconfig` writes the config it uses)")?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn aks_exec(state: &cluster_state::ClusterState, args: &ExecArgs) -> Result<()> {
+    let target = args.host.as_deref().ok_or_else(|| {
+        anyhow!("AKS exec: pass --host <[namespace/]pod> (and `-- <cmd>`), e.g. --host default/sglang-0 -- nvidia-smi")
+    })?;
+    let (ns, pod) = aks::operate::split_ns_pod(target);
+    run_kubectl(
+        state,
+        aks::operate::kubectl_exec_args(&ns, &pod, None, &args.cmd),
+    )
+}
+
+fn aks_logs(state: &cluster_state::ClusterState, args: &LogsArgs) -> Result<()> {
+    let (ns, pod) = aks::operate::split_ns_pod(&args.component);
+    run_kubectl(
+        state,
+        aks::operate::kubectl_logs_args(&ns, &pod, None, args.tail, args.follow),
+    )
 }
 
 fn validate(args: ValidateArgs) -> Result<()> {
