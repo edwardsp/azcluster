@@ -2,7 +2,7 @@
 
 End-to-end demo: 2-node ND96isr_H100_v5 cluster deploy → smoke → NCCL plain VM → **containerised NCCL with identical params** → DGXC sqsh pipeline (build on node → blob → IB broadcast) → **DGXC Megatron-Bridge Llama-3.1-8B training (8-GPU + 16-GPU)** → Llama-3.1-8B-FP8 vLLM inference → DeepSeek-R1-0528 FP8 SGLang TP=16 multi-node inference. Run on 2026-06-08 against `v2420walk` in `eastus`.
 
-Version-specific companion to [`doc/full-walkthrough-plan.md`](full-walkthrough-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
+Version-specific companion to [`doc/full-walkthrough-slurm-plan.md`](full-walkthrough-slurm-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
 
 ## What's new vs v0.24.12
 
@@ -54,9 +54,9 @@ driven by `srun --mpi=pmix --ntasks=16 --ntasks-per-node=8` across both nodes. T
 
 Both ranks negotiate all 8 NDR400 NICs with SHARP in-network reduction and hit the same ~466.8 GB/s peak on the 16 GiB message. The container's slightly *higher* average is run-to-run noise on the ramp (the per-iteration table shows both variants occasionally dipping to ~410 GB/s on a single slow iteration). The takeaway: **the Pyxis/Enroot container path is not leaving performance on the table** — IB visibility inside the container (`MELLANOX_VISIBLE_DEVICES=all` + the enroot `99-mellanox.sh` hook) gives bare-metal fabric performance.
 
-![NCCL plain VM](full-walkthrough-v0.24.20/nccl-plain-vm.png)
+![NCCL plain VM](full-walkthrough-slurm-v0.24.20/nccl-plain-vm.png)
 
-![NCCL container multinode](full-walkthrough-v0.24.20/nccl-container-multinode.png)
+![NCCL container multinode](full-walkthrough-slurm-v0.24.20/nccl-container-multinode.png)
 
 ## Prerequisites
 
@@ -224,7 +224,7 @@ Mean TPOT (ms):                          12.16
 
 **9,863 tok/s output throughput, 12.38 ms median TPOT** on a single H100. Consistent with v0.24.12's 10,118 tok/s — within run-to-run noise.
 
-![Llama-3.1-8B-FP8 vLLM](full-walkthrough-v0.24.20/llama-fp8-vllm.png)
+![Llama-3.1-8B-FP8 vLLM](full-walkthrough-slurm-v0.24.20/llama-fp8-vllm.png)
 
 ## 8. Storage pipeline — DeepSeek-R1-0528 FP8 (642 GiB)
 
@@ -268,7 +268,7 @@ Mean TPOT (ms):                          122.56
 
 **487.81 tok/s aggregate output, 123.34 ms median TPOT, ~7.6 tok/s/user at conc=64.** Matches v0.24.12 (491.81 tok/s, 122.64 ms TPOT) — DSR1 inference is steady run-to-run. This is the *aggregated* TP=16 configuration (one worker doing both prefill + decode) — simpler than the disaggregated Dynamo variant SemiAnalysis publishes, lower aggregate throughput by design.
 
-![DSR1 SGLang TP=16](full-walkthrough-v0.24.20/dsr1-fp8-sglang.png)
+![DSR1 SGLang TP=16](full-walkthrough-slurm-v0.24.20/dsr1-fp8-sglang.png)
 
 The chart shows per-GPU power, temp, PIPE_TENSOR_ACTIVE, and SM_ACTIVE during the bench. PIPE_TENSOR_ACTIVE > 0 confirms the FP8 GEMMs land on H100 tensor cores natively.
 

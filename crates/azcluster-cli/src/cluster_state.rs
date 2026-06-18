@@ -31,8 +31,11 @@ pub struct AksState {
     pub kubelet_identity_client_id: Option<String>,
     #[serde(default)]
     pub oidc_issuer_url: Option<String>,
+    #[serde(default)]
+    pub monitoring_enabled: bool,
     /// Operator stages already applied, for idempotent `resume`.
-    /// Ids: `cert-manager`, `network-operator`, `gpu-operator`, `kueue`, `mpi-operator`.
+    /// Ids include `cert-manager`, `network-operator`, `gpu-operator`,
+    /// `prometheus-servicemonitor`, `kueue`, `mpi-operator`, `acstor`.
     #[serde(default)]
     pub stages_completed: Vec<String>,
 }
@@ -271,6 +274,7 @@ scheduler_private_ip = ""
             kubelet_identity_object_id: None,
             kubelet_identity_client_id: None,
             oidc_issuer_url: None,
+            monitoring_enabled: true,
             stages_completed: vec!["cert-manager".into(), "gpu-operator".into()],
         });
         let ser = toml::to_string(&s).unwrap();

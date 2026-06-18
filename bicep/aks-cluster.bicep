@@ -87,7 +87,17 @@ module aks 'modules/aks.bicep' = {
   }
 }
 
-// TODO(M5): wire azureMonitorProfile DCR association into the reused AMW.
+module aksPrometheus 'modules/aks-prometheus.bicep' = if (enableMonitoring) {
+  name: 'aksPrometheus'
+  params: {
+    clusterName: clusterName
+    location: location
+    aksClusterName: aks.outputs.aksClusterName
+    amwId: monitoring!.outputs.amwId
+    tags: tags
+  }
+}
+
 var grafanaEndpoint = enableMonitoring ? monitoring!.outputs.grafanaEndpoint : ''
 
 // Per-cluster Blob account for the blob-first data flow (training data + checkpoints

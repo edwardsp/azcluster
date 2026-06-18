@@ -1,5 +1,6 @@
 pub mod deploy;
 pub mod feature;
+pub mod k8s;
 pub mod operate;
 pub mod operators;
 pub mod status;

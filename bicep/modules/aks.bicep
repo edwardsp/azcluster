@@ -82,6 +82,10 @@ resource gpuPool 'Microsoft.ContainerService/managedClusters/agentPools@2025-10-
     osSKU: 'Ubuntu'
     type: 'VirtualMachineScaleSets'
     enableNodePublicIP: false
+    // Azure CNI defaults to maxPods=30; the GPU/network/storage operator
+    // daemonsets + ama-metrics + kube-system already consume ~28-30 slots,
+    // leaving no room for an 8-GPU workload pod. 110 gives ample headroom.
+    maxPods: 110
     nodeLabels: {
       agentpool: gpuPoolName
     }

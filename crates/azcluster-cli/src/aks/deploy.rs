@@ -16,6 +16,7 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
 
     let gpu_pool = select_gpu_pool(&args)?;
     let gpu_pool_name = sanitize_agent_pool_name(&gpu_pool.name)?;
+    let monitoring_enabled = args.monitoring && !args.no_monitoring;
     let storage_enabled = args.storage && !args.no_storage;
     let storage_account_name = if storage_enabled {
         match args.storage_name.as_deref() {
@@ -77,6 +78,7 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
             key_vault_name: &key_vault_name,
             storage_enabled,
             storage_account_name: &storage_account_name,
+            monitoring_enabled,
         },
     );
 
@@ -95,7 +97,7 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
         deployment_name: deployment_name.clone(),
         resource_group: resolved_rg.clone(),
         started_at: crate::utc_iso8601(),
-        monitoring_enabled: false,
+        monitoring_enabled,
         accounting_enabled: false,
         shared_storage: "aks".into(),
         grafana_location: args.grafana_location.clone(),
@@ -177,6 +179,7 @@ pub(crate) fn deploy_aks(args: DeployArgs) -> Result<()> {
         &aks_cluster_name,
         gpu_node_count,
         storage_enabled,
+        monitoring_enabled,
     )?;
 
     finalize_deploy_aks(
@@ -249,6 +252,7 @@ struct AksParams<'a> {
     key_vault_name: &'a str,
     storage_enabled: bool,
     storage_account_name: &'a str,
+    monitoring_enabled: bool,
 }
 
 fn build_params(args: &DeployArgs, p: &AksParams) -> Value {
@@ -272,7 +276,7 @@ fn build_params(args: &DeployArgs, p: &AksParams) -> Value {
         ("deployerPrincipalId", json!(p.deployer_oid)),
         ("deployerPrincipalType", json!(p.deployer_ptype)),
         ("keyVaultName", json!(p.key_vault_name)),
-        ("enableMonitoring", json!(false)),
+        ("enableMonitoring", json!(p.monitoring_enabled)),
         (
             "grafanaLocation",
             json!(args
@@ -347,6 +351,7 @@ fn finalize_deploy_aks(
             kubelet_identity_client_id: output_string(outputs, "kubeletIdentityClientId")?
                 .filter(|s| !s.is_empty()),
             oidc_issuer_url: output_string(outputs, "oidcIssuerUrl")?.filter(|s| !s.is_empty()),
+            monitoring_enabled: args.monitoring && !args.no_monitoring,
             stages_completed,
         }),
     };

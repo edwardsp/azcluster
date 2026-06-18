@@ -4,7 +4,7 @@
 
 > **Current release:** `v0.24.20`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-v0.24.20.md`](doc/full-walkthrough-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT).
+> **End-to-end walkthrough:** [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.24.20.md`](doc/full-walkthrough-slurm-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT).
 
 ## What it is
 
@@ -101,7 +101,7 @@ Tear down (releases H100 capacity quota immediately):
 azcluster delete demo
 ```
 
-See [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down), with every sbatch script inlined and the chart-generation appendix.
+See [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down), with every sbatch script inlined and the chart-generation appendix.
 
 ## Deploy options
 
@@ -153,7 +153,7 @@ azcluster deploy --target aks --name demo \
   --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
 ```
 
-The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. `azcluster validate <aks-cluster>` runs a 2-node NCCL MPIJob through Kueue and fails unless bus bandwidth is at least 400 GB/s with IB/SHARP selected (no TCP fallback). `azcluster train <aks-cluster> --wait` runs a 2-node Llama-3.1-8B Megatron-Bridge pretraining benchmark as a Kubeflow PyTorchJob and reports steady-state MODEL_TFLOP/s/GPU (~500 on 2× ND H200). With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; `azcluster kubeconfig <name>` gives local `kubectl`, and the storage examples under [`examples/aks/`](examples/aks/) (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are run with `kubectl`/`helm`, not embedded in the binary. AKS `status`/operate command branches are still separate follow-up work.
+The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. Monitoring is on by default: AKS managed Prometheus is linked to the per-cluster Azure Monitor Workspace, a DCGM ServiceMonitor scrapes `nvidia-dcgm-exporter`, and GPU/IB metrics are visible in Azure Managed Grafana; pass `--no-monitoring` to skip AMW/AMG and that scrape config. `azcluster validate <aks-cluster>` runs a 2-node NCCL MPIJob through Kueue and fails unless bus bandwidth is at least 400 GB/s with IB/SHARP selected (no TCP fallback). `azcluster train <aks-cluster> --wait` runs a 2-node Llama-3.1-8B Megatron-Bridge pretraining benchmark as a Kubeflow PyTorchJob and reports steady-state MODEL_TFLOP/s/GPU (~500 on 2× ND H200). With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; `azcluster kubeconfig <name>` gives local `kubectl`, and the storage examples under [`examples/aks/`](examples/aks/) (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are run with `kubectl`/`helm`, not embedded in the binary. AKS `status`/operate command branches are still separate follow-up work.
 
 **Mixed CPU + GPU pools** (Slurm sees both partitions):
 
@@ -193,14 +193,14 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster resume --name <name>` | Wait for a `--no-wait` or interrupted deploy to finish + run post-deploy hooks |
 | `azcluster status <name>` | Pool capacities + bootstrap probe (READY/in-progress) for login + scheduler |
 | `azcluster scale <name> <pool> <count>` | Resize a pool to an absolute node count: `azcluster scale demo gpu 2` |
-| `azcluster ssh <name> [--scheduler\|--host <node>] [--user <ldap>]` | Interactive shell |
+| `azcluster ssh <name> [--scheduler\|--host <node>] [--user <ldap>]` | Interactive shell. **AKS**: `--host <nodeName>` opens a privileged node-root debug shell via the Kubernetes API. |
 | `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp (remote paths: `[node]:path`, empty node = login) |
-| `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command. **AKS**: `--host [namespace/]pod -- <cmd>` shells `kubectl exec` (needs local kubectl). |
-| `azcluster tunnel <name> <local:remote>` | Local TCP forward through login |
+| `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command. **AKS**: `--host [namespace/]pod -- <cmd>` runs native Kubernetes exec (no local kubectl); omit `<cmd>` for `/bin/sh`. |
+| `azcluster tunnel <name> <local:remote>` | Local TCP forward through login. **AKS**: `--host [namespace/]pod --local-port <local> --remote-port <podPort>` forwards to an arbitrary pod port via the Kubernetes API. |
 | `azcluster validate <name> [--gpu] [--multi-node]` | Slurm: `sinfo` + `srun hostname` + Pyxis import + optional NCCL; AKS: 2-node NCCL MPIJob with >=400 GB/s busbw + IB/SHARP gate |
 | `azcluster train <name> [--nodes N] [--iters N] [--gbs N] [--cp N] [--wait]` | AKS only: Llama-3.1-8B Megatron-Bridge pretraining benchmark via PyTorchJob; `--wait` reports steady-state MODEL_TFLOP/s/GPU |
 | `azcluster kubeconfig <name> [--path P] [--print]` | AKS only: fetch the cluster-admin kubeconfig to `~/.azcluster/kube/<name>.config` for local `kubectl` |
-| `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl`. **AKS**: `--component [namespace/]pod` shells `kubectl logs`. |
+| `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl`. **AKS**: `--component [namespace/]pod` streams native Kubernetes pod logs. |
 | `azcluster monitor <name>` | Print the AMG Grafana URL |
 | `azcluster timings <name> [--last N] [--trend]` | Per-resource deploy times; sorted table or trend TSV |
 | `azcluster delete <name>` | Delete the resource group (async) |
@@ -403,9 +403,9 @@ cloud-init/
   compute.yaml.tmpl     slurmd, Pyxis, Enroot, NCCL+IB tunings, dcgm-exporter, NVMe RAID-0
 grafana/dashboards/     node, slurm, gpu+ib, health (auto-imported post-deploy)
 doc/
-  full-walkthrough-plan.md       canonical version-agnostic walkthrough
-  full-walkthrough-v0.24.20.md   latest version-specific live run
-  full-walkthrough-v0.24.20/     PNG charts for above
+  full-walkthrough-slurm-plan.md       canonical version-agnostic walkthrough
+  full-walkthrough-slurm-v0.24.20.md   latest version-specific live run
+  full-walkthrough-slurm-v0.24.20/     PNG charts for above
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
 .sisyphus/              planning artifacts (gitignored)

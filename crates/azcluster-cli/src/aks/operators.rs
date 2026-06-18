@@ -9,12 +9,14 @@ const NIC_CLUSTER_POLICY: &str = include_str!("manifests/nic-cluster-policy.yaml
 const KUEUE_VALUES: &str = include_str!("manifests/kueue-values.yaml");
 const KUEUE_QUEUES: &str = include_str!("manifests/kueue-queues.yaml");
 const ACSTOR_STORAGECLASS: &str = include_str!("manifests/local-csi-storageclass.yaml");
+const DCGM_SERVICEMONITOR: &str = include_str!("manifests/dcgm-servicemonitor.yaml");
 
 pub const STAGES: &[&str] = &[
     "gpu-nodes-ready",
     "cert-manager",
     "network-operator",
     "gpu-operator",
+    "prometheus-servicemonitor",
     "kueue",
     "mpi-operator",
 ];
@@ -25,6 +27,7 @@ pub fn install_all(
     cluster: &str,
     gpu_node_count: u32,
     storage_enabled: bool,
+    monitoring_enabled: bool,
 ) -> Result<Vec<String>> {
     let mut completed = Vec::with_capacity(STAGES.len());
     run_stage(
@@ -63,6 +66,17 @@ pub fn install_all(
         &gpu_operator_script(),
     )?;
     completed.push("gpu-operator".to_string());
+    if monitoring_enabled {
+        run_stage(
+            arm,
+            resource_group,
+            cluster,
+            "3a",
+            "Managed Prometheus DCGM ServiceMonitor",
+            &dcgm_servicemonitor_script(),
+        )?;
+        completed.push("prometheus-servicemonitor".to_string());
+    }
     run_stage(
         arm,
         resource_group,
@@ -225,6 +239,22 @@ kubectl get storageclass local-csi"#,
     ))
 }
 
+fn dcgm_servicemonitor_script() -> String {
+    let sm = single_quote(DCGM_SERVICEMONITOR);
+    script_with_body(&format!(
+        r#"for i in $(seq 1 10); do
+  if printf %s {sm} | kubectl apply --server-side -f -; then
+    exit 0
+  fi
+  echo "waiting for azmonitoring.coreos.com/v1 ServiceMonitor CRD ($i/10)"
+  sleep 15
+done
+echo "WARNING: managed Prometheus ServiceMonitor CRD did not become ready; continuing without DCGM ServiceMonitor"
+exit 0"#,
+        sm = sm,
+    ))
+}
+
 fn mpi_operator_script() -> &'static str {
     r#"set -eu
 kubectl apply --server-side -f https://raw.githubusercontent.com/kubeflow/mpi-operator/v0.6.0/deploy/v2beta1/mpi-operator.yaml
@@ -263,5 +293,14 @@ mod tests {
         assert!(s.contains("--version 0.2.13"));
         assert!(s.contains("localdisk.csi.acstor.io"));
         assert!(s.contains("name: local-csi"));
+    }
+
+    #[test]
+    fn dcgm_servicemonitor_script_is_non_fatal_and_uses_azmonitoring_crd() {
+        let s = dcgm_servicemonitor_script();
+        assert!(s.contains("azmonitoring.coreos.com/v1"));
+        assert!(s.contains("nvidia-dcgm-exporter"));
+        assert!(s.contains("WARNING: managed Prometheus ServiceMonitor CRD"));
+        assert!(s.contains("exit 0"));
     }
 }

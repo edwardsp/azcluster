@@ -2,7 +2,7 @@
 
 End-to-end demonstration of azcluster on a 2-node `Standard_ND96isr_H100_v5` cluster (16× H100 SXM5 80GB total, 8× NDR400 InfiniBand per node, 28 TB NVMe RAID-0 per node). Designed to exercise every component the product ships: deploy, identity, storage, multi-node container orchestration, observability, and large-model inference.
 
-This is the **plan** — the version-agnostic description of what we run and why. Concrete runs with commands, timings, and output go in version-specific companions like `full-walkthrough-v0.24.4.md`.
+This is the **plan** — the version-agnostic description of what we run and why. Concrete runs with commands, timings, and output go in version-specific companions like `full-walkthrough-slurm-v0.24.4.md`.
 
 ## Goals
 
@@ -760,7 +760,7 @@ Save as `plot-walkthrough.py`. Requires `matplotlib`, `python3` ≥ 3.8, and `az
 Render walkthrough charts from AMW PromQL queries.
 
 Usage:
-  CLUSTER=v249walk OUT=doc/full-walkthrough-v0.24.9 python3 plot-walkthrough.py
+  CLUSTER=v249walk OUT=doc/full-walkthrough-slurm-v0.24.9 python3 plot-walkthrough.py
 
 Required env:
   CLUSTER   azcluster name (used to find AMW + RG)

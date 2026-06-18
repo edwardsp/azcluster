@@ -574,6 +574,9 @@ struct ConnectArgs {
     name: String,
     #[arg(long, default_value_t = 8443)]
     local_port: u16,
+    /// AKS only: remote pod port for `azcluster tunnel`.
+    #[arg(long)]
+    remote_port: Option<u16>,
     #[arg(long)]
     identity: Option<PathBuf>,
     /// Hop through login to the scheduler VM. Mutually exclusive with --host.
@@ -610,7 +613,7 @@ struct ExecArgs {
     /// Disable auto-routing through Azure Bastion when no login public IP is set.
     #[arg(long, default_value_t = false)]
     no_bastion: bool,
-    #[arg(trailing_var_arg = true, required = true)]
+    #[arg(trailing_var_arg = true)]
     cmd: Vec<String>,
 }
 
@@ -1652,7 +1655,14 @@ fn tag_resource_group_for_cluster(
     kv_name: &str,
     version: &str,
 ) -> Result<()> {
-    tag_resource_group_for_cluster_target(arm, rg_name, cluster_name, kv_name, version, None)
+    tag_resource_group_for_cluster_target(
+        arm,
+        rg_name,
+        cluster_name,
+        kv_name,
+        version,
+        Some("slurm"),
+    )
 }
 
 fn tag_resource_group_for_cluster_target(
@@ -1682,7 +1692,7 @@ fn tag_resource_group_for_cluster_target(
         chrono::Utc::now().to_rfc3339(),
     );
     if let Some(target) = target {
-        tags.insert("azcluster:target".to_string(), target.to_string());
+        tags.insert(cluster_resolver::TAG_TARGET.to_string(), target.to_string());
     }
     arm.patch_resource_group_tags(rg_name, tags)
         .with_context(|| format!("patch tags on {rg_name}"))
@@ -1947,8 +1957,20 @@ fn bastion_compute_proxy_command(
     ))
 }
 
+/// Resolve a cluster, rejecting AKS targets so Slurm-only verbs surface a kubectl pointer.
+fn resolve_slurm_cluster(name: &str) -> Result<ClusterState> {
+    let state = resolve_cluster(name)?;
+    if state.target == cluster_state::Target::Aks {
+        bail!(
+            "'{name}' is an AKS cluster; this command applies to Slurm clusters only. \
+             For AKS use `azcluster kubeconfig {name}` + kubectl, or `azcluster exec`/`azcluster logs`."
+        );
+    }
+    Ok(state)
+}
+
 fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
-    let state = resolve_cluster(&args.cluster)?;
+    let state = resolve_slurm_cluster(&args.cluster)?;
     if !state.bastion_enabled {
         bail!("cluster '{}' was not deployed with --bastion", args.cluster);
     }
@@ -1973,6 +1995,13 @@ fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
 
 fn ssh(args: ConnectArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        let node = args.host.as_deref().ok_or_else(|| {
+            anyhow!("AKS ssh opens a node-root debug shell; pass --host <nodeName>")
+        })?;
+        let client = aks::k8s::client::K8sClient::from_state(&state)?;
+        return aks::k8s::debug::node_shell(&client, node);
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
@@ -2044,6 +2073,22 @@ fn ssh(args: ConnectArgs) -> Result<()> {
 
 fn tunnel(args: ConnectArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        let target = args.host.as_deref().ok_or_else(|| {
+            anyhow!("AKS tunnel requires --host <[namespace/]pod> --local-port <local> --remote-port <podPort>")
+        })?;
+        let remote_port = args.remote_port.ok_or_else(|| {
+            anyhow!("AKS tunnel requires --remote-port <podPort> (Slurm tunnels default to scheduler:8443)")
+        })?;
+        let (ns, pod) = aks::operate::split_ns_pod(target);
+        let client = aks::k8s::client::K8sClient::from_state(&state)?;
+        return aks::k8s::portforward::run(
+            &client,
+            &ns,
+            &pod,
+            &format!("{}:{remote_port}", args.local_port),
+        );
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
@@ -2091,7 +2136,7 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
 }
 
 fn scale(args: ScaleArgs) -> Result<()> {
-    let state = resolve_cluster(&args.name)?;
+    let state = resolve_slurm_cluster(&args.name)?;
     let vmss_name = format!("vmss-{}-{}", state.name, args.pool);
     if !state.compute_vmss_names.is_empty() && !state.compute_vmss_names.contains(&vmss_name) {
         bail!(
@@ -2473,6 +2518,14 @@ fn scp(args: ScpArgs) -> Result<()> {
         bail!("scp requires at least one source and one destination");
     }
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        bail!(
+            "`azcluster scp` targets Slurm clusters. For AKS, copy into a pod with \
+             `azcluster exec {0} --host <[ns/]pod> -- tar x ...` or stage data through the \
+             cluster blob with azcp (see examples/aks/).",
+            args.name
+        );
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
 
     let parsed: Vec<ScpPath> = args.paths.iter().map(|s| parse_scp_path(s)).collect();
@@ -2710,55 +2763,29 @@ fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
     Ok(())
 }
 
-fn ensure_kubeconfig(state: &cluster_state::ClusterState) -> Result<PathBuf> {
-    let aks = state
-        .aks
-        .as_ref()
-        .ok_or_else(|| anyhow!("cluster '{}' is not an AKS cluster", state.name))?;
-    let arm = arm_client()?;
-    let kc = arm.list_cluster_admin_credential(&state.resource_group, &aks.aks_cluster_name)?;
-    let dir = dirs::home_dir()
-        .ok_or_else(|| anyhow!("could not determine HOME"))?
-        .join(".azcluster")
-        .join("kube");
-    std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
-    let path = dir.join(format!("{}.config", state.name));
-    std::fs::write(&path, &kc).with_context(|| format!("write {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
-    }
-    Ok(path)
-}
-
-fn run_kubectl(state: &cluster_state::ClusterState, args: Vec<String>) -> Result<()> {
-    let kc = ensure_kubeconfig(state)?;
-    let status = Command::new("kubectl")
-        .env("KUBECONFIG", &kc)
-        .args(&args)
-        .status()
-        .context("failed to run `kubectl` — install kubectl and ensure it is on PATH (`azcluster kubeconfig` writes the config it uses)")?;
-    std::process::exit(status.code().unwrap_or(1));
-}
-
 fn aks_exec(state: &cluster_state::ClusterState, args: &ExecArgs) -> Result<()> {
     let target = args.host.as_deref().ok_or_else(|| {
         anyhow!("AKS exec: pass --host <[namespace/]pod> (and `-- <cmd>`), e.g. --host default/sglang-0 -- nvidia-smi")
     })?;
     let (ns, pod) = aks::operate::split_ns_pod(target);
-    run_kubectl(
-        state,
-        aks::operate::kubectl_exec_args(&ns, &pod, None, &args.cmd),
-    )
+    let cmd = if args.cmd.is_empty() {
+        vec!["/bin/sh".to_string()]
+    } else {
+        args.cmd.clone()
+    };
+    let client = aks::k8s::client::K8sClient::from_state(state)?;
+    let code =
+        aks::k8s::exec::run_for_exit_code(&client, &ns, &pod, None, &cmd, args.cmd.is_empty())?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 fn aks_logs(state: &cluster_state::ClusterState, args: &LogsArgs) -> Result<()> {
     let (ns, pod) = aks::operate::split_ns_pod(&args.component);
-    run_kubectl(
-        state,
-        aks::operate::kubectl_logs_args(&ns, &pod, None, args.tail, args.follow),
-    )
+    let client = aks::k8s::client::K8sClient::from_state(state)?;
+    aks::k8s::logs::run(&client, &ns, &pod, None, args.tail, args.follow)
 }
 
 fn validate(args: ValidateArgs) -> Result<()> {
@@ -3080,7 +3107,8 @@ fn list(args: ListArgs) -> Result<()> {
     let sub_id = arm.subscription_id().to_string();
     let rgs = arm.list_resource_groups_by_tag(cluster_resolver::TAG_MANAGED, Some("true"))?;
 
-    let mut rows: Vec<(String, String, String, String, String)> = Vec::with_capacity(rgs.len());
+    let mut rows: Vec<(String, String, String, String, String, String)> =
+        Vec::with_capacity(rgs.len());
     for rg in &rgs {
         let rg_name = rg
             .get("name")
@@ -3111,17 +3139,31 @@ fn list(args: ListArgs) -> Result<()> {
         if cluster_name.is_empty() {
             continue;
         }
-        rows.push((cluster_name, location, rg_name, version, deployed_at));
+        let target = tags
+            .get(cluster_resolver::TAG_TARGET)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("slurm")
+            .to_string();
+        rows.push((
+            cluster_name,
+            location,
+            rg_name,
+            version,
+            deployed_at,
+            target,
+        ));
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
     if args.json {
         let arr: Vec<serde_json::Value> = rows
             .iter()
-            .map(|(n, loc, rg, ver, ts)| {
+            .map(|(n, loc, rg, ver, ts, tgt)| {
                 serde_json::json!({
                     "subscription": sub_id,
                     "name": n,
+                    "target": tgt,
                     "location": loc,
                     "resource_group": rg,
                     "version": ver,
@@ -3139,29 +3181,34 @@ fn list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
     let w_name = rows.iter().map(|r| r.0.len()).max().unwrap_or(4).max(4);
+    let w_tgt = rows.iter().map(|r| r.5.len()).max().unwrap_or(6).max(6);
     let w_loc = rows.iter().map(|r| r.1.len()).max().unwrap_or(8).max(8);
     let w_rg = rows.iter().map(|r| r.2.len()).max().unwrap_or(14).max(14);
     let w_ver = rows.iter().map(|r| r.3.len()).max().unwrap_or(7).max(7);
     println!(
-        "{:<wn$}  {:<wl$}  {:<wr$}  {:<wv$}  DEPLOYED AT",
+        "{:<wn$}  {:<wt$}  {:<wl$}  {:<wr$}  {:<wv$}  DEPLOYED AT",
         "NAME",
+        "TARGET",
         "LOCATION",
         "RESOURCE GROUP",
         "VERSION",
         wn = w_name,
+        wt = w_tgt,
         wl = w_loc,
         wr = w_rg,
         wv = w_ver,
     );
-    for (n, loc, rg, ver, ts) in &rows {
+    for (n, loc, rg, ver, ts, tgt) in &rows {
         println!(
-            "{:<wn$}  {:<wl$}  {:<wr$}  {:<wv$}  {}",
+            "{:<wn$}  {:<wt$}  {:<wl$}  {:<wr$}  {:<wv$}  {}",
             n,
+            tgt,
             loc,
             rg,
             ver,
             ts,
             wn = w_name,
+            wt = w_tgt,
             wl = w_loc,
             wr = w_rg,
             wv = w_ver,
@@ -3183,7 +3230,7 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
             admin,
             no_generate_keypair,
         } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_add(
                 &state,
                 &username,
@@ -3197,19 +3244,19 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
             )
         }
         UserCmd::Remove { cluster, username } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_remove(&state, &username)
         }
         UserCmd::List { cluster } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_list(&state)
         }
         UserCmd::Setadmin { cluster, username } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_setadmin(&state, &username, true)
         }
         UserCmd::Unsetadmin { cluster, username } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_setadmin(&state, &username, false)
         }
         UserCmd::Sshkey { cmd } => match cmd {
@@ -3218,7 +3265,7 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
                 username,
                 key_file,
             } => {
-                let state = resolve_cluster(&cluster)?;
+                let state = resolve_slurm_cluster(&cluster)?;
                 user::sshkey_add(&state, &username, &key_file)
             }
             SshkeyCmd::Remove {
@@ -3226,11 +3273,11 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
                 username,
                 key_file,
             } => {
-                let state = resolve_cluster(&cluster)?;
+                let state = resolve_slurm_cluster(&cluster)?;
                 user::sshkey_remove(&state, &username, &key_file)
             }
             SshkeyCmd::List { cluster, username } => {
-                let state = resolve_cluster(&cluster)?;
+                let state = resolve_slurm_cluster(&cluster)?;
                 user::sshkey_list(&state, &username)
             }
         },

@@ -10,6 +10,7 @@ pub const TAG_NAME: &str = "azcluster:name";
 pub const TAG_KV: &str = "azcluster:kv";
 pub const TAG_VERSION: &str = "azcluster:version";
 pub const TAG_DEPLOYED_AT: &str = "azcluster:deployed-at";
+pub const TAG_TARGET: &str = "azcluster:target";
 
 pub const MANIFEST_SECRET: &str = "cluster-manifest";
 pub const SECRETS_BUNDLE: &str = "secrets-bundle";
