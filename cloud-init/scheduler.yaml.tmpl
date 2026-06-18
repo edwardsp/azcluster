@@ -171,7 +171,7 @@ write_files:
           sleep 5; i=$((i+1)); [ $i -gt 120 ] && break
         done
       }
-      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=8 "$@"; }
 
       if [ -n "${EXTRA_PACKAGES:-}" ]; then
         aptget install -y ${EXTRA_PACKAGES}
@@ -661,13 +661,20 @@ write_files:
         sleep 2
       done
 
-      set +e
-      ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/azcluster/openssh-lpk.ldif
-      rc=$?
-      set -e
-      if [ $rc -ne 0 ] && [ $rc -ne 68 ]; then
-        echo "openssh-lpk schema add failed (rc=$rc)" >&2
-        exit $rc
+      if ldapsearch -Y EXTERNAL -H ldapi:/// -LLL -b cn=schema,cn=config '(cn=*openssh-lpk)' dn 2>/dev/null | grep -qiE '^dn:.*openssh-lpk'; then
+        echo "openssh-lpk schema already present; skipping add"
+      else
+        set +e
+        ldapadd -Y EXTERNAL -H ldapi:/// -f /etc/azcluster/openssh-lpk.ldif
+        rc=$?
+        set -e
+        # rc 68 = entry already exists; rc 80 = duplicate attributeType (schema already
+        # loaded by a prior retry). Both mean "already there" and must not abort the
+        # idempotent retry loop.
+        if [ $rc -ne 0 ] && [ $rc -ne 68 ] && [ $rc -ne 80 ]; then
+          echo "openssh-lpk schema add failed (rc=$rc)" >&2
+          exit $rc
+        fi
       fi
 
       BASE_LDIF=/etc/azcluster/ldap-base.ldif

@@ -27,6 +27,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Fixed
 - **Native AKS interactive `exec`/`ssh` hung on exit and leaked the debug pod.** The spawned `tokio::io::stdin()` reader is a `spawn_blocking` stuck in the tty syscall that a current-thread runtime drop waits on forever; `block_on` now uses `shutdown_background()` so the verb returns when the session ends. The exec/attach loop also breaks on the channel-3 status frame (the Kubernetes WS sends no Close in tty mode), and the `ssh` node-shell deletes its privileged debug pod with `?gracePeriodSeconds=0` (surfacing errors instead of swallowing them). Non-interactive `exec -- <cmd>` was unaffected (piped stdin hits EOF).
+- **`examples/slurm/stage-model.sbatch` no longer depends on host Python.** The original created a host `python3 -m venv`, which fails on the `microsoft-dsvm:ubuntu-hpc` compute image (no `python3.12-venv`/`ensurepip`) and aborted staging. It now runs `hf download` inside a `python:3.11-slim` Pyxis container with the NVMe model dir bind-mounted, mirroring the `python:3.11-slim` initContainer in `examples/aks/stage-model.yaml`. `azcp copy` still runs on the host (binary is installed at boot).
+- **`examples/slurm/nccl-allreduce-vm.sbatch` aborted under `set -u`** when sourcing HPC-X's `hpcx-init.sh` (it references unbound vars such as `HPCX_ENABLE_NCCL_MRC_PLUGIN`). The source is now wrapped in `set +u` / `set -u`.
+- **cloud-init apt resilience in capacity-constrained regions.** All three cloud-init templates' `aptget()` wrapper now passes `-o Acquire::Retries=8` so transient `azure.archive.ubuntu.com` mirror failures (repeatedly hit in `mexicocentral`) retry instead of aborting the bootstrap under `set -e`.
+- **scheduler `openssh-lpk` LDAP-schema idempotency false-positive.** The bootstrap guard used a bare `ldapsearch` whose `# filter:`/`# requesting:` comment lines matched the `grep` for an existing schema, so a half-loaded schema looked "present" and was skipped, then later entries failed. The guard now uses `ldapsearch -LLL` + `grep '^dn:'` and tolerates `ldapmodify` rc=80 (schema already loaded).
 
 
 ## [0.24.20] - 2026-06-09

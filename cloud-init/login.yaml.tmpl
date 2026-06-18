@@ -68,7 +68,7 @@ write_files:
           sleep 5; i=$((i+1)); [ $i -gt 120 ] && break
         done
       }
-      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+      aptget() { apt_wait; apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=8 "$@"; }
 
       if [ -n "${EXTRA_PACKAGES:-}" ]; then
         aptget install -y ${EXTRA_PACKAGES}

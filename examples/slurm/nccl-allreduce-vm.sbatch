@@ -21,8 +21,12 @@ set -euo pipefail
 
 HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 2>/dev/null | head -1)
 [ -n "${HPCX_DIR}" ] || { echo "HPC-X not found under /opt" >&2; exit 1; }
+# HPC-X's hpcx-init.sh references unbound vars (e.g. HPCX_ENABLE_NCCL_MRC_PLUGIN);
+# relax `set -u` around sourcing it.
+set +u
 source "${HPCX_DIR}/hpcx-init.sh"
 hpcx_load
+set -u
 
 export NCCL_DEBUG=INFO
 export NCCL_IB_HCA=mlx5_ib

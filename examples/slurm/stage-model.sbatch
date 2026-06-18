@@ -24,17 +24,17 @@ MODEL_REPO=${1:-neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8}
 DEST_PREFIX=${2:-llama-3.1-8b-fp8}
 SCRATCH=${AZCLUSTER_USER_NVME:-/mnt/nvme/users/${USER}}/models
 
-mkdir -p "${SCRATCH}"
-if [ ! -d "${AZCLUSTER_USER_NVME:-/mnt/nvme/users/${USER}}/hfvenv" ]; then
-  python3 -m venv "${AZCLUSTER_USER_NVME:-/mnt/nvme/users/${USER}}/hfvenv"
-fi
-source "${AZCLUSTER_USER_NVME:-/mnt/nvme/users/${USER}}/hfvenv/bin/activate"
-pip install -q -U huggingface_hub hf_transfer
-
+mkdir -p "${SCRATCH}/${DEST_PREFIX}"
+export MODEL_REPO DEST_PREFIX
 [ -f "${HOME}/.hf-token" ] && export HF_TOKEN="$(tr -d '[:space:]' < "${HOME}/.hf-token")"
 
+# Download inside a container so the host needs no python3-venv / pip.
+# Mirrors the python:3.11-slim initContainer in examples/aks/stage-model.yaml.
 echo "[stage] hf download ${MODEL_REPO} -> ${SCRATCH}/${DEST_PREFIX}"
-time hf download "${MODEL_REPO}" --local-dir "${SCRATCH}/${DEST_PREFIX}"
+srun --container-image=docker://python:3.11-slim \
+     --container-mounts="${SCRATCH}:/scratch" \
+     --export=ALL,MODEL_REPO,DEST_PREFIX,HF_TOKEN \
+     bash -c 'pip install -q -U "huggingface_hub[hf_transfer]" && HF_HUB_ENABLE_HF_TRANSFER=1 hf download "${MODEL_REPO}" --local-dir "/scratch/${DEST_PREFIX}"'
 du -sh "${SCRATCH}/${DEST_PREFIX}"
 
 echo "[stage] azcp copy -> ${AZCLUSTER_USER_BLOB_URL}/models/${DEST_PREFIX}/"
