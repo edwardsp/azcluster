@@ -85,6 +85,22 @@ kubectl delete -f blobcache-rdma.yaml
 kubectl delete job/azcp-upload
 ```
 
+## Inference benchmark — [`inference-vllm.yaml`](inference-vllm.yaml)
+
+Single-node vLLM serving Llama-3.1-8B-FP8 from a blobcache sidecar (model staged
+to Blob, hydrated onto ACStor NVMe), then `vllm bench serve` at concurrency 128.
+Live result on 1× ND H200: **9,840 tok/s output, 12.66 ms median TPOT, 67.97 ms
+median TTFT** — matching the Slurm walkthrough baseline (~9,863 tok/s @ 12.4 ms).
+Stage the model once (public, no HF token):
+
+```bash
+# in a Job: `pip install huggingface_hub && hf download
+#   neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8 --local-dir /scratch/m`
+# then azcp copy /scratch/m/ <data-container>/models/llama-3.1-8b-fp8/
+envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID}' < inference-vllm.yaml | kubectl apply -f -
+kubectl logs -f job/inference-vllm -c vllm
+```
+
 ## Using blobcache from a training job — [`training-blobcache.yaml`](training-blobcache.yaml)
 
 For a benchmark, run blobcache as a **per-job sidecar** in the training pod: a
