@@ -12,8 +12,8 @@ Every change MUST update three artifacts in lockstep:
 
 Additional doc surface:
 
-- **`doc/full-walkthrough-slurm-plan.md`** — canonical version-agnostic end-to-end walkthrough. Updated when an sbatch script changes or a new step is added. Every concrete sbatch lives here verbatim so version-specific walkthroughs (`doc/full-walkthrough-vX.Y.Z.md`) can reproduce.
-- **`doc/full-walkthrough-vX.Y.Z.md`** + matching `doc/full-walkthrough-vX.Y.Z/` chart directory — committed once per release that completes a clean end-to-end run. Latest: `v0.24.20`.
+- **`doc/walkthrough-plan.md`** — canonical version-agnostic end-to-end plan for both Slurm and AKS. Updated when a new example is added or a workflow changes. It references the runnable files under `examples/` rather than inlining scripts.
+- **`doc/full-walkthrough-vX.Y.Z.md`** + matching `doc/full-walkthrough-vX.Y.Z/` chart directory — committed once per release that completes a clean end-to-end run. Latest: `slurm-v0.25.0`, `aks-v0.25.0`.
 - **`doc/healthchecks.md`** — operator-facing reference for the `azhealthcheck` binary, the 5 checks, the Prometheus textfile exporter, and the Grafana dashboard wiring. Update when adding/removing a check or changing a severity classification.
 
 If a PR touches code but skips any of these three required artifacts (CHANGELOG, README, AGENTS), it is incomplete. The doc/ surface updates are required only when the underlying contract changes.
@@ -48,7 +48,7 @@ If a PR touches code but skips any of these three required artifacts (CHANGELOG,
 - **Never suppress errors silently.** No `let _ = ...` on `Result` without a justifying comment; no `#[allow(...)]` blanket; no `.unwrap()` on user input paths. `expect("...")` is acceptable when the message documents why the invariant holds.
 - **Never commit** unless the user explicitly asks. Force-add (`git add -f`) requires explicit user direction — the walkthrough docs under `doc/full-walkthrough-v*/` are gitignored-by-pattern but committed on user request once a clean run is captured.
 - **Autonomous versioning is enabled** (user directive): when a coherent unit of work is complete, verified, changelogged, and live-validated, the agent SHOULD bump the version, commit, tag, and push without waiting for per-release permission. Apply SemVer strictly: feature batch → minor; bugfix-only → patch; breaking → major.
-- **Walkthrough plan is the source of truth.** When debugging a failed walkthrough run, re-read `doc/full-walkthrough-slurm-plan.md` BEFORE proposing flag changes. The canonical command in the plan is what worked in the most-recent green release; deviations need explicit justification.
+- **Walkthrough plan is the source of truth.** When debugging a failed walkthrough run, re-read `doc/walkthrough-plan.md` BEFORE proposing flag changes. The canonical command in the plan is what worked in the most-recent green release; deviations need explicit justification.
 
 ## Verification Gates (before declaring "done")
 

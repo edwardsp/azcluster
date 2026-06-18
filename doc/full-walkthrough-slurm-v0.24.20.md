@@ -2,7 +2,7 @@
 
 End-to-end demo: 2-node ND96isr_H100_v5 cluster deploy → smoke → NCCL plain VM → **containerised NCCL with identical params** → DGXC sqsh pipeline (build on node → blob → IB broadcast) → **DGXC Megatron-Bridge Llama-3.1-8B training (8-GPU + 16-GPU)** → Llama-3.1-8B-FP8 vLLM inference → DeepSeek-R1-0528 FP8 SGLang TP=16 multi-node inference. Run on 2026-06-08 against `v2420walk` in `eastus`.
 
-Version-specific companion to [`doc/full-walkthrough-slurm-plan.md`](full-walkthrough-slurm-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
+Version-specific companion to [`doc/walkthrough-plan.md`](walkthrough-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
 
 ## What's new vs v0.24.12
 

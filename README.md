@@ -4,7 +4,7 @@
 
 > **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.24.20.md`](doc/full-walkthrough-slurm-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (2× ND H200 example runs from `examples/aks/`: NCCL 483.4 GB/s, training 506.4 TFLOP/s/GPU, vLLM 9,912 tok/s, DeepSeek SGLang TP=16 1,258.8 tok/s, DCGM→AMW observability).
+> **End-to-end walkthrough:** [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.25.0.md`](doc/full-walkthrough-slurm-v0.25.0.md) (latest live results: 2× ND H200 in mexicocentral, NCCL 485.6 GB/s, training 511.8 TFLOP/s/GPU, vLLM 9,918 tok/s, DeepSeek SGLang TP=16 1,574 tok/s). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (matched-params `cmpaks` run: NCCL 483.6 GB/s, training ~502 TFLOP/s/GPU, vLLM 9,888 tok/s, DeepSeek SGLang TP=16 1,280 tok/s).
 
 ## What it is
 
@@ -102,7 +102,7 @@ Tear down (releases H100 capacity quota immediately):
 azcluster delete demo
 ```
 
-See [`doc/full-walkthrough-slurm-plan.md`](doc/full-walkthrough-slurm-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down), with every sbatch script inlined and the chart-generation appendix.
+See [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down).
 
 ## Deploy options
 
@@ -406,11 +406,12 @@ examples/
   slurm/                 runnable Slurm sbatch workloads (NCCL, training, inference)
   aks/                   runnable AKS manifests (NCCL, training, inference, storage)
 doc/
-  full-walkthrough-slurm-plan.md       canonical version-agnostic walkthrough
-  full-walkthrough-slurm-v0.24.20.md   latest version-specific live run
-  full-walkthrough-slurm-v0.24.20/     PNG charts for above
-  full-walkthrough-aks-plan.md         canonical AKS (--target aks) walkthrough
+  walkthrough-plan.md                  canonical version-agnostic walkthrough
+  full-walkthrough-slurm-v0.25.0.md    latest Slurm live run (2x ND H200)
   full-walkthrough-aks-v0.25.0.md      latest AKS live run (2x ND H200)
+  full-walkthrough-slurm-v0.24.20.md   historical v0.24.20 Slurm run
+  full-walkthrough-slurm-v0.24.20/     PNG charts for above
+  healthchecks.md                      operator-facing health check reference
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
 .sisyphus/              planning artifacts (gitignored)

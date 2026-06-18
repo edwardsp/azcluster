@@ -2,7 +2,7 @@
 
 End-to-end demo: 2-node ND96isr_H100_v5 cluster deploy → smoke → NCCL → containerised NCCL multi-node → Llama-3.1-8B-FP8 vLLM inference → DeepSeek-R1-0528 FP8 SGLang TP=16 multi-node inference. Run on 2026-05-30 against `v2412walk` in `eastus`.
 
-Version-specific companion to [`doc/full-walkthrough-slurm-plan.md`](full-walkthrough-slurm-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
+Version-specific companion to [`doc/walkthrough-plan.md`](walkthrough-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
 
 ## Run summary
 
