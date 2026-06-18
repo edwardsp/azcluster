@@ -101,6 +101,21 @@ envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID}' < inference-vllm.yaml | kubectl ap
 kubectl logs -f job/inference-vllm -c vllm
 ```
 
+## Multi-node inference (SGLang TP=16) — [`inference-sglang-multinode.yaml`](inference-sglang-multinode.yaml)
+
+Two-node SGLang tensor-parallel (TP=16) serving across both GPU nodes, model
+distributed by a blobcache RDMA sidecar (peer chunks over InfiniBand). Mirrors
+run 6 of the Slurm walkthrough (DeepSeek-R1-0528 FP8 SGLang TP=16). `sglang-0` is
+the TP head (`--dist-init-addr sglang-0.sglang:5000`); each pod's privileged
+blobcache sidecar feeds the model in over IB while the sglang container holds all
+8 GPUs + 8 `rdma/ib` for the cross-node TP NCCL. Set `MODEL_PREFIX` to the staged
+model (e.g. `dsr1-fp8` for DeepSeek-R1, or `llama-3.1-8b-fp8` to smoke-test the
+multi-node path). `sglang-0` runs `sglang.bench_serving` and prints tok/s + TPOT.
+
+The cross-node TP=16 serving mechanism is live-validated on 2× ND H200 (server
+forms across both nodes over IB and serves); the headline DeepSeek-R1 number
+needs the ~640 GB model staged to Blob first.
+
 ## Using blobcache from a training job — [`training-blobcache.yaml`](training-blobcache.yaml)
 
 For a benchmark, run blobcache as a **per-job sidecar** in the training pod: a
