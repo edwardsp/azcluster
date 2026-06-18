@@ -154,21 +154,33 @@ azcluster purge-kv --name <name> --location <region> --yes
 
 ---
 
-## Slurm vs AKS — per-test results
+## Slurm vs AKS — per-test results (NOT a controlled comparison)
 
-These reference numbers are from the latest captures: Slurm
-[`full-walkthrough-slurm-v0.24.20.md`](full-walkthrough-slurm-v0.24.20.md) on **2× ND
-H100** (eastus) and AKS [`full-walkthrough-aks-v0.25.0.md`](full-walkthrough-aks-v0.25.0.md)
-on **2× ND H200** (mexicocentral). The deltas largely reflect **H100 → H200**, not
-Slurm-vs-AKS overhead.
+> ⚠️ **Read each column as an independent in-context result, not a head-to-head.**
+> These captures differ in three confounded ways, so the deltas do **not** isolate
+> "Slurm vs AKS":
+> - **Hardware:** Slurm [`...-slurm-v0.24.20.md`](full-walkthrough-slurm-v0.24.20.md)
+>   ran on **2× ND H100** (eastus); AKS [`...-aks-v0.25.0.md`](full-walkthrough-aks-v0.25.0.md)
+>   on **2× ND H200** (mexicocentral). H200 is the *same compute die* as H100 — only
+>   ~1.4× memory bandwidth + 1.76× capacity, so it does **not** explain a 2× throughput jump.
+> - **Software:** different container/library versions (notably a much newer SGLang on
+>   AKS, which alone accounts for most of the DeepSeek delta — TPOT 123→48 ms is far
+>   more than memory bandwidth predicts), and H200's larger KV-cache capacity lets it
+>   *sustain* high concurrency on the 671B model where H100 is capacity-throttled.
+> - **Harness:** the **training** rows are not the same benchmark — Slurm used the DGXC
+>   `dgxc-benchmarking` `llmb-run` harness; AKS used `azcluster train` (the CLI's own
+>   embedded Megatron-Bridge pretrain). Same model/precision/gbs nominally, different harness.
+>
+> A clean apples-to-apples comparison would require the same GPU SKU, the same container
+> image/library versions, and the same benchmark harness + bench parameters on both targets.
 
 | Test | Slurm (H100) | AKS (H200) |
 |---|---|---|
 | NCCL all-reduce (2-node, 16 GiB) | 440.21 GB/s plain-VM · 451.08 GB/s container | 483.36 GB/s container |
 | IB/SHARP | 8 NICs/node, no TCP fallback | 8 NICs/node, no TCP fallback |
-| Training Llama-3.1-8B (16 GPU) | 541.81 MODEL_TFLOP/s/GPU | 506.4 MODEL_TFLOP/s/GPU |
+| Training Llama-3.1-8B (16 GPU) — **different harness** | 541.81 TFLOP/s/GPU (DGXC llmb-run) | 506.4 TFLOP/s/GPU (`azcluster train`) |
 | vLLM Llama-3.1-8B-FP8 | 9,863 tok/s @ 12.38 ms TPOT | 9,912 tok/s @ 12.55 ms TPOT |
-| DeepSeek-R1 SGLang TP=16 (640 prompts, c64) | 487.81 tok/s @ 123.34 ms TPOT | 1,258.84 tok/s @ 47.92 ms TPOT |
+| DeepSeek-R1 SGLang TP=16 (640 prompts, c64) — **diff. SGLang ver.** | 487.81 tok/s @ 123.34 ms TPOT | 1,258.84 tok/s @ 47.92 ms TPOT |
 | Storage stage (azcp upload) | ~8.78 Gbps | 15.91 Gbps |
 | Model distribution over IB | azcp-cluster MPI broadcast | blobcache RDMA peer-fetch |
 | Observability | remote-write → AMW + Grafana | DCGM → managed Prometheus → AMW, `count=16` |
