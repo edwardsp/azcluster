@@ -38,6 +38,11 @@ HEAD_IP=$(getent hosts "${MASTER_HOST}" | awk '{print $1; exit}')
 
 export HEAD_IP MODEL_PREFIX
 
+SUMMARY_LOG="${SLURM_SUBMIT_DIR:-.}/sglang-dsr1-${SLURM_JOB_ID}-summary.log"
+# Multi-node SGLang SIGKILLs the non-head rank's server once the head finishes
+# the benchmark, so srun returns non-zero (137) even though the benchmark
+# completed and wrote its result. Treat "benchmark result emitted" as success.
+set +e
 srun --mpi=pmix \
   --container-image="${IMAGE}" \
   --container-mounts="${HOST_MODEL}:/models/${MODEL_PREFIX}" \
@@ -86,6 +91,18 @@ PY
     else
       wait "${server_pid}"
     fi
-  '
+  ' 2>&1 | tee "${SUMMARY_LOG}"
+rc=${PIPESTATUS[0]}
+set -e
 
-date -u
+echo "=== SGLang benchmark result ==="
+grep -iE 'Successful requests|Benchmark duration|Output token throughput|Median TPOT|Mean TPOT' "${SUMMARY_LOG}" || true
+if grep -qE 'Output token throughput \(tok/s\)' "${SUMMARY_LOG}"; then
+  echo "SGLANG_OK (benchmark completed; ignored non-head teardown rc=${rc})"
+  rm -f "${SUMMARY_LOG}"
+  date -u
+  exit 0
+fi
+echo "SGLANG_FAILED: no benchmark result (rc=${rc})" >&2
+rm -f "${SUMMARY_LOG}"
+exit "${rc}"
