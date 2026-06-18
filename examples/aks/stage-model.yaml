@@ -1,0 +1,83 @@
+# Stage a HuggingFace model to the per-cluster Blob container (one-time, per model).
+#
+# ACStor NVMe scratch -> `hf download` -> `azcp copy` to <data>/models/<DEST_PREFIX>/.
+# This is the Phase-1 "ingest" step the inference/SGLang examples consume via blobcache.
+#
+# EXAMPLE run with kubectl (NOT embedded in the azcluster binary):
+#
+#   azcluster kubeconfig <cluster> && export KUBECONFIG=~/.azcluster/kube/<cluster>.config
+#   export MI_CLIENT_ID=$(azcluster status <cluster> | awk '/kubelet client id:/{print $4}')
+#   export DATA_URL=$(azcluster status <cluster>     | awk '/data container:/{print $3}')
+#   # for gated/large models, create the HF token secret first (optional for public repos):
+#   kubectl create secret generic hf-token --from-file=token=hf_token.txt
+#
+#   # Llama-3.1-8B-FP8 (public, ~8.5 GB):
+#   export JOB_NAME=stage-llama MODEL_REPO=neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8 \
+#          DEST_PREFIX=llama-3.1-8b-fp8 SCRATCH_SIZE=60Gi
+#   # DeepSeek-R1-0528 (~640 GB): MODEL_REPO=deepseek-ai/DeepSeek-R1-0528 DEST_PREFIX=dsr1-fp8 SCRATCH_SIZE=900Gi
+#
+#   envsubst '${JOB_NAME} ${MODEL_REPO} ${DEST_PREFIX} ${SCRATCH_SIZE} ${MI_CLIENT_ID} ${DATA_URL}' \
+#     < stage-model.yaml | kubectl apply -f -
+#   kubectl wait --for=condition=complete job/${JOB_NAME} --timeout=3600s   # ends with STAGE_OK
+#
+# Live (2x ND H200): Llama-FP8 hf download 13.5 s + azcp upload 8.47 GiB @ 15.91 Gbps;
+# DeepSeek-R1-0528 642 GB downloaded + uploaded (azcp ~4 min).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: default
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        agentpool: gpu
+      volumes:
+        - name: scratch
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                annotations:
+                  localdisk.csi.acstor.io/accept-ephemeral-storage: "true"
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: local-csi
+                resources:
+                  requests:
+                    storage: ${SCRATCH_SIZE}
+      initContainers:
+        - name: downloader
+          image: python:3.11-slim
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -eu
+              pip install -q --no-cache-dir 'huggingface_hub[hf_transfer]'
+              [ -n "${HF_TOKEN:-}" ] && export HF_TOKEN="$(printf %s "$HF_TOKEN" | tr -d '[:space:]')" || true
+              echo "[stage] hf download ${MODEL_REPO} -> /scratch/m"
+              time hf download "${MODEL_REPO}" --local-dir /scratch/m
+              du -sh /scratch/m
+              echo DOWNLOAD_DONE
+          volumeMounts: [{ name: scratch, mountPath: /scratch }]
+      containers:
+        - name: uploader
+          image: ghcr.io/edwardsp/azcp/azcp-cluster:v0.4.3
+          env:
+            - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -eu
+              echo "[stage] azcp copy /scratch/m/ -> ${DATA_URL}/models/${DEST_PREFIX}/"
+              time azcp copy /scratch/m/ "${DATA_URL}/models/${DEST_PREFIX}/"
+              echo STAGE_OK
+          volumeMounts: [{ name: scratch, mountPath: /scratch }]

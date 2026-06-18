@@ -406,6 +406,8 @@ doc/
   full-walkthrough-slurm-plan.md       canonical version-agnostic walkthrough
   full-walkthrough-slurm-v0.24.20.md   latest version-specific live run
   full-walkthrough-slurm-v0.24.20/     PNG charts for above
+  full-walkthrough-aks-plan.md         canonical AKS (--target aks) walkthrough
+  full-walkthrough-aks-v0.25.0.md      latest AKS live run (2x ND H200)
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
 .sisyphus/              planning artifacts (gitignored)

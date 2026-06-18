@@ -94,9 +94,8 @@ median TTFT** — matching the Slurm walkthrough baseline (~9,863 tok/s @ 12.4 m
 Stage the model once (public, no HF token):
 
 ```bash
-# in a Job: `pip install huggingface_hub && hf download
-#   neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8 --local-dir /scratch/m`
-# then azcp copy /scratch/m/ <data-container>/models/llama-3.1-8b-fp8/
+# stage the model to Blob first (ACStor scratch -> hf download -> azcp copy):
+#   see stage-model.yaml — MODEL_REPO=neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8 DEST_PREFIX=llama-3.1-8b-fp8
 envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID}' < inference-vllm.yaml | kubectl apply -f -
 kubectl logs -f job/inference-vllm -c vllm
 ```
