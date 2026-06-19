@@ -4,7 +4,7 @@
 
 > **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.25.0.md`](doc/full-walkthrough-slurm-v0.25.0.md) (latest live results: 2× ND H200 in mexicocentral, NCCL 485.6 GB/s, training 511.8 TFLOP/s/GPU, vLLM 9,918 tok/s, DeepSeek SGLang TP=16 1,574 tok/s). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (matched-params `cmpaks` run: NCCL 483.6 GB/s, training ~502 TFLOP/s/GPU, vLLM 9,888 tok/s, DeepSeek SGLang TP=16 1,664 tok/s with the `ndv5-topo` NCCL topology — see the walkthrough for why it's required).
+> **End-to-end walkthrough:** [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.25.0.md`](doc/full-walkthrough-slurm-v0.25.0.md) (latest live results, `cmpsl8`, 2× ND H200 in mexicocentral, with per-GPU nvidia-smi charts: NCCL 483.26 GB/s containerized / 483.31 GB/s non-containerized, training 515 TFLOP/s/GPU, vLLM 9,880 tok/s, DeepSeek SGLang TP=16 1,529 tok/s). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (matched-params `cmpaks8` run: NCCL 482.9 GB/s, training 506 TFLOP/s/GPU, vLLM 9,839 tok/s, DeepSeek SGLang TP=16 1,603 tok/s with the `ndv5-topo` NCCL topology — plus a blobcache-over-InfiniBand graph showing node-1 fetched its full 708.6 GB copy of the 688 GB DeepSeek model 100% over IB RDMA from node-0 — see the walkthrough for why the topology file is required).
 
 ## What it is
 

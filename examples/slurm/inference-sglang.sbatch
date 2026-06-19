@@ -28,7 +28,7 @@ set -euo pipefail
 date -u
 
 IMAGE=${IMAGE:-docker://lmsysorg/sglang:v0.5.8-cu130}
-MODEL_PREFIX=${MODEL_PREFIX:-dsr1-fp8}
+export MODEL_PREFIX=${MODEL_PREFIX:-dsr1-fp8}
 HOST_MODEL=${AZCLUSTER_USER_NVME:-/mnt/nvme/users/${USER}}/models/${MODEL_PREFIX}
 [ -d "${HOST_MODEL}" ] || { echo "missing ${HOST_MODEL}; run stage-model + distribute first" >&2; exit 1; }
 
