@@ -8,7 +8,7 @@ Version-specific companion to [`doc/walkthrough-plan.md`](walkthrough-plan.md). 
 
 Two things this run nails that the v0.24.12 doc did not:
 
-1. **Container NCCL now uses the *identical* benchmark to plain VM** (`all_reduce_perf -b 16G -e 16G -N 10`, 16 ranks across 2 nodes). v0.24.12's container row was a different smoke (`1 GiB × 20 iters`), so the plain (461.6) and container (428.0) numbers were not directly comparable. Here they are an apples-to-apples matched pair: **plain 440.21 GB/s vs container 451.079 GB/s** — within ~2.5%, proving the Pyxis/Enroot container path reaches the same IB+SHARP fabric as bare metal (the gap is container overhead, not a TCP fallback).
+1. **Container NCCL now uses the *identical* benchmark to plain VM** (`all_reduce_perf -b 16G -e 16G -N 10`, 16 ranks across 2 nodes). v0.24.12's container row was a different smoke (`1 GiB × 20 iters`), so the plain (461.6) and container (428.0) numbers were not directly comparable. Here they are an apples-to-apples matched pair: **plain 440.21 GB/s vs container 451.079 GB/s** — within ~2.5%, proving the Pyxis/Enroot container path reaches the same IB+SHARP fabric as non-containerized VM (the gap is container overhead, not a TCP fallback).
 2. **DGXC training is exercised properly through the sqsh container pipeline** the user asked for — pull the NGC container, build the squashfs on a compute node, publish to the per-cluster blob, broadcast across nodes with `azcp-cluster`, then run Megatron-Bridge Llama-3.1-8B pretraining at both 8-GPU (1 node) and 16-GPU (2 node) scale. Both runs converge and hit **~542 MODEL_TFLOP/s/GPU with ~99.8 % scaling efficiency**.
 
 ## Run summary
@@ -34,7 +34,7 @@ Two things this run nails that the v0.24.12 doc did not:
 
 Net: all 15 stages verified end-to-end. The headline additions over v0.24.12 are stages 4–7 (DGXC sqsh pipeline + Megatron-Bridge training) and the matched-params NCCL pair (stages 8–9).
 
-## Key result — containerised NCCL reaches bare-metal IB
+## Key result — containerised NCCL reaches non-containerized IB
 
 The user's question was direct: *"so, you ran different nccl params with vm vs containerised? if so, make consistent (and document that in the plan). reproduce plain vm results."* Done. Both runs are now the exact same binary and flags:
 
@@ -52,7 +52,7 @@ driven by `srun --mpi=pmix --ntasks=16 --ntasks-per-node=8` across both nodes. T
 | RDMA plugin | NCCL RDMA Plugin v11 | NCCL RDMA Plugin v10 |
 | Ranks | 16 (2×8) | 16 (2×8) |
 
-Both ranks negotiate all 8 NDR400 NICs with SHARP in-network reduction and hit the same ~466.8 GB/s peak on the 16 GiB message. The container's slightly *higher* average is run-to-run noise on the ramp (the per-iteration table shows both variants occasionally dipping to ~410 GB/s on a single slow iteration). The takeaway: **the Pyxis/Enroot container path is not leaving performance on the table** — IB visibility inside the container (`MELLANOX_VISIBLE_DEVICES=all` + the enroot `99-mellanox.sh` hook) gives bare-metal fabric performance.
+Both ranks negotiate all 8 NDR400 NICs with SHARP in-network reduction and hit the same ~466.8 GB/s peak on the 16 GiB message. The container's slightly *higher* average is run-to-run noise on the ramp (the per-iteration table shows both variants occasionally dipping to ~410 GB/s on a single slow iteration). The takeaway: **the Pyxis/Enroot container path is not leaving performance on the table** — IB visibility inside the container (`MELLANOX_VISIBLE_DEVICES=all` + the enroot `99-mellanox.sh` hook) gives non-containerized fabric performance.
 
 ![NCCL plain VM](full-walkthrough-slurm-v0.24.20/nccl-plain-vm.png)
 

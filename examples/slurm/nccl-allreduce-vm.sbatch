@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #
-# Slurm-only bare-metal NCCL baseline: 2 nodes × 8 GPUs, no container.
+# Slurm-only non-containerized NCCL baseline: 2 nodes × 8 GPUs, no container.
 #
 # Run:
 #   azcluster scp <cluster> examples/slurm/nccl-allreduce-vm.sbatch :/shared/home/clusteradmin/

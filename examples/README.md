@@ -11,7 +11,7 @@ payload.
 
 | Workload | Slurm | AKS | Matched payload |
 |---|---|---|---|
-| NCCL plain VM | `slurm/nccl-allreduce-vm.sbatch` | — | Slurm-only bare-metal HPC-X baseline, 2 nodes × 8 GPUs |
+| NCCL plain VM | `slurm/nccl-allreduce-vm.sbatch` | — | Slurm-only non-containerized HPC-X baseline, 2 nodes × 8 GPUs |
 | NCCL container | `slurm/nccl-allreduce.sbatch` | `aks/nccl-allreduce-mpijob.yaml` | `ghcr.io/azure/ai-infrastructure-on-azure/nccl-test:latest`, `all_reduce_perf_mpi -b 16G -e 16G -f 2 -g 1 -N 10`, 16 ranks |
 | Megatron training | `slurm/training-megatron.sbatch` | `aks/training-megatron-pytorchjob.yaml` | `nvcr.io/nvidia/nemo:26.04.00`, shared `megatron-pretrain.py`, TP=1 PP=1 CP=2 GBS=256 MBS=1 TRAIN_ITERS=50 |
 | vLLM inference | `slurm/inference-vllm.sbatch` | `aks/inference-vllm.yaml` | `vllm/vllm-openai:latest`, `neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8`, concurrency 128 |

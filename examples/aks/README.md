@@ -156,14 +156,14 @@ blobcache sidecar feeds the model in over IB while the sglang container holds al
 model (e.g. `dsr1-fp8` for DeepSeek-R1, or `llama-3.1-8b-fp8` to smoke-test the
 multi-node path).
 
-**The `ndv5-topo` ConfigMap is required** (mounted at `/etc/topology`, referenced
-by `NCCL_TOPO_FILE`). Without the NDv5 topology, NCCL builds suboptimal
-GPU↔NIC↔NVLink channels and the latency-bound per-token decode all-reduce is
-~20% slower. Create it once from the committed topology file:
+**`NCCL_TOPO_FILE` is required for multi-node TP=16.** azcluster sets it
+automatically on Slurm (the HPC image ships the topology at `/opt/microsoft/`);
+AKS nodes use the plain Ubuntu image and lack it, so the example mounts it via
+the `ndv5-topo` ConfigMap. The committed `ndv5-topo.xml` is the canonical Azure
+file from [Azure/azhpc-images/topology](https://github.com/Azure/azhpc-images/tree/master/topology).
 
 ```bash
-kubectl create configmap ndv5-topo \
-  --from-file=ndv5-topo.xml=ndv5-topo.xml \
+kubectl create configmap ndv5-topo --from-file=ndv5-topo.xml=ndv5-topo.xml \
   --dry-run=client -o yaml | kubectl apply -f -
 
 envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID} ${MODEL_PREFIX}' \
@@ -173,9 +173,8 @@ kubectl rollout status statefulset/sglang --timeout=900s
 ```
 
 Live result on 2× ND H200 (DeepSeek-R1-0528 FP8, TP=16, 640 prompts, conc 64):
-**1,664 tok/s output, 36.6 ms median TPOT, 160.9 ms median TTFT** with the topo
-ConfigMap — vs **1,339 tok/s / 44.6 ms without it** (NCCL falls back to a generic
-topology). With the topo, AKS matches/exceeds the Slurm baseline (1,536 tok/s).
+**1,664 tok/s, 36.6 ms median TPOT** with the topo vs **1,339 tok/s / 44.6 ms
+without** it (NCCL falls back to a generic topology).
 
 ## Using blobcache from a training job — [`training-blobcache.yaml`](training-blobcache.yaml)
 

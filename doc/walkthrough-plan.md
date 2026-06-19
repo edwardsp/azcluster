@@ -9,7 +9,7 @@ This is the version-agnostic end-to-end plan for demonstrating `azcluster` on bo
 1. Provision a fresh Slurm or AKS cluster from a single CLI invocation.
 2. Validate that default users (Slurm) or native clients (AKS) can submit work without manual setup.
 3. Stage a large model to the cluster using the canonical storage path (HuggingFace → Blob → per-node NVMe).
-4. Demonstrate high-performance networking (NCCL) on bare-metal (Slurm) and inside containers (Slurm/AKS).
+4. Demonstrate high-performance networking (NCCL) directly on the VM (Slurm, non-containerized) and inside containers (Slurm/AKS).
 5. Run production-realistic inference benchmarks (vLLM, SGLang) at scale.
 6. Run distributed training benchmarks (Megatron-Bridge) and confirm near-linear scaling.
 7. Capture and view live telemetry (thermal, throttle, GPU utilization) in Managed Grafana.
@@ -18,7 +18,7 @@ This is the version-agnostic end-to-end plan for demonstrating `azcluster` on bo
 
 | Workload | Slurm Example | AKS Equivalent | Matched Payload |
 |---|---|---|---|
-| **NCCL plain VM** | `slurm/nccl-allreduce-vm.sbatch` | — | Slurm-only bare-metal HPC-X baseline |
+| **NCCL plain VM** | `slurm/nccl-allreduce-vm.sbatch` | — | Slurm-only non-containerized HPC-X baseline |
 | **NCCL container** | `slurm/nccl-allreduce.sbatch` | `aks/nccl-allreduce-mpijob.yaml` | `nccl-test:latest`, `all_reduce_perf_mpi`, 16 ranks |
 | **Megatron training** | `slurm/training-megatron.sbatch` | `aks/training-megatron-pytorchjob.yaml` | `nemo:26.04.00`, Llama-3.1-8B BF16 pretraining |
 | **vLLM inference** | `slurm/inference-vllm.sbatch` | `aks/inference-vllm.yaml` | `vllm-openai:latest`, Llama-3.1-8B-FP8 |
@@ -57,7 +57,7 @@ Provision the cluster and wait for the `status` command to report `READY`.
 
 ### 3. NCCL Validation
 Verify the InfiniBand fabric performance.
-- **Slurm (Bare Metal)**: `sbatch examples/slurm/nccl-allreduce-vm.sbatch`
+- **Slurm (non-containerized VM)**: `sbatch examples/slurm/nccl-allreduce-vm.sbatch`
 - **Slurm (Container)**: `sbatch examples/slurm/nccl-allreduce.sbatch`
 - **AKS (Container)**: `envsubst '${NODES}' < examples/aks/nccl-allreduce-mpijob.yaml | kubectl apply -f -`
 
@@ -117,4 +117,4 @@ This comparison uses identical hardware (2× Standard_ND96isr_H200_v5 in mexicoc
 
 **Takeaway**: NCCL, training, and vLLM match within ~2% between Slurm and AKS. Orchestration adds no measurable overhead on identical hardware.
 
-**DeepSeek SGLang — `NCCL_TOPO_FILE` is load-bearing on AKS.** The AKS sglang manifest mounts the `ndv5-topo` ConfigMap and sets `NCCL_TOPO_FILE=/etc/topology/ndv5-topo.xml`. Without the NDv5 topology, NCCL builds a generic GPU↔NIC↔NVLink graph and the latency-bound per-token TP=16 all-reduce is **~20% slower** (1,339 tok/s / 44.6 ms TPOT). With the topology, AKS reaches **1,664 tok/s / 36.6 ms TPOT**, matching/exceeding the Slurm baseline (1,536 tok/s — Slurm gets the same topology automatically via enroot). Root-caused on 2× ND H200 by adding the topo to AKS (1,339→1,664) and confirming the inverse on Slurm (`NCCL_IGNORE_CPU_AFFINITY=1` left Slurm unchanged at 1,539, so the benefit is NCCL channel/routing, not CPU pinning). An earlier draft of this plan mis-attributed the gap to generic Kubernetes-vs-bare-metal overhead — the real cause was the missing topology file.
+**Multi-node NCCL needs `NCCL_TOPO_FILE`.** Any cross-node collective (TP=16 decode especially) must point NCCL at the NDv5 topology (`/etc/topology/ndv5-topo.xml`); without it NCCL falls back to a generic GPU↔NIC↔NVLink graph and decode runs ~20% slower (1,339 vs 1,664 tok/s on 2× ND H200). **azcluster sets this automatically on Slurm** (enroot `environ.d` + `profile.d`); on AKS set it via the `ndv5-topo` ConfigMap — the example does. Same requirement on both targets, only auto-vs-manual differs.

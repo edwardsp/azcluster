@@ -29,7 +29,7 @@ azcluster exec cmpsl5 --user clusteradmin -- "sinfo"
 - Verified LDAP resolution (`getent passwd clusteradmin`) and home dir auto-creation on login.
 - Verified inter-node internal keypair propagation (alice can ssh login → gpu-0003 without operator key).
 
-## 2. NCCL validation (Bare Metal vs. Container)
+## 2. NCCL validation (non-containerized VM vs. Container)
 
 ### Plain VM (HPC-X)
 ```bash
@@ -42,7 +42,7 @@ sbatch examples/slurm/nccl-allreduce-vm.sbatch
 sbatch examples/slurm/nccl-allreduce.sbatch
 ```
 - **avg busbw 486.217 GB/s**, 8 IB/SHARP devices per node.
-- Zero container overhead; Pyxis/Enroot reached the same fabric performance as bare metal.
+- Zero container overhead; Pyxis/Enroot reached the same fabric performance as non-containerized VM.
 
 ## 3. Training (DGXC Megatron-Bridge, Llama-3.1-8B)
 
@@ -96,7 +96,7 @@ sbatch examples/slurm/inference-sglang.sbatch
 | vLLM Llama-3.1-8B-FP8 | 9918 tok/s | 9888 tok/s |
 | DeepSeek-R1 SGLang TP=16 | 1574 tok/s | 1664 tok/s (with `ndv5-topo`) |
 
-**DeepSeek SGLang — `NCCL_TOPO_FILE`:** the original AKS run got only 1,280 tok/s because the sglang example was missing the NDv5 NCCL topology (NCCL fell back to a generic GPU↔NIC↔NVLink graph, ~20% slower on the latency-bound TP=16 decode). Slurm gets the topo automatically via enroot. With the topo added to the AKS example (the `ndv5-topo` ConfigMap), AKS reaches **1,664 tok/s** — matching/exceeding Slurm. Confirmed by the inverse test (Slurm `NCCL_IGNORE_CPU_AFFINITY=1` unchanged → the benefit is NCCL channel/routing, not CPU pinning). See `doc/walkthrough-plan.md` and AGENTS.md.
+**`NCCL_TOPO_FILE`:** multi-node TP=16 needs the NDv5 topology. azcluster sets it automatically on Slurm (the HPC image ships `/opt/microsoft/ndv5-topo.xml`); the AKS example mounts the same canonical file (the `ndv5-topo` ConfigMap, from [Azure/azhpc-images/topology](https://github.com/Azure/azhpc-images/tree/master/topology)). Without it, AKS decode falls back to a generic topology and runs ~20% slower (1,339 vs 1,664 tok/s). See `doc/walkthrough-plan.md`.
 
 ## 8. Tear-down
 
