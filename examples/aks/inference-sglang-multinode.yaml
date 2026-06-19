@@ -142,6 +142,13 @@ spec:
             - { name: TRANSFORMERS_OFFLINE, value: "1" }
             - { name: GLOO_SOCKET_IFNAME, value: "eth0" }
             - { name: NCCL_IB_HCA, value: "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7" }
+            # NCCL_TOPO_FILE is load-bearing for multi-node TP=16 decode: without the
+            # NDv5 topology NCCL builds suboptimal GPU<->NIC<->NVLink channels and the
+            # latency-bound per-token all-reduce is ~20% slower (1339 vs 1664 tok/s on
+            # 2x ND H200). Provide it via the `ndv5-topo` ConfigMap (see README).
+            - { name: NCCL_TOPO_FILE, value: "/etc/topology/ndv5-topo.xml" }
+            - { name: NCCL_IB_PCI_RELAXED_ORDERING, value: "1" }
+            - { name: NCCL_MIN_NCHANNELS, value: "32" }
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -168,11 +175,13 @@ spec:
           volumeMounts:
             - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: HostToContainer }
             - { name: dshm, mountPath: /dev/shm }
+            - { name: ndv5topo, mountPath: /etc/topology, readOnly: true }
       volumes:
         - { name: fusemount, emptyDir: {} }
         - { name: dshm, emptyDir: { medium: Memory } }
         - name: bccfg
           configMap: { name: sglang-blobcache-config }
+        - { name: ndv5topo, configMap: { name: ndv5-topo } }
   volumeClaimTemplates:
     - metadata:
         name: cache

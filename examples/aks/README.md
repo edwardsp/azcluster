@@ -154,11 +154,28 @@ the TP head (`--dist-init-addr sglang-0.sglang:5000`); each pod's privileged
 blobcache sidecar feeds the model in over IB while the sglang container holds all
 8 GPUs + 8 `rdma/ib` for the cross-node TP NCCL. Set `MODEL_PREFIX` to the staged
 model (e.g. `dsr1-fp8` for DeepSeek-R1, or `llama-3.1-8b-fp8` to smoke-test the
-multi-node path). `sglang-0` runs `sglang.bench_serving` and prints tok/s + TPOT.
+multi-node path).
 
-The cross-node TP=16 serving mechanism is live-validated on 2× ND H200 (server
-forms across both nodes over IB and serves); the headline DeepSeek-R1 number
-needs the ~640 GB model staged to Blob first.
+**The `ndv5-topo` ConfigMap is required** (mounted at `/etc/topology`, referenced
+by `NCCL_TOPO_FILE`). Without the NDv5 topology, NCCL builds suboptimal
+GPU↔NIC↔NVLink channels and the latency-bound per-token decode all-reduce is
+~20% slower. Create it once from the committed topology file:
+
+```bash
+kubectl create configmap ndv5-topo \
+  --from-file=ndv5-topo.xml=ndv5-topo.xml \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID} ${MODEL_PREFIX}' \
+  < inference-sglang-multinode.yaml | kubectl apply -f -
+kubectl rollout status statefulset/sglang --timeout=900s
+# once sglang-0 /health is 200, bench (strip tokenizer auto_map; see header)
+```
+
+Live result on 2× ND H200 (DeepSeek-R1-0528 FP8, TP=16, 640 prompts, conc 64):
+**1,664 tok/s output, 36.6 ms median TPOT, 160.9 ms median TTFT** with the topo
+ConfigMap — vs **1,339 tok/s / 44.6 ms without it** (NCCL falls back to a generic
+topology). With the topo, AKS matches/exceeds the Slurm baseline (1,536 tok/s).
 
 ## Using blobcache from a training job — [`training-blobcache.yaml`](training-blobcache.yaml)
 

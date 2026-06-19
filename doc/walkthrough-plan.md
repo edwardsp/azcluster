@@ -113,8 +113,8 @@ This comparison uses identical hardware (2× Standard_ND96isr_H200_v5 in mexicoc
 | NCCL container (nccl-test:latest, 16 ranks) | 486.217 GB/s avg busbw | 483.584 GB/s avg busbw |
 | Megatron-Bridge Llama-3.1-8B training (16 GPUs) | ~511.8 MODEL_TFLOP/s/GPU | ~502 MODEL_TFLOP/s/GPU [session-captured] |
 | vLLM Llama-3.1-8B-FP8 (concurrency 128) | 9917.96 tok/s output | 9888 tok/s output [session-captured] |
-| DeepSeek-R1-0528 SGLang TP=16 (conc 64) | 1573.57 tok/s output | 1280.32 tok/s output (warm re-bench) |
+| DeepSeek-R1-0528 SGLang TP=16 (conc 64) | 1,536 tok/s output | 1,664 tok/s output |
 
 **Takeaway**: NCCL, training, and vLLM match within ~2% between Slurm and AKS. Orchestration adds no measurable overhead on identical hardware.
 
-**DeepSeek SGLang Caveat**: Slurm (1574 tok/s) is ~23% higher than AKS (1280 tok/s) on DeepSeek-R1 TP=16 despite identical params. Likely contributors are the AKS server being a warm 5-hour-old process, DeepGEMM JIT state, and the Kubernetes-vs-bare-metal multi-node tensor-parallel network path. Both are valid TP=16 runs.
+**DeepSeek SGLang — `NCCL_TOPO_FILE` is load-bearing on AKS.** The AKS sglang manifest mounts the `ndv5-topo` ConfigMap and sets `NCCL_TOPO_FILE=/etc/topology/ndv5-topo.xml`. Without the NDv5 topology, NCCL builds a generic GPU↔NIC↔NVLink graph and the latency-bound per-token TP=16 all-reduce is **~20% slower** (1,339 tok/s / 44.6 ms TPOT). With the topology, AKS reaches **1,664 tok/s / 36.6 ms TPOT**, matching/exceeding the Slurm baseline (1,536 tok/s — Slurm gets the same topology automatically via enroot). Root-caused on 2× ND H200 by adding the topo to AKS (1,339→1,664) and confirming the inverse on Slurm (`NCCL_IGNORE_CPU_AFFINITY=1` left Slurm unchanged at 1,539, so the benefit is NCCL channel/routing, not CPU pinning). An earlier draft of this plan mis-attributed the gap to generic Kubernetes-vs-bare-metal overhead — the real cause was the missing topology file.

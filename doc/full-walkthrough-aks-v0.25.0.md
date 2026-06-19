@@ -73,12 +73,15 @@ envsubst ... < examples/aks/inference-vllm.yaml | kubectl apply -f -
 ## 6. Inference — DeepSeek-R1-0528 SGLang TP=16 (multi-node)
 
 ```bash
+# NCCL_TOPO_FILE is required — without it decode is ~20% slower.
+kubectl create configmap ndv5-topo --from-file=ndv5-topo.xml=examples/aks/ndv5-topo.xml \
+  --dry-run=client -o yaml | kubectl apply -f -
 envsubst ... < examples/aks/inference-sglang-multinode.yaml | kubectl apply -f -
 ```
 
 - Aggregate 16 GPUs across 2 nodes into a single tensor-parallel worker.
-- **output 1,258.84 tok/s, median TPOT 47.92 ms, median TTFT 184.56 ms**.
-- Note the delta from Slurm (1574 tok/s); see `doc/walkthrough-plan.md` for contributors.
+- **output 1,664 tok/s, median TPOT 36.6 ms, median TTFT 160.9 ms** (with the `ndv5-topo` ConfigMap).
+- Without the topo ConfigMap NCCL uses a generic topology and decode drops to **1,339 tok/s / 44.6 ms** — the topology file is load-bearing for the latency-bound TP=16 decode. With it, AKS matches/exceeds the Slurm baseline (1,536). See `doc/walkthrough-plan.md`.
 
 ## 7. Controlled Comparison (aksm5 vs. cmpsl5)
 
@@ -87,7 +90,7 @@ envsubst ... < examples/aks/inference-sglang-multinode.yaml | kubectl apply -f -
 | NCCL container (16 ranks) | 483.4 GB/s | 486.2 GB/s |
 | Megatron training (16 GPUs) | 506.4 TFLOP/s/GPU | 511.8 TFLOP/s/GPU |
 | vLLM Llama-3.1-8B-FP8 | 9912 tok/s | 9918 tok/s |
-| DeepSeek-R1 SGLang TP=16 | 1259 tok/s | 1574 tok/s |
+| DeepSeek-R1 SGLang TP=16 (with `ndv5-topo`) | 1,664 tok/s | 1,536 tok/s |
 
 ## 8. Tear-down
 
