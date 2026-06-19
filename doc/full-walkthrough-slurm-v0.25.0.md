@@ -85,7 +85,7 @@ sbatch examples/slurm/inference-sglang.sbatch
 
 - Aggregate 16 GPUs across 2 nodes into a single tensor-parallel worker.
 - Weights served from NVMe scratch (broadcast in step 4).
-- **output 1573.57 tok/s, median TPOT 123.34 ms, median TTFT 45.1 ms** (concurrency 64).
+- **output 1573.57 tok/s, median TPOT 39.01 ms, median TTFT 162.9 ms** (concurrency 64).
 
 ## 7. Controlled Comparison (cmpsl5 vs. cmpaks)
 
@@ -94,9 +94,9 @@ sbatch examples/slurm/inference-sglang.sbatch
 | NCCL container (16 ranks) | 486.2 GB/s | 483.6 GB/s |
 | Megatron training (16 GPUs) | 511.8 TFLOP/s/GPU | 502.1 TFLOP/s/GPU |
 | vLLM Llama-3.1-8B-FP8 | 9918 tok/s | 9888 tok/s |
-| DeepSeek-R1 SGLang TP=16 | 1574 tok/s | 1280 tok/s |
+| DeepSeek-R1 SGLang TP=16 | 1574 tok/s | 1664 tok/s (with `ndv5-topo`) |
 
-**Note**: The ~23% delta in DeepSeek SGLang (Slurm 1574 vs AKS 1280) is attributed to warm-server state and network path differences on the multi-node TP=16 rendezvous. See `doc/walkthrough-plan.md` for full discussion.
+**DeepSeek SGLang — `NCCL_TOPO_FILE`:** the original AKS run got only 1,280 tok/s because the sglang example was missing the NDv5 NCCL topology (NCCL fell back to a generic GPU↔NIC↔NVLink graph, ~20% slower on the latency-bound TP=16 decode). Slurm gets the topo automatically via enroot. With the topo added to the AKS example (the `ndv5-topo` ConfigMap), AKS reaches **1,664 tok/s** — matching/exceeding Slurm. Confirmed by the inverse test (Slurm `NCCL_IGNORE_CPU_AFFINITY=1` unchanged → the benefit is NCCL channel/routing, not CPU pinning). See `doc/walkthrough-plan.md` and AGENTS.md.
 
 ## 8. Tear-down
 
