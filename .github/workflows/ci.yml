@@ -18,11 +18,12 @@ jobs:
       BICEP_VERSION: 'v0.43.8'
     steps:
       - uses: actions/checkout@v4
-      - name: Generate bicep/main.json (embedded at compile time)
+      - name: Generate bicep templates (embedded at compile time)
         run: |
           set -e
           az bicep install --version "${BICEP_VERSION}"
           az bicep build --file bicep/main.bicep --outfile bicep/main.json
+          az bicep build --file bicep/aks-main.bicep --outfile bicep/aks-main.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

@@ -28,11 +28,12 @@ jobs:
             cli_only: true
     steps:
       - uses: actions/checkout@v4
-      - name: Generate bicep/main.json (embedded at compile time)
+      - name: Generate bicep templates (embedded at compile time)
         run: |
           set -e
           az bicep install --version "${BICEP_VERSION}"
           az bicep build --file bicep/main.bicep --outfile bicep/main.json
+          az bicep build --file bicep/aks-main.bicep --outfile bicep/aks-main.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -98,8 +99,11 @@ jobs:
           set -e
           mkdir -p bicep
           bicep build bicep/main.bicep --outfile bicep/main.json
+          bicep build bicep/aks-main.bicep --outfile bicep/aks-main.json
           test -s bicep/main.json
+          test -s bicep/aks-main.json
           echo "==> main.json: $(wc -c < bicep/main.json) bytes"
+          echo "==> aks-main.json: $(wc -c < bicep/aks-main.json) bytes"
       - name: Package assets tarball
         run: |
           set -e
@@ -112,6 +116,7 @@ jobs:
           done
           tar -czf "dist/azcluster-assets-${VERSION}.tar.gz" -C staging assets
           cp bicep/main.json "dist/azcluster-main-${VERSION}.json"
+          cp bicep/aks-main.json "dist/azcluster-aks-main-${VERSION}.json"
       - name: Package dashboards tarball
         run: |
           set -e
