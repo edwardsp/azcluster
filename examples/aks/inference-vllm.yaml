@@ -1,0 +1,131 @@
+# Single-node Llama-3.1-8B-FP8 inference benchmark (vLLM), model served from a
+# per-job blobcache sidecar (staged in Blob, cached on ACStor NVMe).
+#
+# EXAMPLE run with kubectl (NOT embedded in the azcluster binary). Mirrors run 5
+# of the Slurm walkthrough (vLLM serve + benchmark_serving), AKS-native.
+#
+# Stage the model to Blob ONCE (public, no HF token) — edit azcp-upload.yaml's
+# prep step to `huggingface-cli download neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8
+# --local-dir /scratch/upload` and DEST_URL=<data container>/models/llama-3.1-8b-fp8/,
+# then apply it. After the model is in Blob:
+#
+#   azcluster kubeconfig <cluster> && export KUBECONFIG=~/.azcluster/kube/<cluster>.config
+#   export STORAGE_ACCOUNT=$(azcluster status <cluster> | awk '/storage account:/{print $3}')
+#   export MI_CLIENT_ID=$(azcluster status <cluster>   | awk '/kubelet client id:/{print $4}')
+#   envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID}' < inference-vllm.yaml | kubectl apply -f -
+#   kubectl logs -f job/inference-vllm -c vllm     # ends with the throughput + TPOT table
+#
+# The vllm container hydrates the model onto NVMe via blobcache, serves it
+# (TP=1), then runs `vllm bench serve` at concurrency 128 (ISL/OSL 1000) and
+# prints Output token throughput (tok/s) + Median TPOT — the Slurm baseline is
+# ~9,863 tok/s @ ~12.4 ms TPOT.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inference-vllm-config
+  namespace: default
+data:
+  blobcached.toml: |
+    [cache]
+    dir = "/cache"
+    max_bytes = 107374182400
+    chunk_size = 4194304
+    [azure]
+    workers = 8
+    block_size = 16777216
+    [cluster]
+    bind = "0.0.0.0:7771"
+    seeds = []
+    [transport]
+    kind = "tcp"
+    bind = "0.0.0.0:7772"
+    [stats]
+    bind = "0.0.0.0:7773"
+    [[mounts]]
+    name = "data"
+    mountpoint = "/mnt/blobcache/data"
+    account = "${STORAGE_ACCOUNT}"
+    container = "data"
+    prefix = ""
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: inference-vllm
+  namespace: default
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        agentpool: gpu
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: blobcached
+          image: ghcr.io/edwardsp/blobcache:main
+          restartPolicy: Always
+          securityContext:
+            privileged: true
+            capabilities: { add: ["SYS_ADMIN", "IPC_LOCK"] }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+            - { name: POD_IP, valueFrom: { fieldRef: { fieldPath: status.podIP } } }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -u
+              cp /etc/blobcached.toml /tmp/bc.toml
+              sed -i "s#^seeds = .*#&\nadvertise = \"http://${POD_IP}:7771\"#" /tmp/bc.toml
+              exec blobcached --config /tmp/bc.toml
+          volumeMounts:
+            - { name: cache, mountPath: /cache }
+            - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: Bidirectional }
+            - { name: bccfg, mountPath: /etc/blobcached.toml, subPath: blobcached.toml, readOnly: true }
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          securityContext:
+            capabilities: { add: ["IPC_LOCK"] }
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          env:
+            - { name: MODEL_DIR, value: "/mnt/blobcache/data/models/llama-3.1-8b-fp8" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "[vllm] hydrate model onto NVMe via blobcache"
+              curl -fsS -XPOST http://127.0.0.1:7773/hydrate -H content-type:application/json \
+                -d '{"mount":"data","path":"models/llama-3.1-8b-fp8","recursive":true}' || true
+              echo "[vllm] serving ${MODEL_DIR} (TP=1)"
+              vllm serve "${MODEL_DIR}" --served-model-name llama --port 8888 \
+                --tensor-parallel-size 1 --max-model-len 8192 --gpu-memory-utilization 0.9 &
+              for i in $(seq 1 120); do
+                python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health')" 2>/dev/null && break
+                sleep 5
+              done
+              echo "[vllm] server ready; running benchmark (conc=128, ISL/OSL=1000)"
+              vllm bench serve --backend vllm --model llama --base-url http://127.0.0.1:8888 \
+                --tokenizer "${MODEL_DIR}" \
+                --dataset-name random --random-input-len 1000 --random-output-len 1000 \
+                --random-range-ratio 0.2 --num-prompts 1280 --max-concurrency 128
+              echo "INFERENCE_VLLM_DONE"
+          volumeMounts:
+            - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: HostToContainer }
+            - { name: dshm, mountPath: /dev/shm }
+      volumes:
+        - { name: fusemount, emptyDir: {} }
+        - { name: dshm, emptyDir: { medium: Memory } }
+        - name: bccfg
+          configMap: { name: inference-vllm-config }
+        - name: cache
+          ephemeral:
+            volumeClaimTemplate:
+              metadata: { annotations: { localdisk.csi.acstor.io/accept-ephemeral-storage: "true" } }
+              spec: { accessModes: ["ReadWriteOnce"], storageClassName: local-csi, resources: { requests: { storage: 128Gi } } }

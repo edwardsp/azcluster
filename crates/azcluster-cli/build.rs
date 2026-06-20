@@ -18,4 +18,18 @@ fn main() {
              bicep build bicep/main.bicep --outfile bicep/main.json\n\n"
         );
     }
+
+    let aks_main_json = Path::new(manifest_dir).join("../../bicep/aks-main.json");
+    println!("cargo:rerun-if-changed={}", aks_main_json.display());
+
+    if !aks_main_json.exists() {
+        panic!(
+            "\n\n\
+             bicep/aks-main.json is missing — it is generated from Bicep and not committed.\n\
+             Build the AKS ARM template before compiling the CLI:\n\n    \
+             az bicep build --file bicep/aks-main.bicep --outfile bicep/aks-main.json\n\n\
+             (or, with the standalone Bicep CLI:)\n\n    \
+             bicep build bicep/aks-main.bicep --outfile bicep/aks-main.json\n\n"
+        );
+    }
 }

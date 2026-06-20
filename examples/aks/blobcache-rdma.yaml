@@ -1,0 +1,178 @@
+# blobcache 2-node example: peer-to-peer chunk reads over InfiniBand (RDMA/UCX).
+#
+# This is an EXAMPLE you run with kubectl against an azcluster AKS cluster — it is
+# NOT embedded in the azcluster binary. Fill the two ${...} placeholders from
+#   azcluster status <cluster>
+# (storage account + kubelet client id), then apply:
+#
+#   azcluster kubeconfig <cluster> && export KUBECONFIG=~/.azcluster/kube/<cluster>.config
+#   export STORAGE_ACCOUNT=$(azcluster status <cluster> | awk '/storage account:/{print $3}')
+#   export MI_CLIENT_ID=$(azcluster status <cluster>   | awk '/kubelet client id:/{print $4}')
+#   envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID}' < blobcache-rdma.yaml | kubectl apply -f -
+#   kubectl rollout status statefulset/blobcache-rdma --timeout=300s
+#
+# Two blobcached pods (one per GPU node) form a gossip cluster and use the RDMA
+# (UCX-over-InfiniBand) peer transport. The cache lives on ACStor local NVMe
+# (storageClassName local-csi). Pods are privileged, so they reach
+# /dev/infiniband directly and do NOT request the exclusive rdma/ib device
+# resource — leaving all 8 HCAs free for a co-scheduled NCCL/training job.
+#
+# Demonstrate p2p-over-IB (after both pods are Ready and gossip shows 2 members):
+#
+#   # 0) confirm 2-node cluster + RDMA transport
+#   kubectl exec blobcache-rdma-0 -- curl -s 127.0.0.1:7773/peers
+#
+#   # 1) populate node 0's NVMe cache from Azure Blob (origin fetch)
+#   kubectl exec blobcache-rdma-0 -- curl -s -XPOST 127.0.0.1:7773/hydrate \
+#     -H content-type:application/json -d '{"mount":"data","path":"","recursive":true}'
+#
+#   # 2) hydrate node 1 — chunks come FROM NODE 0 over InfiniBand, not from Blob
+#   kubectl exec blobcache-rdma-1 -- curl -s -XPOST 127.0.0.1:7773/hydrate \
+#     -H content-type:application/json -d '{"mount":"data","path":"","recursive":true}'
+#
+#   # 3) node 1's hydrate response lists the peer it fetched from; metrics confirm
+#   #    the bytes came over the RDMA peer transport (not blob origin):
+#   kubectl exec blobcache-rdma-1 -- curl -s 127.0.0.1:7773/metrics | grep -E 'peer_(fetch|bytes)|origin'
+#
+# Teardown:  kubectl delete -f blobcache-rdma.yaml   (or by name: statefulset/blobcache-rdma, svc, configmap)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blobcache-rdma
+  namespace: default
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: blobcache-rdma
+  ports:
+    - { name: gossip, port: 7771 }
+    - { name: peer, port: 7772 }
+    - { name: stats, port: 7773 }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blobcache-rdma-config
+  namespace: default
+data:
+  blobcached.toml: |
+    [cache]
+    dir = "/cache"
+    max_bytes = 51539607552
+    chunk_size = 4194304
+
+    [azure]
+    workers = 8
+    block_size = 16777216
+
+    [cluster]
+    bind = "0.0.0.0:7771"
+    seeds = ["http://blobcache-rdma-0.blobcache-rdma:7771", "http://blobcache-rdma-1.blobcache-rdma:7771"]
+
+    [transport]
+    kind = "rdma"
+    bind = "0.0.0.0:7772"
+    chunk_concurrency = 32
+    peer_concurrency = 8
+
+    [stats]
+    bind = "0.0.0.0:7773"
+
+    [[mounts]]
+    name = "data"
+    mountpoint = "/mnt/blobcache/data"
+    account = "${STORAGE_ACCOUNT}"
+    container = "data"
+    prefix = ""
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: blobcache-rdma
+  namespace: default
+spec:
+  serviceName: blobcache-rdma
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: blobcache-rdma
+  template:
+    metadata:
+      labels:
+        app: blobcache-rdma
+    spec:
+      nodeSelector:
+        agentpool: gpu
+      tolerations:
+        - operator: Exists
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: blobcache-rdma
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: blobcached
+          image: ghcr.io/edwardsp/blobcache:main
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN", "IPC_LOCK"]
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+            - { name: UCX_TLS, value: "rc,sm,self" }
+            - { name: UCX_NET_DEVICES, value: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1" }
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -u
+              cp /etc/blobcached.toml /tmp/bc.toml
+              sed -i "s#^seeds = .*#&\nadvertise = \"http://${POD_IP}:7771\"#" /tmp/bc.toml
+              exec blobcached --config /tmp/bc.toml
+          ports:
+            - { name: gossip, containerPort: 7771 }
+            - { name: peer, containerPort: 7772 }
+            - { name: stats, containerPort: 7773 }
+          startupProbe:
+            httpGet: { path: /healthz, port: 7773 }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /readyz, port: 7773 }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: cache, mountPath: /cache }
+            - name: fusemount
+              mountPath: /mnt/blobcache
+              mountPropagation: Bidirectional
+            - name: config
+              mountPath: /etc/blobcached.toml
+              subPath: blobcached.toml
+              readOnly: true
+      volumes:
+        - name: fusemount
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: blobcache-rdma-config
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+        annotations:
+          localdisk.csi.acstor.io/accept-ephemeral-storage: "true"
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-csi
+        resources:
+          requests:
+            storage: 64Gi

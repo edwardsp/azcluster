@@ -1,0 +1,59 @@
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  name: nic-cluster-policy
+spec:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: feature.node.kubernetes.io/pci-15b3.present
+              operator: In
+              values: ["true"]
+  ofedDriver:
+    repository: nvcr.io/nvidia/mellanox
+    image: doca-driver
+    version: doca3.3.0-26.01-1.0.0.0-0
+    env:
+      - name: OFED_BLACKLIST_MODULES_FILE
+        value: /host/etc/modprobe.d/blacklist-ofed-modules.conf
+    forcePrecompiled: false
+    upgradePolicy:
+      autoUpgrade: true
+      drain:
+        deleteEmptyDir: true
+        enable: true
+        force: true
+        timeoutSeconds: 300
+      maxParallelUpgrades: 1
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 20
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 30
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 30
+  docaTelemetryService:
+    repository: nvcr.io/nvidia/doca
+    image: doca_telemetry
+    version: 1.16.5-doca2.6.0-host
+  sriovDevicePlugin:
+    repository: ghcr.io/k8snetworkplumbingwg
+    image: sriov-network-device-plugin
+    version: v3.9.0
+    config: |
+      {
+        "resourceList": [
+          {
+            "resourcePrefix": "rdma",
+            "resourceName": "ib",
+            "selectors": {
+              "vendors": ["15b3"],
+              "linkTypes": ["infiniband"],
+              "isRdma": true
+            }
+          }
+        ]
+      }

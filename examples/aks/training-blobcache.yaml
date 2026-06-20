@@ -1,0 +1,201 @@
+# Training benchmark with a per-job blobcache sidecar (model in over IB) +
+# an azcp checkpoint-save sidecar (checkpoints out to Blob). PyTorchJob.
+#
+# EXAMPLE run with kubectl (NOT embedded in the azcluster binary). It composes
+# three validated building blocks per pod:
+#   1. blobcached SIDECAR (RDMA/UCX-over-InfiniBand peer transport) — FUSE-mounts
+#      the Blob 'data' container read-only; the trainer reads its model/dataset
+#      from /mnt/blobcache. Cache on ACStor local NVMe. Privileged, so it shares
+#      the IB HCAs without taking the exclusive rdma/ib resource (the trainer
+#      keeps all 8 for NCCL).
+#   2. trainer container — reads the model from /mnt/blobcache/<MODEL_PREFIX>,
+#      runs the workload, writes checkpoints to the shared ACStor scratch
+#      (/scratch/ckpt), then signals .DONE and waits for .UPLOADED.
+#   3. azcp CHECKPOINT SIDECAR — waits for .DONE, 'azcp copy's /scratch/ckpt to
+#      Blob (checkpoints/<RUN>/), signals .UPLOADED.
+#
+# Prereqs + values (see ../README.md):
+#   azcluster kubeconfig <cluster> && export KUBECONFIG=~/.azcluster/kube/<cluster>.config
+#   helm/kubectl already have the training-operator? Install once:
+#     kubectl apply --server-side -k "github.com/kubeflow/training-operator/manifests/overlays/standalone?ref=v1.8.1"
+#   (or use a node with git; the azcluster runCommand path is git-free.)
+#   export STORAGE_ACCOUNT=$(azcluster status <cluster> | awk '/storage account:/{print $3}')
+#   export MI_CLIENT_ID=$(azcluster status <cluster>   | awk '/kubelet client id:/{print $4}')
+#   export DATA_URL=$(azcluster status <cluster>       | awk '/data container:/{print $3}')
+#   # stage your model first with azcp-upload.yaml -> e.g. data/models/llama/
+#   envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID} ${DATA_URL}' < training-blobcache.yaml | kubectl apply -f -
+#   kubectl logs -f -l training.kubeflow.org/job-name=train-blobcache,training.kubeflow.org/replica-type=master
+#
+# The trainer command below is a PLACEHOLDER that proves the data path (reads the
+# staged bytes from blobcache, writes a checkpoint, runs the handshake). Replace
+# it with your real launcher — e.g. the Megatron-Bridge pretrain used by
+# the Megatron training example — keeping the /mnt/blobcache read and the /scratch/ckpt +
+# .DONE/.UPLOADED handshake.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: train-blobcache-config
+  namespace: default
+data:
+  blobcached.toml: |
+    [cache]
+    dir = "/cache"
+    max_bytes = 51539607552
+    chunk_size = 4194304
+    [azure]
+    workers = 8
+    block_size = 16777216
+    [cluster]
+    bind = "0.0.0.0:7771"
+    seeds = ["http://train-blobcache-master-0.train-blobcache:7771", "http://train-blobcache-worker-0.train-blobcache:7771"]
+    [transport]
+    kind = "rdma"
+    bind = "0.0.0.0:7772"
+    [stats]
+    bind = "0.0.0.0:7773"
+    [[mounts]]
+    name = "data"
+    mountpoint = "/mnt/blobcache/data"
+    account = "${STORAGE_ACCOUNT}"
+    container = "data"
+    prefix = ""
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: train-blobcache
+  namespace: default
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    training.kubeflow.org/job-name: train-blobcache
+  ports:
+    - { name: gossip, port: 7771 }
+    - { name: peer, port: 7772 }
+    - { name: stats, port: 7773 }
+---
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: train-blobcache
+  namespace: default
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template: &podtmpl
+        metadata:
+          labels:
+            training.kubeflow.org/job-name: train-blobcache
+        spec:
+          subdomain: train-blobcache
+          nodeSelector:
+            agentpool: gpu
+          tolerations:
+            - operator: Exists
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      training.kubeflow.org/job-name: train-blobcache
+                  topologyKey: kubernetes.io/hostname
+          initContainers:
+            - name: blobcached
+              image: ghcr.io/edwardsp/blobcache:main
+              restartPolicy: Always
+              securityContext:
+                privileged: true
+                capabilities: { add: ["SYS_ADMIN", "IPC_LOCK"] }
+              env:
+                - { name: RUST_LOG, value: "info" }
+                - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+                - { name: UCX_TLS, value: "rc,sm,self" }
+                - { name: UCX_NET_DEVICES, value: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1" }
+                - { name: POD_IP, valueFrom: { fieldRef: { fieldPath: status.podIP } } }
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -u
+                  cp /etc/blobcached.toml /tmp/bc.toml
+                  # PyTorchJob pods have no stable per-pod DNS, so discover peer
+                  # gossip endpoints from the headless service (exclude self).
+                  for i in $(seq 1 30); do
+                    peers=$(getent ahostsv4 train-blobcache 2>/dev/null | awk '{print $1}' | sort -u | grep -v "^${POD_IP}$")
+                    [ -n "${peers}" ] && break
+                    sleep 2
+                  done
+                  seeds=$(for ip in ${peers}; do printf '"http://%s:7771",' "${ip}"; done | sed 's/,$//')
+                  sed -i "s#^seeds = .*#seeds = [${seeds}]\nadvertise = \"http://${POD_IP}:7771\"#" /tmp/bc.toml
+                  exec blobcached --config /tmp/bc.toml
+              volumeMounts:
+                - { name: cache, mountPath: /cache }
+                - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: Bidirectional }
+                - { name: bccfg, mountPath: /etc/blobcached.toml, subPath: blobcached.toml, readOnly: true }
+            - name: azcp-ckpt
+              image: ghcr.io/edwardsp/azcp/azcp-cluster:v0.4.3
+              restartPolicy: Always
+              env:
+                - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+                - { name: DATA_URL, value: "${DATA_URL}" }
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -u
+                  until [ -f /scratch/ckpt/.DONE ]; do sleep 3; done
+                  azcp copy /scratch/ckpt/ "${DATA_URL}/checkpoints/train-blobcache/" \
+                    --recursive --workers 4 --concurrency 32 --block-size 16777216 --exclude-pattern '.DONE'
+                  touch /scratch/ckpt/.UPLOADED
+              volumeMounts:
+                - { name: scratch, mountPath: /scratch }
+          containers:
+            - name: pytorch
+              image: nvcr.io/nvidia/nemo:25.07.02
+              securityContext:
+                capabilities: { add: ["IPC_LOCK"] }
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  rdma/ib: 8
+              env:
+                - { name: MODEL_DIR, value: "/mnt/blobcache/data/models/llama" }
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -eu
+                  echo "[trainer] model staged at ${MODEL_DIR}; waiting for blobcache FUSE"
+                  for i in $(seq 1 60); do [ -d /mnt/blobcache/data ] && break; sleep 2; done
+                  mkdir -p /scratch/ckpt
+                  # >>> replace the next two lines with your real launcher (e.g. torchrun megatron-pretrain.py) <<<
+                  echo "[trainer] reading model from blobcache (over IB on cache miss) ..."; du -sh "${MODEL_DIR}" 2>/dev/null || true
+                  head -c 52428800 /dev/urandom > /scratch/ckpt/model-final.pt
+                  echo "[trainer] checkpoint written; signalling DONE"; touch /scratch/ckpt/.DONE
+                  until [ -f /scratch/ckpt/.UPLOADED ]; do sleep 3; done
+                  echo "[trainer] checkpoint uploaded; done"
+              volumeMounts:
+                - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: HostToContainer }
+                - { name: cache, mountPath: /cache }
+                - { name: scratch, mountPath: /scratch }
+                - { name: dshm, mountPath: /dev/shm }
+          volumes:
+            - { name: fusemount, emptyDir: {} }
+            - { name: dshm, emptyDir: { medium: Memory } }
+            - name: bccfg
+              configMap: { name: train-blobcache-config }
+            - name: cache
+              ephemeral:
+                volumeClaimTemplate:
+                  metadata: { annotations: { localdisk.csi.acstor.io/accept-ephemeral-storage: "true" } }
+                  spec: { accessModes: ["ReadWriteOnce"], storageClassName: local-csi, resources: { requests: { storage: 256Gi } } }
+            - name: scratch
+              ephemeral:
+                volumeClaimTemplate:
+                  metadata: { annotations: { localdisk.csi.acstor.io/accept-ephemeral-storage: "true" } }
+                  spec: { accessModes: ["ReadWriteOnce"], storageClassName: local-csi, resources: { requests: { storage: 128Gi } } }
+    Worker:
+      replicas: 1
+      restartPolicy: OnFailure
+      template: *podtmpl

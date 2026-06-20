@@ -2,7 +2,7 @@
 
 End-to-end demo: 2-node ND96isr_H100_v5 cluster deploy → smoke → NCCL → containerised NCCL multi-node → Llama-3.1-8B-FP8 vLLM inference → DeepSeek-R1-0528 FP8 SGLang TP=16 multi-node inference. Run on 2026-05-30 against `v2412walk` in `eastus`.
 
-Version-specific companion to [`doc/full-walkthrough-plan.md`](full-walkthrough-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
+Version-specific companion to [`doc/walkthrough-plan.md`](walkthrough-plan.md). Plan = what we run and why. This doc = actual commands, timings, charts, and `sacct` output from one clean run.
 
 ## Run summary
 
@@ -133,7 +133,7 @@ Result:
 
 **461.61 GB/s avg busbw** across the 10-iteration ramp. Single-rank-per-GPU, 2 nodes × 8 ranks = 16 ranks. NDR400 IB fabric end-to-end, SHARP enabled.
 
-![NCCL plain VM](full-walkthrough-v0.24.12/nccl-plain-vm.png)
+![NCCL plain VM](full-walkthrough-slurm-v0.24.12/nccl-plain-vm.png)
 
 ## 3a. NeMo container — single-node smoke
 
@@ -163,7 +163,7 @@ all_reduce size=1GiB iters=20 elapsed=0.094s algbw=228.29 GB/s avg busbw=428.05 
 
 **428.05 GB/s avg busbw**, 16 ranks across 2 nodes inside Pyxis containers.
 
-![NCCL container multinode](full-walkthrough-v0.24.12/nccl-container-multinode.png)
+![NCCL container multinode](full-walkthrough-slurm-v0.24.12/nccl-container-multinode.png)
 
 ## 4. Storage pipeline — Llama 3.1 8B FP8
 
@@ -214,7 +214,7 @@ Median TPOT (ms):                        12.06
 
 **10,118 tok/s output throughput, 12.06 ms median TPOT** on a single H100. Slightly ahead of v2410walk's 9,980 tok/s — within run-to-run noise.
 
-![Llama-3.1-8B-FP8 vLLM](full-walkthrough-v0.24.12/llama-fp8-vllm.png)
+![Llama-3.1-8B-FP8 vLLM](full-walkthrough-slurm-v0.24.12/llama-fp8-vllm.png)
 
 ## 6. Storage pipeline — DeepSeek-R1-0528 FP8 (642 GiB)
 
@@ -270,7 +270,7 @@ Mean ITL (ms):                           121.65
 
 For comparison: SemiAnalysis publishes `dsr1-fp8-h100-dynamo-sglang` for the *disaggregated* prefill+decode variant via NVIDIA's Dynamo orchestrator. Ours is the *aggregated* configuration (one TP=16 worker doing both phases) — simpler, no Dynamo dependency, lower aggregate throughput than disagg numbers would publish. Deliberate scope.
 
-![DSR1 SGLang TP=16](full-walkthrough-v0.24.12/dsr1-fp8-sglang.png)
+![DSR1 SGLang TP=16](full-walkthrough-slurm-v0.24.12/dsr1-fp8-sglang.png)
 
 The chart shows per-GPU power, temp, PIPE_TENSOR_ACTIVE, and SM_ACTIVE during the bench. PIPE_TENSOR_ACTIVE > 0 confirms the FP8 GEMMs are landing on H100 tensor cores natively.
 

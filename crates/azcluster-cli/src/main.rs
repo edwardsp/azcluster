@@ -1,3 +1,4 @@
+mod aks;
 mod arm;
 mod auth;
 mod bastion;
@@ -43,7 +44,8 @@ enum CliCommand {
     Exec(ExecArgs),
     Scp(ScpArgs),
     Logs(LogsArgs),
-    Validate(ValidateArgs),
+    /// Fetch the AKS cluster-admin kubeconfig and write it locally (AKS target only).
+    Kubeconfig(KubeconfigArgs),
     Monitor(MonitorArgs),
     Timings(TimingsArgs),
     TimingsCapture(TimingsCaptureArgs),
@@ -117,7 +119,7 @@ struct LoginArgs {
 }
 
 #[derive(Args)]
-struct DeployArgs {
+pub(crate) struct DeployArgs {
     #[arg(long)]
     name: String,
     #[arg(long)]
@@ -128,7 +130,7 @@ struct DeployArgs {
     login_public_ip: bool,
     #[arg(long)]
     allowed_ssh_cidrs: Option<String>,
-    #[arg(long, default_value = "v0.24.20")]
+    #[arg(long, default_value = "v0.25.0")]
     azcluster_version: String,
     #[arg(long, default_value = "edwardsp/azcluster")]
     azcluster_repo: String,
@@ -214,6 +216,9 @@ struct DeployArgs {
     /// azcp version to install on login + compute (https://github.com/edwardsp/azcp). Pinned per release; override for testing newer azcp builds.
     #[arg(long, default_value = "v0.4.5")]
     azcp_version: String,
+    /// Deployment backend. `slurm` (default) provisions a Slurm/Pyxis/Enroot HPC cluster; `aks` provisions an AKS GPU cluster with NVIDIA network + GPU operators and Kueue.
+    #[arg(long, default_value = "slurm", value_parser = ["slurm", "aks"])]
+    target: String,
 }
 
 #[derive(Args)]
@@ -223,8 +228,8 @@ struct ResumeArgs {
     name: String,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-struct PoolSpec {
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct PoolSpec {
     name: String,
     sku: String,
     count: u32,
@@ -407,6 +412,8 @@ mod tests {
             subscription_id: "s".into(),
             resource_group: "rg".into(),
             location: "loc".into(),
+            target: cluster_state::Target::Slurm,
+            aks: None,
             admin_username: "azureuser".into(),
             scheduler_private_ip: "10.42.1.4".into(),
             login_public_ip: public_ip.map(String::from),
@@ -564,6 +571,9 @@ struct ConnectArgs {
     name: String,
     #[arg(long, default_value_t = 8443)]
     local_port: u16,
+    /// AKS only: remote pod port for `azcluster tunnel`.
+    #[arg(long)]
+    remote_port: Option<u16>,
     #[arg(long)]
     identity: Option<PathBuf>,
     /// Hop through login to the scheduler VM. Mutually exclusive with --host.
@@ -600,7 +610,7 @@ struct ExecArgs {
     /// Disable auto-routing through Azure Bastion when no login public IP is set.
     #[arg(long, default_value_t = false)]
     no_bastion: bool,
-    #[arg(trailing_var_arg = true, required = true)]
+    #[arg(trailing_var_arg = true)]
     cmd: Vec<String>,
 }
 
@@ -643,28 +653,6 @@ struct LogsArgs {
 }
 
 #[derive(Args)]
-struct ValidateArgs {
-    name: String,
-    #[arg(long)]
-    identity: Option<PathBuf>,
-    /// Skip the container (Pyxis) smoke test.
-    #[arg(long, default_value_t = false)]
-    no_container: bool,
-    /// Run nvidia-smi via srun (requires a GPU pool with nodes up).
-    #[arg(long, default_value_t = false)]
-    gpu: bool,
-    /// Run 2-node variants: cross-node hostname, cross-node Pyxis container,
-    /// and (with --gpu) a bounded NCCL all-reduce via HPC-X. Requires >=2
-    /// idle nodes in the target partition. The NCCL check is tuned for
-    /// Azure ND H100 v5 (mlx5_ib + ndv5-topo.xml).
-    #[arg(long, default_value_t = false)]
-    multi_node: bool,
-    /// Slurm partition to target (defaults to the cluster's default partition).
-    #[arg(long)]
-    partition: Option<String>,
-}
-
-#[derive(Args)]
 struct ScaleArgs {
     name: String,
     pool: String,
@@ -674,6 +662,17 @@ struct ScaleArgs {
 #[derive(Args)]
 struct StatusArgs {
     name: String,
+}
+
+#[derive(Args)]
+struct KubeconfigArgs {
+    name: String,
+    /// Write the kubeconfig to this path instead of ~/.azcluster/kube/<name>.config.
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Print the kubeconfig to stdout instead of writing a file.
+    #[arg(long, default_value_t = false)]
+    print: bool,
 }
 
 #[derive(Args)]
@@ -806,7 +805,7 @@ fn main() -> Result<()> {
         CliCommand::Exec(args) => exec(args),
         CliCommand::Scp(args) => scp(args),
         CliCommand::Logs(args) => logs(args),
-        CliCommand::Validate(args) => validate(args),
+        CliCommand::Kubeconfig(args) => kubeconfig(args),
         CliCommand::Monitor(args) => monitor(args),
         CliCommand::Timings(args) => timings(args),
         CliCommand::TimingsCapture(args) => {
@@ -828,6 +827,7 @@ fn main() -> Result<()> {
 }
 
 const EMBEDDED_MAIN_TEMPLATE: &str = include_str!("../../../bicep/main.json");
+pub(crate) const EMBEDDED_AKS_TEMPLATE: &str = include_str!("../../../bicep/aks-main.json");
 
 fn resolve_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
     if let Some(p) = explicit {
@@ -850,6 +850,29 @@ fn resolve_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
             .with_context(|| format!("parse ARM JSON {}", p.display()));
     }
     serde_json::from_str(EMBEDDED_MAIN_TEMPLATE).context("parse embedded main.json")
+}
+
+pub(crate) fn resolve_aks_template(explicit: Option<PathBuf>) -> Result<serde_json::Value> {
+    if let Some(p) = explicit {
+        if !p.exists() {
+            bail!("template {} not found", p.display());
+        }
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase());
+        if ext.as_deref() != Some("json") {
+            bail!(
+                "--template {} must be an ARM JSON file (.json). Transpile bicep with: az bicep build --file <input>.bicep --outfile <output>.json",
+                p.display()
+            );
+        }
+        let raw = std::fs::read_to_string(&p)
+            .with_context(|| format!("read template {}", p.display()))?;
+        return serde_json::from_str(&raw)
+            .with_context(|| format!("parse ARM JSON {}", p.display()));
+    }
+    serde_json::from_str(EMBEDDED_AKS_TEMPLATE).context("parse embedded aks-main.json")
 }
 
 /// Get a valid Azure access token from the cache populated by `azcluster login`.
@@ -1135,7 +1158,14 @@ fn login(args: LoginArgs) -> Result<()> {
     Ok(())
 }
 
+fn deploy_aks(args: DeployArgs) -> Result<()> {
+    aks::deploy::deploy_aks(args)
+}
+
 fn deploy(args: DeployArgs) -> Result<()> {
+    if args.target == "aks" {
+        return deploy_aks(args);
+    }
     let template = resolve_template(args.template.clone())?;
 
     let sub_id = current_subscription_id()?;
@@ -1521,6 +1551,7 @@ fn resume(args: ResumeArgs) -> Result<()> {
                     .azcp_version
                     .clone()
                     .unwrap_or_else(|| "v0.4.5".into()),
+                target: "slurm".into(),
             };
             finalize_deploy(
                 &synthetic_args,
@@ -1577,6 +1608,24 @@ fn tag_resource_group_for_cluster(
     kv_name: &str,
     version: &str,
 ) -> Result<()> {
+    tag_resource_group_for_cluster_target(
+        arm,
+        rg_name,
+        cluster_name,
+        kv_name,
+        version,
+        Some("slurm"),
+    )
+}
+
+fn tag_resource_group_for_cluster_target(
+    arm: &arm::client::ArmClient,
+    rg_name: &str,
+    cluster_name: &str,
+    kv_name: &str,
+    version: &str,
+    target: Option<&str>,
+) -> Result<()> {
     let mut tags = std::collections::HashMap::new();
     tags.insert(
         cluster_resolver::TAG_MANAGED.to_string(),
@@ -1595,6 +1644,9 @@ fn tag_resource_group_for_cluster(
         cluster_resolver::TAG_DEPLOYED_AT.to_string(),
         chrono::Utc::now().to_rfc3339(),
     );
+    if let Some(target) = target {
+        tags.insert(cluster_resolver::TAG_TARGET.to_string(), target.to_string());
+    }
     arm.patch_resource_group_tags(rg_name, tags)
         .with_context(|| format!("patch tags on {rg_name}"))
 }
@@ -1635,6 +1687,8 @@ fn finalize_deploy(
         subscription_id: sub_id.to_string(),
         resource_group: resolved_rg.to_string(),
         location: args.location.clone(),
+        target: cluster_state::Target::Slurm,
+        aks: None,
         admin_username: "azureuser".into(),
         login_public_ip,
         scheduler_private_ip,
@@ -1856,8 +1910,20 @@ fn bastion_compute_proxy_command(
     ))
 }
 
+/// Resolve a cluster, rejecting AKS targets so Slurm-only verbs surface a kubectl pointer.
+fn resolve_slurm_cluster(name: &str) -> Result<ClusterState> {
+    let state = resolve_cluster(name)?;
+    if state.target == cluster_state::Target::Aks {
+        bail!(
+            "'{name}' is an AKS cluster; this command applies to Slurm clusters only. \
+             For AKS use `azcluster kubeconfig {name}` + kubectl, or `azcluster exec`/`azcluster logs`."
+        );
+    }
+    Ok(state)
+}
+
 fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
-    let state = resolve_cluster(&args.cluster)?;
+    let state = resolve_slurm_cluster(&args.cluster)?;
     if !state.bastion_enabled {
         bail!("cluster '{}' was not deployed with --bastion", args.cluster);
     }
@@ -1882,6 +1948,13 @@ fn bastion_proxy(args: BastionProxyArgs) -> Result<()> {
 
 fn ssh(args: ConnectArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        let node = args.host.as_deref().ok_or_else(|| {
+            anyhow!("AKS ssh opens a node-root debug shell; pass --host <nodeName>")
+        })?;
+        let client = aks::k8s::client::K8sClient::from_state(&state)?;
+        return aks::k8s::debug::node_shell(&client, node);
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
@@ -1953,6 +2026,24 @@ fn ssh(args: ConnectArgs) -> Result<()> {
 
 fn tunnel(args: ConnectArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        let target = args.host.as_deref().ok_or_else(|| {
+            anyhow!("AKS tunnel: pass --host <[namespace/]pod> --remote-port <podPort>")
+        })?;
+        let remote_port = args
+            .remote_port
+            .ok_or_else(|| anyhow!("AKS tunnel: pass --remote-port <podPort>"))?;
+        let (ns, pod) = aks::operate::split_ns_pod(target);
+        bail!(
+            "native port-forward to {ns}/{pod}:{remote_port} is not yet implemented: \
+             the Kubernetes WebSocket port-forward uses the `SPDY/3.1+portforward.k8s.io` \
+             tunneling subprotocol (a SPDY framing layer over the socket), tracked as a \
+             follow-up. Interim: `azcluster kubeconfig {}` then \
+             `kubectl port-forward -n {ns} {pod} {}:{remote_port}`.",
+            args.name,
+            args.local_port
+        );
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let forward = format!("{}:{}:8443", args.local_port, state.scheduler_private_ip);
     let mut cmd = Command::new("ssh");
@@ -2000,7 +2091,7 @@ fn tunnel(args: ConnectArgs) -> Result<()> {
 }
 
 fn scale(args: ScaleArgs) -> Result<()> {
-    let state = resolve_cluster(&args.name)?;
+    let state = resolve_slurm_cluster(&args.name)?;
     let vmss_name = format!("vmss-{}-{}", state.name, args.pool);
     if !state.compute_vmss_names.is_empty() && !state.compute_vmss_names.contains(&vmss_name) {
         bail!(
@@ -2107,6 +2198,10 @@ fn status(args: StatusArgs) -> Result<()> {
         );
         return Ok(());
     };
+
+    if state.target == cluster_state::Target::Aks {
+        return aks::status::status_aks(&state);
+    }
 
     println!("name:              {}", state.name);
     println!("resource group:    {}", state.resource_group);
@@ -2285,6 +2380,9 @@ fn delete(args: DeleteArgs) -> Result<()> {
 
 fn exec(args: ExecArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        return aks_exec(&state, &args);
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
     let connect_user = args.user.as_deref().unwrap_or(&state.admin_username);
     let jump_user = connect_user;
@@ -2375,6 +2473,14 @@ fn scp(args: ScpArgs) -> Result<()> {
         bail!("scp requires at least one source and one destination");
     }
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        bail!(
+            "`azcluster scp` targets Slurm clusters. For AKS, copy into a pod with \
+             `azcluster exec {0} --host <[ns/]pod> -- tar x ...` or stage data through the \
+             cluster blob with azcp (see examples/aks/).",
+            args.name
+        );
+    }
     let use_bastion = should_use_bastion(&state, args.no_bastion);
 
     let parsed: Vec<ScpPath> = args.paths.iter().map(|s| parse_scp_path(s)).collect();
@@ -2512,6 +2618,9 @@ fn resolve_scp_route(
 
 fn logs(args: LogsArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
+    if state.target == cluster_state::Target::Aks {
+        return aks_logs(&state, &args);
+    }
     let host = state.login_public_ip.as_deref().ok_or_else(|| {
         anyhow!(
             "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
@@ -2555,122 +2664,75 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn validate(args: ValidateArgs) -> Result<()> {
+fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
     let state = resolve_cluster(&args.name)?;
-    let use_bastion = should_use_bastion(&state, false);
-    let login_target = if use_bastion {
-        format!("{}@127.0.0.1", state.admin_username)
-    } else {
-        let host = state.login_public_ip.as_deref().ok_or_else(|| {
-            anyhow!(
-                "cluster '{}' has no login public IP and bastion is not enabled. \
-                 Redeploy with --login-public-ip or --bastion.",
-                args.name
-            )
-        })?;
-        format!("{}@{}", state.admin_username, host)
+    let aks = state.aks.as_ref().ok_or_else(|| {
+        anyhow!(
+            "`azcluster kubeconfig` is only supported on AKS clusters (deploy with --target aks)"
+        )
+    })?;
+    let arm = arm_client()?;
+    let kubeconfig =
+        arm.list_cluster_admin_credential(&state.resource_group, &aks.aks_cluster_name)?;
+    if args.print {
+        print!("{kubeconfig}");
+        return Ok(());
+    }
+    let path = match args.path {
+        Some(p) => p,
+        None => {
+            let dir = dirs::home_dir()
+                .ok_or_else(|| anyhow!("could not determine HOME"))?
+                .join(".azcluster")
+                .join("kube");
+            std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+            }
+            dir.join(format!("{}.config", state.name))
+        }
     };
-
-    let part = args
-        .partition
-        .as_deref()
-        .map(|p| format!(" --partition={p}"))
-        .unwrap_or_default();
-
-    let mut checks: Vec<(&str, String)> = vec![
-        ("sinfo", "sinfo -h -o '%P %D %T %N'".into()),
-        (
-            "srun hostname",
-            format!("timeout 60 srun{part} -N1 --time=1 hostname"),
-        ),
-    ];
-    if !args.no_container {
-        checks.push((
-            "srun pyxis alpine",
-            format!(
-                "timeout 180 srun{part} -N1 --time=2 \
-                 --container-image=docker://alpine:latest hostname"
-            ),
-        ));
+    std::fs::write(&path, &kubeconfig).with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", path.display()))?;
     }
-    if args.gpu {
-        checks.push((
-            "srun gpu nvidia-smi",
-            format!("timeout 180 srun{part} -N1 --gres=gpu:1 --time=2 nvidia-smi -L"),
-        ));
-    }
-    if args.multi_node {
-        checks.push((
-            "srun 2-node hostname",
-            format!(
-                "timeout 120 srun{part} -N2 --ntasks-per-node=1 --time=2 \
-                 bash -c 'hostname; sleep 1'"
-            ),
-        ));
-        if !args.no_container {
-            checks.push((
-                "srun 2-node pyxis alpine",
-                format!(
-                    "timeout 300 srun{part} -N2 --ntasks-per-node=1 --time=4 \
-                     --container-image=docker://alpine:latest hostname"
-                ),
-            ));
-        }
-        if args.gpu {
-            let script = "set -euo pipefail\n\
-                 HPCX_DIR=$(ls -d /opt/hpcx-*-gcc-doca_ofed-ubuntu24.04-cuda*-x86_64 \
-                 2>/dev/null | head -1)\n\
-                 if [ -z \"$HPCX_DIR\" ]; then echo 'HPC-X not found' >&2; exit 1; fi\n\
-                 if [ ! -x /opt/nccl-tests/build/all_reduce_perf ]; then \
-                 echo 'nccl-tests not found' >&2; exit 1; fi\n\
-                 source \"$HPCX_DIR/hpcx-init.sh\"; hpcx_load\n\
-                 export NCCL_IB_HCA=mlx5_ib\n\
-                 export NCCL_TOPO_FILE=/opt/microsoft/ndv5-topo.xml\n\
-                 export UCX_NET_DEVICES=mlx5_ib0:1,mlx5_ib1:1,mlx5_ib2:1,mlx5_ib3:1,\
-                 mlx5_ib4:1,mlx5_ib5:1,mlx5_ib6:1,mlx5_ib7:1\n\
-                 timeout 300 srun --mpi=pmix -N2 --ntasks-per-node=8 \
-                 --gpus-per-node=8 --exclusive --time=5 \
-                 /opt/nccl-tests/build/all_reduce_perf -b 8M -e 64M -f 2 -g 1";
-            let script = script.replace("\n                 ", "\n");
-            let script = if part.is_empty() {
-                script
-            } else {
-                script.replace("srun --mpi=pmix", &format!("srun{part} --mpi=pmix"))
-            };
-            let remote = format!("bash -lc {}", shell_quote(&script));
-            checks.push(("srun 2-node nccl-allreduce (NDv5)", remote));
-        }
-    }
-
-    let mut all_ok = true;
-    for (label, remote) in &checks {
-        eprintln!("==> [{label}] {remote}");
-        let mut cmd = Command::new("ssh");
-        cmd.args(["-A", "-o", "StrictHostKeyChecking=accept-new"]);
-        let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
-        cmd.args(["-i", &identity.display().to_string()]);
-        if use_bastion {
-            let exe = self_exe_path()?;
-            let proxy = format!(
-                "{} bastion-proxy --cluster {} --target login",
-                exe, args.name
-            );
-            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
-        }
-        cmd.arg(&login_target).arg(remote);
-        let st = cmd.status().context("spawn ssh validate")?;
-        if !st.success() {
-            eprintln!("==> [{label}] FAILED ({})", st);
-            all_ok = false;
-        } else {
-            eprintln!("==> [{label}] OK");
-        }
-    }
-    if !all_ok {
-        bail!("one or more validation checks failed");
-    }
-    eprintln!("==> all checks passed");
+    eprintln!(
+        "==> wrote admin kubeconfig for '{}' -> {}",
+        state.name,
+        path.display()
+    );
+    eprintln!("    export KUBECONFIG={}", path.display());
     Ok(())
+}
+
+fn aks_exec(state: &cluster_state::ClusterState, args: &ExecArgs) -> Result<()> {
+    let target = args.host.as_deref().ok_or_else(|| {
+        anyhow!("AKS exec: pass --host <[namespace/]pod> (and `-- <cmd>`), e.g. --host default/sglang-0 -- nvidia-smi")
+    })?;
+    let (ns, pod) = aks::operate::split_ns_pod(target);
+    let cmd = if args.cmd.is_empty() {
+        vec!["/bin/sh".to_string()]
+    } else {
+        args.cmd.clone()
+    };
+    let client = aks::k8s::client::K8sClient::from_state(state)?;
+    let code =
+        aks::k8s::exec::run_for_exit_code(&client, &ns, &pod, None, &cmd, args.cmd.is_empty())?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+fn aks_logs(state: &cluster_state::ClusterState, args: &LogsArgs) -> Result<()> {
+    let (ns, pod) = aks::operate::split_ns_pod(&args.component);
+    let client = aks::k8s::client::K8sClient::from_state(state)?;
+    aks::k8s::logs::run(&client, &ns, &pod, None, args.tail, args.follow)
 }
 
 fn monitor(args: MonitorArgs) -> Result<()> {
@@ -2871,7 +2933,8 @@ fn list(args: ListArgs) -> Result<()> {
     let sub_id = arm.subscription_id().to_string();
     let rgs = arm.list_resource_groups_by_tag(cluster_resolver::TAG_MANAGED, Some("true"))?;
 
-    let mut rows: Vec<(String, String, String, String, String)> = Vec::with_capacity(rgs.len());
+    let mut rows: Vec<(String, String, String, String, String, String)> =
+        Vec::with_capacity(rgs.len());
     for rg in &rgs {
         let rg_name = rg
             .get("name")
@@ -2902,17 +2965,31 @@ fn list(args: ListArgs) -> Result<()> {
         if cluster_name.is_empty() {
             continue;
         }
-        rows.push((cluster_name, location, rg_name, version, deployed_at));
+        let target = tags
+            .get(cluster_resolver::TAG_TARGET)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("slurm")
+            .to_string();
+        rows.push((
+            cluster_name,
+            location,
+            rg_name,
+            version,
+            deployed_at,
+            target,
+        ));
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
     if args.json {
         let arr: Vec<serde_json::Value> = rows
             .iter()
-            .map(|(n, loc, rg, ver, ts)| {
+            .map(|(n, loc, rg, ver, ts, tgt)| {
                 serde_json::json!({
                     "subscription": sub_id,
                     "name": n,
+                    "target": tgt,
                     "location": loc,
                     "resource_group": rg,
                     "version": ver,
@@ -2930,29 +3007,34 @@ fn list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
     let w_name = rows.iter().map(|r| r.0.len()).max().unwrap_or(4).max(4);
+    let w_tgt = rows.iter().map(|r| r.5.len()).max().unwrap_or(6).max(6);
     let w_loc = rows.iter().map(|r| r.1.len()).max().unwrap_or(8).max(8);
     let w_rg = rows.iter().map(|r| r.2.len()).max().unwrap_or(14).max(14);
     let w_ver = rows.iter().map(|r| r.3.len()).max().unwrap_or(7).max(7);
     println!(
-        "{:<wn$}  {:<wl$}  {:<wr$}  {:<wv$}  DEPLOYED AT",
+        "{:<wn$}  {:<wt$}  {:<wl$}  {:<wr$}  {:<wv$}  DEPLOYED AT",
         "NAME",
+        "TARGET",
         "LOCATION",
         "RESOURCE GROUP",
         "VERSION",
         wn = w_name,
+        wt = w_tgt,
         wl = w_loc,
         wr = w_rg,
         wv = w_ver,
     );
-    for (n, loc, rg, ver, ts) in &rows {
+    for (n, loc, rg, ver, ts, tgt) in &rows {
         println!(
-            "{:<wn$}  {:<wl$}  {:<wr$}  {:<wv$}  {}",
+            "{:<wn$}  {:<wt$}  {:<wl$}  {:<wr$}  {:<wv$}  {}",
             n,
+            tgt,
             loc,
             rg,
             ver,
             ts,
             wn = w_name,
+            wt = w_tgt,
             wl = w_loc,
             wr = w_rg,
             wv = w_ver,
@@ -2974,7 +3056,7 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
             admin,
             no_generate_keypair,
         } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_add(
                 &state,
                 &username,
@@ -2988,19 +3070,19 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
             )
         }
         UserCmd::Remove { cluster, username } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_remove(&state, &username)
         }
         UserCmd::List { cluster } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_list(&state)
         }
         UserCmd::Setadmin { cluster, username } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_setadmin(&state, &username, true)
         }
         UserCmd::Unsetadmin { cluster, username } => {
-            let state = resolve_cluster(&cluster)?;
+            let state = resolve_slurm_cluster(&cluster)?;
             user::user_setadmin(&state, &username, false)
         }
         UserCmd::Sshkey { cmd } => match cmd {
@@ -3009,7 +3091,7 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
                 username,
                 key_file,
             } => {
-                let state = resolve_cluster(&cluster)?;
+                let state = resolve_slurm_cluster(&cluster)?;
                 user::sshkey_add(&state, &username, &key_file)
             }
             SshkeyCmd::Remove {
@@ -3017,11 +3099,11 @@ fn user_dispatch(args: UserArgs) -> Result<()> {
                 username,
                 key_file,
             } => {
-                let state = resolve_cluster(&cluster)?;
+                let state = resolve_slurm_cluster(&cluster)?;
                 user::sshkey_remove(&state, &username, &key_file)
             }
             SshkeyCmd::List { cluster, username } => {
-                let state = resolve_cluster(&cluster)?;
+                let state = resolve_slurm_cluster(&cluster)?;
                 user::sshkey_list(&state, &username)
             }
         },

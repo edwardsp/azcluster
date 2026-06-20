@@ -2,9 +2,9 @@
 
 **Fast Rust-based Slurm cluster deployer for Azure.** Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~15 minutes wall-clock, no daemons on your laptop.
 
-> **Current release:** `v0.24.20`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
+> **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
 >
-> **End-to-end walkthrough:** [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-v0.24.20.md`](doc/full-walkthrough-v0.24.20.md) (latest live results: DGXC Megatron-Bridge Llama-3.1-8B training 541.8 MODEL_TFLOP/s/GPU @ 16 GPUs, NCCL plain VM 440.2 GB/s vs. matched-params NeMo container 451.1 GB/s, Llama-3.1-8B-FP8 vLLM 9,863 tok/s @ 12.38 ms TPOT, DeepSeek-R1-0528 SGLang TP=16 487.8 tok/s @ 123.34 ms TPOT).
+> **End-to-end walkthrough:** [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.25.0.md`](doc/full-walkthrough-slurm-v0.25.0.md) (latest live results, `cmpsl8`, 2× ND H200 in mexicocentral, with per-GPU nvidia-smi charts: NCCL 483.26 GB/s containerized / 483.31 GB/s non-containerized, training 515 TFLOP/s/GPU, vLLM 9,880 tok/s, DeepSeek SGLang TP=16 1,529 tok/s). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (matched-params `cmpaks8` run: NCCL 482.9 GB/s, training 506 TFLOP/s/GPU, vLLM 9,839 tok/s, DeepSeek SGLang TP=16 1,603 tok/s with the `ndv5-topo` NCCL topology — plus a blobcache-over-InfiniBand graph showing node-1 fetched its full 708.6 GB copy of the 688 GB DeepSeek model 100% over IB RDMA from node-0 — see the walkthrough for why the topology file is required).
 
 ## What it is
 
@@ -40,7 +40,7 @@ A deployed cluster has:
 Grab the prebuilt CLI from the latest release. Each release ships a versioned tarball plus a `SHA256SUMS` file:
 
 ```bash
-VERSION=v0.24.20
+VERSION=v0.25.0
 ARCH=x86_64-linux                       # or aarch64-darwin
 BASE=https://github.com/edwardsp/azcluster/releases/download/${VERSION}
 curl -fsSLO "${BASE}/azcluster-cli-${VERSION}-${ARCH}.tar.gz"
@@ -51,7 +51,7 @@ sudo install -m 0755 azcluster /usr/local/bin/azcluster
 azcluster --version
 ```
 
-Or build from source: `cargo build --release --workspace` → `target/release/azcluster`. Building from source requires the Bicep CLI (`az bicep` or standalone `bicep`) to generate `bicep/main.json` first — see [Development](#development). End users installing the prebuilt tarball need neither `az` nor Bicep.
+Or build from source: `cargo build --release --workspace` → `target/release/azcluster`. Building from source requires the Bicep CLI (`az bicep` or standalone `bicep`) to generate `bicep/main.json` and `bicep/aks-main.json` first — see [Development](#development). End users installing the prebuilt tarball need neither `az` nor Bicep.
 
 ### Prerequisites
 
@@ -91,8 +91,9 @@ azcluster timings demo                         # per-resource ARM timings
 Submit a job from the cluster:
 
 ```bash
-azcluster exec demo --user clusteradmin -- "sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch"
-# 16-rank NCCL all-reduce across 2 nodes in a NeMo container, ~430 GB/s avg busbw
+azcluster scp demo --user clusteradmin examples/slurm/nccl-allreduce.sbatch :/shared/home/clusteradmin/
+azcluster exec demo --user clusteradmin -- "sbatch nccl-allreduce.sbatch"
+# 16-rank NCCL all-reduce across 2 nodes in a NeMo container
 ```
 
 Tear down (releases H100 capacity quota immediately):
@@ -101,7 +102,7 @@ Tear down (releases H100 capacity quota immediately):
 azcluster delete demo
 ```
 
-See [`doc/full-walkthrough-plan.md`](doc/full-walkthrough-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down), with every sbatch script inlined and the chart-generation appendix.
+See [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down).
 
 ## Deploy options
 
@@ -145,6 +146,16 @@ azcluster deploy --name demo \
   --bastion
 ```
 
+**AKS target preview** (AKS + ND GPU pool + NVIDIA operators + Kueue; no Slurm commands yet):
+
+```bash
+azcluster deploy --target aks --name demo \
+  --location mexicocentral \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
+```
+
+The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. Monitoring is on by default: AKS managed Prometheus is linked to the per-cluster Azure Monitor Workspace, a DCGM ServiceMonitor scrapes `nvidia-dcgm-exporter`, and GPU/IB metrics are visible in Azure Managed Grafana; pass `--no-monitoring` to skip AMW/AMG and that scrape config. Workloads live under [`examples/aks/`](examples/aks/): run `nccl-allreduce-mpijob.yaml` with `envsubst ... | kubectl apply -f -` for the 2-node NCCL MPIJob, then install `training-operator.yaml`, create the `examples/megatron-pretrain.py` ConfigMap, and apply `training-megatron-pytorchjob.yaml` for the Llama-3.1-8B Megatron-Bridge benchmark. With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; the storage examples (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are also run with `kubectl`/`helm`, not embedded in the binary. `azcluster` provisions infrastructure only.
+
 **Mixed CPU + GPU pools** (Slurm sees both partitions):
 
 ```bash
@@ -183,12 +194,12 @@ azcluster resume --name demo           # waits for ARM, runs post-deploy hooks
 | `azcluster resume --name <name>` | Wait for a `--no-wait` or interrupted deploy to finish + run post-deploy hooks |
 | `azcluster status <name>` | Pool capacities + bootstrap probe (READY/in-progress) for login + scheduler |
 | `azcluster scale <name> <pool> <count>` | Resize a pool to an absolute node count: `azcluster scale demo gpu 2` |
-| `azcluster ssh <name> [--scheduler\|--host <node>] [--user <ldap>]` | Interactive shell |
+| `azcluster ssh <name> [--scheduler\|--host <node>] [--user <ldap>]` | Interactive shell. **AKS**: `--host <nodeName>` opens a privileged node-root debug shell via the Kubernetes API. |
 | `azcluster scp <name> <SRC>... <DST>` | Bastion-aware scp (remote paths: `[node]:path`, empty node = login) |
-| `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command |
-| `azcluster tunnel <name> <local:remote>` | Local TCP forward through login |
-| `azcluster validate <name> [--gpu] [--multi-node]` | `sinfo` + `srun hostname` + Pyxis import + (optionally) 2-node NCCL all-reduce |
-| `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl` |
+| `azcluster exec <name> [--scheduler\|--host <node>] [--user <ldap>] [-A] -- <cmd>` | One-shot command. **AKS**: `--host [namespace/]pod -- <cmd>` runs native Kubernetes exec (no local kubectl); omit `<cmd>` for `/bin/sh`. |
+| `azcluster tunnel <name> <local:remote>` | Local TCP forward through login. **AKS**: `--host [namespace/]pod --local-port <local> --remote-port <podPort>` forwards to an arbitrary pod port via the Kubernetes API. |
+| `azcluster kubeconfig <name> [--path P] [--print]` | AKS only: fetch the cluster-admin kubeconfig to `~/.azcluster/kube/<name>.config` for local `kubectl` |
+| `azcluster logs <name> --component {scheduler\|login\|<node>} [--tail N\|--follow]` | Tail `/var/log/azcluster/install.log` or `journalctl`. **AKS**: `--component [namespace/]pod` streams native Kubernetes pod logs. |
 | `azcluster monitor <name>` | Print the AMG Grafana URL |
 | `azcluster timings <name> [--last N] [--trend]` | Per-resource deploy times; sorted table or trend TSV |
 | `azcluster delete <name>` | Delete the resource group (async) |
@@ -210,7 +221,8 @@ azcluster ssh demo --user alice                              # → login VM
 azcluster ssh demo --host demo-gpu-0001 --user alice         # → compute via ProxyJump
 
 # Submit jobs as alice
-azcluster ssh demo --user alice -- sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch
+azcluster scp demo --user alice examples/slurm/nccl-allreduce.sbatch :/shared/home/alice/
+azcluster ssh demo --user alice -- sbatch nccl-allreduce.sbatch
 ```
 
 Notes:
@@ -291,7 +303,7 @@ flowchart LR
 
 Big datasets and model weights follow a two-phase canonical path. Phase 1 happens **once per model**: download from HuggingFace to NVMe, upload to the per-cluster blob. Phase 2 happens **every time you start a job**: broadcast from blob across all compute nodes in parallel over IB, then bind-mount into the container. The model persists in blob for the lifetime of the cluster, so phase 2 is the fast path — phase 1 is amortised.
 
-Two example sbatch templates ship under `/shared/examples/`.
+Runnable Slurm examples ship in the repo under [`examples/slurm/`](examples/slurm/); copy them to `/shared/home/<user>/` with `azcluster scp` before submitting.
 
 ### Phase 1 — one-time ingest (per model)
 
@@ -379,18 +391,27 @@ crates/
 bicep/
   main.bicep            subscription-scope entry, creates RG
   cluster.bicep         orchestrates per-cluster modules
+  aks-main.bicep        subscription-scope AKS target entry, creates RG
+  aks-cluster.bicep     AKS target orchestrator (AKS + VNet + KV)
   modules/              network, scheduler, login, compute, anf, amlfs,
-                        accounting, monitoring, keyvault, storage, bastion
+                        accounting, monitoring, keyvault, storage, bastion, aks
   main.json             ARM template embedded into the CLI binary (generated from main.bicep; not committed)
+  aks-main.json         AKS ARM template generated for the future --target aks path (not committed)
 cloud-init/
   scheduler.yaml.tmpl   slurmctld, slurmdbd, slapd LDAP, prometheus, NFS exports (test mode)
   login.yaml.tmpl       mounts /shared + /amlfs; slurm client + Pyxis + SSSD
   compute.yaml.tmpl     slurmd, Pyxis, Enroot, NCCL+IB tunings, dcgm-exporter, NVMe RAID-0
 grafana/dashboards/     node, slurm, gpu+ib, health (auto-imported post-deploy)
+examples/
+  slurm/                 runnable Slurm sbatch workloads (NCCL, training, inference)
+  aks/                   runnable AKS manifests (NCCL, training, inference, storage)
 doc/
-  full-walkthrough-plan.md       canonical version-agnostic walkthrough
-  full-walkthrough-v0.24.20.md   latest version-specific live run
-  full-walkthrough-v0.24.20/     PNG charts for above
+  walkthrough-plan.md                  canonical version-agnostic walkthrough
+  full-walkthrough-slurm-v0.25.0.md    latest Slurm live run (2x ND H200)
+  full-walkthrough-aks-v0.25.0.md      latest AKS live run (2x ND H200)
+  full-walkthrough-slurm-v0.24.20.md   historical v0.24.20 Slurm run
+  full-walkthrough-slurm-v0.24.20/     PNG charts for above
+  healthchecks.md                      operator-facing health check reference
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
 .sisyphus/              planning artifacts (gitignored)
@@ -404,16 +425,17 @@ AGENTS.md               operating manual for AI agents
 # Generate the ARM template first — the CLI build embeds it via include_str!
 # and fails with instructions if it is missing.
 az bicep build --file bicep/main.bicep --outfile bicep/main.json
+az bicep build --file bicep/aks-main.bicep --outfile bicep/aks-main.json
 
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-for f in bicep/main.bicep bicep/cluster.bicep bicep/modules/*.bicep; do
+for f in bicep/main.bicep bicep/cluster.bicep bicep/aks-main.bicep bicep/aks-cluster.bicep bicep/modules/*.bicep; do
   az bicep build --file "$f" --stdout > /dev/null
 done
 ```
 
-`bicep/main.json` is **generated, not committed** (it's gitignored). The CLI's `build.rs` embeds it via `include_str!` at compile time and fails the build with actionable instructions if it's absent, so anyone building from source must run `az bicep build --file bicep/main.bicep --outfile bicep/main.json` (or the standalone `bicep build bicep/main.bicep --outfile bicep/main.json`) after editing any `bicep/*.bicep`. CI and the release pipeline regenerate it from a pinned Bicep version on every run. End users who install the prebuilt tarball never need `az` or Bicep — the template is already baked into the published binary.
+`bicep/main.json` and `bicep/aks-main.json` are **generated, not committed** (they're gitignored). The CLI's `build.rs` checks both at compile time and fails with actionable instructions if either is absent, so anyone building from source must run the matching `az bicep build --file ... --outfile ...` command after editing Slurm or AKS Bicep. CI and the release pipeline regenerate templates from a pinned Bicep version on every run. End users who install the prebuilt tarball never need `az` or Bicep — generated templates are already baked into published binaries when their CLI path uses them.
 
 ## Releasing
 

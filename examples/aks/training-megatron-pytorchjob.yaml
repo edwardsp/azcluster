@@ -1,0 +1,112 @@
+# Megatron-Bridge Llama-3.1-8B mock-data training PyTorchJob.
+# Matched to ../slurm/training-megatron.sbatch.
+#
+# Install the trimmed pytorch-only training operator once:
+#
+#   kubectl apply -f training-operator.yaml
+#   kubectl wait -n kubeflow --for=condition=available deploy/training-operator --timeout=300s
+#
+# Create the shared training script ConfigMap from ../megatron-pretrain.py:
+#
+#   kubectl create configmap azcluster-llama-pretrain \
+#     --from-file=pretrain.py=../megatron-pretrain.py \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#
+# Submit the matched 2-node training benchmark:
+#
+#   export WORKER_REPLICAS=1 TRAIN_ITERS=50 GBS=256 CP=2
+#   envsubst '${WORKER_REPLICAS} ${TRAIN_ITERS} ${GBS} ${CP}' \
+#     < training-megatron-pytorchjob.yaml | kubectl apply -f -
+#   kubectl logs -f -l training.kubeflow.org/job-name=azcluster-llama-train,training.kubeflow.org/replica-type=master
+#
+# Watch for MODEL_TFLOP/s/GPU. Matched payload: nvcr.io/nvidia/nemo:26.04.00,
+# torchrun /scripts/pretrain.py, TP=1 PP=1 CP=2 GBS=256 MBS=1 TRAIN_ITERS=50.
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: azcluster-llama-train
+  namespace: default
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: nvcr.io/nvidia/nemo:26.04.00
+              securityContext:
+                capabilities:
+                  add: ["IPC_LOCK"]
+              env:
+                - { name: NCCL_DEBUG, value: "WARN" }
+                - { name: NCCL_SOCKET_IFNAME, value: "eth0" }
+                - { name: NCCL_IB_PCI_RELAXED_ORDERING, value: "1" }
+                - { name: NCCL_MIN_NCHANNELS, value: "32" }
+                - { name: NCCL_P2P_NET_CHUNKSIZE, value: "524288" }
+                - { name: NCCL_COLLNET_ENABLE, value: "1" }
+                - { name: TRAIN_ITERS, value: "${TRAIN_ITERS}" }
+                - { name: GBS, value: "${GBS}" }
+                - { name: MBS, value: "1" }
+                - { name: CP, value: "${CP}" }
+                - { name: TP, value: "1" }
+                - { name: PP, value: "1" }
+              command: ["bash", "-c"]
+              args:
+                - 'torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK --nproc_per_node=8 --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT /scripts/pretrain.py'
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  rdma/ib: 8
+              volumeMounts:
+                - { name: shm, mountPath: /dev/shm }
+                - { name: scripts, mountPath: /scripts }
+          volumes:
+            - name: shm
+              emptyDir:
+                medium: Memory
+            - name: scripts
+              configMap:
+                name: azcluster-llama-pretrain
+    Worker:
+      replicas: ${WORKER_REPLICAS}
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: nvcr.io/nvidia/nemo:26.04.00
+              securityContext:
+                capabilities:
+                  add: ["IPC_LOCK"]
+              env:
+                - { name: NCCL_DEBUG, value: "WARN" }
+                - { name: NCCL_SOCKET_IFNAME, value: "eth0" }
+                - { name: NCCL_IB_PCI_RELAXED_ORDERING, value: "1" }
+                - { name: NCCL_MIN_NCHANNELS, value: "32" }
+                - { name: NCCL_P2P_NET_CHUNKSIZE, value: "524288" }
+                - { name: NCCL_COLLNET_ENABLE, value: "1" }
+                - { name: TRAIN_ITERS, value: "${TRAIN_ITERS}" }
+                - { name: GBS, value: "${GBS}" }
+                - { name: MBS, value: "1" }
+                - { name: CP, value: "${CP}" }
+                - { name: TP, value: "1" }
+                - { name: PP, value: "1" }
+              command: ["bash", "-c"]
+              args:
+                - 'torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK --nproc_per_node=8 --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT /scripts/pretrain.py'
+              resources:
+                limits:
+                  nvidia.com/gpu: 8
+                  rdma/ib: 8
+              volumeMounts:
+                - { name: shm, mountPath: /dev/shm }
+                - { name: scripts, mountPath: /scripts }
+          volumes:
+            - name: shm
+              emptyDir:
+                medium: Memory
+            - name: scripts
+              configMap:
+                name: azcluster-llama-pretrain

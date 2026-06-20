@@ -1,0 +1,193 @@
+# Multi-node SGLang TP=16 inference across 2 GPU nodes, model served from a
+# blobcache sidecar (peer-distributed over InfiniBand). Mirrors run 6 of the
+# Slurm walkthrough (DeepSeek-R1-0528 FP8 SGLang TP=16), AKS-native.
+#
+# EXAMPLE run with kubectl (NOT embedded in the azcluster binary). Stage the
+# model to Blob first (see azcp-upload + the README), e.g. to
+# <data>/models/<MODEL_PREFIX>/. Then fill placeholders and apply:
+#
+#   azcluster kubeconfig <cluster> && export KUBECONFIG=~/.azcluster/kube/<cluster>.config
+#   export STORAGE_ACCOUNT=$(azcluster status <cluster> | awk '/storage account:/{print $3}')
+#   export MI_CLIENT_ID=$(azcluster status <cluster>   | awk '/kubelet client id:/{print $4}')
+#   export MODEL_PREFIX=dsr1-fp8           # blob prefix under <data>/models/
+#   envsubst '${STORAGE_ACCOUNT} ${MI_CLIENT_ID} ${MODEL_PREFIX}' < inference-sglang-multinode.yaml | kubectl apply -f -
+#   kubectl rollout status statefulset/sglang --timeout=600s   # TP=16 load + DeepGEMM JIT warmup can take 20-40 min for DeepSeek
+#   # once sglang-0 /health is 200, benchmark against the serving cluster.
+#   # Two gotchas (live-validated): (1) do NOT set HF_HUB_OFFLINE=1 — sglang's
+#   # `--dataset-name random` downloads ShareGPT from the Hub to seed prompts;
+#   # (2) DeepSeek's tokenizer_config.json carries an `auto_map` that the bench's
+#   # tokenizer loader tries to fetch from the Hub, so strip it into a writable dir:
+#   kubectl exec sglang-0 -c sglang -- bash -c 'mkdir -p /tmp/tok && \
+#     cp /mnt/blobcache/data/models/'"$MODEL_PREFIX"'/tokenizer.json \
+#        /mnt/blobcache/data/models/'"$MODEL_PREFIX"'/tokenizer_config.json /tmp/tok/ && \
+#     python3 -c "import json;p=\"/tmp/tok/tokenizer_config.json\";d=json.load(open(p));d.pop(\"auto_map\",None);json.dump(d,open(p,\"w\"))"'
+#   kubectl exec sglang-0 -c sglang -- \
+#     python3 -m sglang.bench_serving --backend sglang --host 127.0.0.1 --port 8888 \
+#     --model model --tokenizer /tmp/tok \
+#     --dataset-name random --random-input-len 1024 --random-output-len 1024 \
+#     --random-range-ratio 0.2 --num-prompts 640 --max-concurrency 64
+#   # Live (2x ND H200): 640 reqs, output 1258.84 tok/s, median TPOT 47.92 ms, TTFT 184.56 ms.
+#
+# sglang-0 is the TP head (dist-init-addr sglang-0.sglang:5000); both pods run
+# sglang.launch_server --tp 16 --nnodes 2 --node-rank {0,1}. Each pod has a
+# privileged blobcache RDMA sidecar (model in over IB, no rdma/ib taken) + the
+# sglang container holding all 8 GPUs + 8 rdma/ib for the cross-node TP NCCL.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sglang
+  namespace: default
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: sglang
+  ports:
+    - { name: gossip, port: 7771 }
+    - { name: dist, port: 5000 }
+    - { name: http, port: 8888 }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sglang-blobcache-config
+  namespace: default
+data:
+  blobcached.toml: |
+    [cache]
+    dir = "/cache"
+    max_bytes = 858993459200
+    chunk_size = 4194304
+    [azure]
+    workers = 8
+    block_size = 16777216
+    [cluster]
+    bind = "0.0.0.0:7771"
+    seeds = ["http://sglang-0.sglang:7771", "http://sglang-1.sglang:7771"]
+    [transport]
+    kind = "rdma"
+    bind = "0.0.0.0:7772"
+    [stats]
+    bind = "0.0.0.0:7773"
+    [[mounts]]
+    name = "data"
+    mountpoint = "/mnt/blobcache/data"
+    account = "${STORAGE_ACCOUNT}"
+    container = "data"
+    prefix = ""
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sglang
+  namespace: default
+spec:
+  serviceName: sglang
+  replicas: 2
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: sglang
+  template:
+    metadata:
+      labels:
+        app: sglang
+    spec:
+      nodeSelector:
+        agentpool: gpu
+      tolerations:
+        - operator: Exists
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: sglang
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: blobcached
+          image: ghcr.io/edwardsp/blobcache:main
+          securityContext:
+            privileged: true
+            capabilities: { add: ["SYS_ADMIN", "IPC_LOCK"] }
+          env:
+            - { name: RUST_LOG, value: "info" }
+            - { name: AZURE_CLIENT_ID, value: "${MI_CLIENT_ID}" }
+            - { name: UCX_TLS, value: "rc,sm,self" }
+            - { name: UCX_NET_DEVICES, value: "mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1" }
+            - { name: POD_IP, valueFrom: { fieldRef: { fieldPath: status.podIP } } }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -u
+              cp /etc/blobcached.toml /tmp/bc.toml
+              sed -i "s#^seeds = .*#&\nadvertise = \"http://${POD_IP}:7771\"#" /tmp/bc.toml
+              exec blobcached --config /tmp/bc.toml
+          volumeMounts:
+            - { name: cache, mountPath: /cache }
+            - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: Bidirectional }
+            - { name: bccfg, mountPath: /etc/blobcached.toml, subPath: blobcached.toml, readOnly: true }
+        - name: sglang
+          image: lmsysorg/sglang:v0.5.8-cu130
+          securityContext:
+            capabilities: { add: ["IPC_LOCK"] }
+          resources:
+            limits:
+              nvidia.com/gpu: 8
+              rdma/ib: 8
+          env:
+            - { name: MODEL_DIR, value: "/mnt/blobcache/data/models/${MODEL_PREFIX}" }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+            - { name: TRANSFORMERS_OFFLINE, value: "1" }
+            - { name: GLOO_SOCKET_IFNAME, value: "eth0" }
+            - { name: NCCL_IB_HCA, value: "mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7" }
+            # Multi-node NCCL needs the NDv5 topology or TP=16 decode is ~20% slower.
+            # azcluster auto-sets this on Slurm; on AKS use the ndv5-topo ConfigMap (README).
+            - { name: NCCL_TOPO_FILE, value: "/etc/topology/ndv5-topo.xml" }
+            - { name: NCCL_IB_PCI_RELAXED_ORDERING, value: "1" }
+            - { name: NCCL_MIN_NCHANNELS, value: "32" }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              rank="${HOSTNAME##*-}"
+              echo "[sglang] rank=${rank} host=${HOSTNAME} dist-init=sglang-0.sglang:5000"
+              for i in $(seq 1 60); do [ -d /mnt/blobcache/data ] && break; sleep 2; done
+              if [ "${rank}" = "0" ]; then
+                curl -fsS -XPOST http://127.0.0.1:7773/hydrate -H content-type:application/json \
+                  -d "{\"mount\":\"data\",\"path\":\"models/${MODEL_PREFIX}\",\"recursive\":true}" || true
+              fi
+              exec python3 -m sglang.launch_server \
+                --model-path "${MODEL_DIR}" --served-model-name model \
+                --host 0.0.0.0 --port 8888 \
+                --tp 16 --nnodes 2 --node-rank "${rank}" \
+                --dist-init-addr sglang-0.sglang:5000 \
+                --mem-fraction-static 0.85 --chunked-prefill-size 8192 \
+                --max-running-requests 64 --trust-remote-code \
+                --watchdog-timeout 1200 \
+                --attention-backend flashinfer
+          ports:
+            - { name: dist, containerPort: 5000 }
+            - { name: http, containerPort: 8888 }
+          volumeMounts:
+            - { name: fusemount, mountPath: /mnt/blobcache, mountPropagation: HostToContainer }
+            - { name: dshm, mountPath: /dev/shm }
+            - { name: ndv5topo, mountPath: /etc/topology, readOnly: true }
+      volumes:
+        - { name: fusemount, emptyDir: {} }
+        - { name: dshm, emptyDir: { medium: Memory } }
+        - name: bccfg
+          configMap: { name: sglang-blobcache-config }
+        - { name: ndv5topo, configMap: { name: ndv5-topo } }
+  volumeClaimTemplates:
+    - metadata:
+        name: cache
+        annotations:
+          localdisk.csi.acstor.io/accept-ephemeral-storage: "true"
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-csi
+        resources:
+          requests:
+            storage: 900Gi

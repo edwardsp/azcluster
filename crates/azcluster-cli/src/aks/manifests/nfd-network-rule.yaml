@@ -1,0 +1,18 @@
+apiVersion: nfd.k8s-sigs.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: nfd-network-rule
+spec:
+  rules:
+    - name: nfd-network-rule
+      labels:
+        feature.node.kubernetes.io/pci-15b3.present: "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor:
+              op: In
+              value: ["15b3"]
+            class:
+              op: In
+              value: ["0207"]

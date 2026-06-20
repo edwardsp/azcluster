@@ -4,6 +4,7 @@
 //! Replaces shell-out calls to `az` CLI with direct REST API calls.
 
 use anyhow::{anyhow, bail, Context, Result};
+use base64::Engine;
 use serde_json::{json, Value};
 use std::time::Duration;
 /// API versions for different Azure resource providers.
@@ -42,6 +43,38 @@ pub struct DeploymentOp {
     pub parent: String,
     pub depth: u8,
     pub op: Value,
+}
+
+/// Result of an AKS `runCommand` invocation. `exit_code` is the shell exit code
+/// of the command that ran inside the in-cluster pod (0 = success); a Succeeded
+/// `provisioning_state` only means the command FINISHED, not that it succeeded —
+/// callers MUST check `exit_code`.
+#[derive(Debug, Clone)]
+pub struct RunCommandResult {
+    pub exit_code: i64,
+    pub logs: String,
+    pub provisioning_state: String,
+}
+
+fn parse_run_command_result(v: &Value) -> Option<RunCommandResult> {
+    let props = v.get("properties")?;
+    let provisioning_state = props
+        .get("provisioningState")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    if provisioning_state.is_empty() {
+        return None;
+    }
+    Some(RunCommandResult {
+        exit_code: props.get("exitCode").and_then(|c| c.as_i64()).unwrap_or(-1),
+        logs: props
+            .get("logs")
+            .and_then(|l| l.as_str())
+            .unwrap_or("")
+            .to_string(),
+        provisioning_state,
+    })
 }
 
 /// Inspect a deployment-operation envelope. If its target is itself a
@@ -178,31 +211,45 @@ impl ArmClient {
         self
     }
 
-    /// Make a GET request to the ARM API. On 401 ExpiredAuthenticationToken,
-    /// transparently refresh the OAuth2 token (if a callback was installed) and
-    /// retry once. Long deploy polls (>75 min) outlive the token TTL otherwise.
+    /// Make a GET request to the ARM API. Retries transparently on (a) transient
+    /// network errors (connection reset / timeout during long polls), (b) 401
+    /// ExpiredAuthenticationToken (refreshing the OAuth2 token once), and (c) 429
+    /// / 5xx throttling. Long deploy/runCommand polls run for tens of minutes and
+    /// must not die on a single network blip.
     fn get(&self, url: &str) -> Result<Value> {
-        for attempt in 0..=1 {
-            let response = self
-                .client
-                .get(url)
-                .bearer_auth(self.access_token())
-                .send()
-                .context("Failed to send GET request")?;
+        const MAX_ATTEMPTS: usize = 6;
+        let mut refreshed = false;
+        for attempt in 0..MAX_ATTEMPTS {
+            let last = attempt + 1 == MAX_ATTEMPTS;
+            let response = match self.client.get(url).bearer_auth(self.access_token()).send() {
+                Ok(r) => r,
+                Err(e) => {
+                    if last {
+                        return Err(e).context("Failed to send GET request");
+                    }
+                    std::thread::sleep(Duration::from_secs(2 * (attempt as u64 + 1)));
+                    continue;
+                }
+            };
             let status = response.status();
             if status.is_success() {
                 return response.json().context("Failed to parse ARM response");
             }
             let body = response.text().unwrap_or_default();
-            if attempt == 0
+            if !refreshed
                 && Self::is_expired_token_error(status, &body)
                 && self.try_refresh_token()?
             {
+                refreshed = true;
+                continue;
+            }
+            if !last && (status.as_u16() == 429 || status.is_server_error()) {
+                std::thread::sleep(Duration::from_secs(2 * (attempt as u64 + 1)));
                 continue;
             }
             bail!("ARM GET failed ({status}): {body}");
         }
-        unreachable!()
+        bail!("ARM GET to {url} failed after {MAX_ATTEMPTS} attempts")
     }
 
     /// Make a PUT request to the ARM API.
@@ -796,6 +843,180 @@ impl ArmClient {
             None => Ok(()),
         }
     }
+
+    fn post_empty(&self, url: &str) -> Result<Value> {
+        for attempt in 0..=1 {
+            let response = self
+                .client
+                .post(url)
+                .bearer_auth(self.access_token())
+                .header(reqwest::header::CONTENT_LENGTH, "0")
+                .send()
+                .context("Failed to send POST request")?;
+            let status = response.status();
+            if status.is_success() {
+                return response.json().context("Failed to parse ARM response");
+            }
+            let body = response.text().unwrap_or_default();
+            if attempt == 0
+                && Self::is_expired_token_error(status, &body)
+                && self.try_refresh_token()?
+            {
+                continue;
+            }
+            bail!("ARM POST failed ({status}): {body}");
+        }
+        unreachable!()
+    }
+
+    pub fn list_cluster_admin_credential(
+        &self,
+        resource_group: &str,
+        cluster: &str,
+    ) -> Result<String> {
+        const AKS_API: &str = "2024-09-01";
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.ContainerService/managedClusters/{}/listClusterAdminCredential?api-version={}",
+            self.subscription_id, resource_group, cluster, AKS_API
+        );
+        let resp = self.post_empty(&url)?;
+        let b64 = resp
+            .get("kubeconfigs")
+            .and_then(|k| k.get(0))
+            .and_then(|k| k.get("value"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("listClusterAdminCredential returned no kubeconfig"))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("decode kubeconfig base64")?;
+        String::from_utf8(bytes).context("kubeconfig is not valid UTF-8")
+    }
+
+    pub fn register_feature(&self, provider_ns: &str, feature: &str) -> Result<Value> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.Features/providers/{}/features/{}/register?api-version=2021-07-01",
+            self.subscription_id, provider_ns, feature
+        );
+        self.post_empty(&url)
+    }
+
+    pub fn get_feature(&self, provider_ns: &str, feature: &str) -> Result<Value> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/Microsoft.Features/providers/{}/features/{}?api-version=2021-07-01",
+            self.subscription_id, provider_ns, feature
+        );
+        self.get(&url)
+    }
+
+    pub fn register_provider(&self, provider_ns: &str) -> Result<Value> {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{}/providers/{}/register?api-version=2022-09-01",
+            self.subscription_id, provider_ns
+        );
+        self.post_empty(&url)
+    }
+
+    /// Run a shell command inside an ephemeral pod in an AKS cluster via the
+    /// `runCommand` ARM action (kubectl + helm are preinstalled in the pod).
+    /// Polls `commandResults/{id}` to terminal state. ARM RBAC `.../runCommand/action`
+    /// is required; no laptop kubeconfig/helm/kubectl is involved.
+    pub fn aks_run_command(
+        &self,
+        resource_group: &str,
+        cluster: &str,
+        command: &str,
+        context_b64: Option<&str>,
+    ) -> Result<RunCommandResult> {
+        const AKS_API: &str = "2024-09-01";
+        let run_url = format!(
+            "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.ContainerService/managedClusters/{}/runCommand?api-version={}",
+            self.subscription_id, resource_group, cluster, AKS_API
+        );
+        let mut body = json!({ "command": command });
+        if let Some(ctx) = context_b64 {
+            body["context"] = json!(ctx);
+        }
+        let response = self
+            .client
+            .post(&run_url)
+            .bearer_auth(self.access_token())
+            .json(&body)
+            .send()
+            .context("Failed to send AKS runCommand POST")?;
+        let status = response.status();
+        if !status.is_success() {
+            let b = response.text().unwrap_or_default();
+            bail!("AKS runCommand POST failed ({status}): {b}");
+        }
+        // runCommand returns 202 with a `Location` header pointing at the
+        // commandResults resource; the 202 body is often empty, so headers are
+        // read first and the body is parsed leniently (no unconditional json()).
+        let header_url = response
+            .headers()
+            .get("location")
+            .or_else(|| response.headers().get("azure-asyncoperation"))
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let text = response.text().unwrap_or_default();
+        let body_val: Option<Value> = serde_json::from_str(&text).ok();
+        if let Some(v) = body_val.as_ref() {
+            if let Some(r) = parse_run_command_result(v) {
+                if matches!(r.provisioning_state.as_str(), "Succeeded" | "Failed") {
+                    return Ok(r);
+                }
+            }
+        }
+        let result_url = match header_url {
+            Some(u) => u,
+            None => {
+                let command_id = body_val
+                    .as_ref()
+                    .and_then(|v| v.get("id").or_else(|| v.get("name")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+                    .ok_or_else(|| {
+                        anyhow!("AKS runCommand: no Location header and no command id in response")
+                    })?;
+                format!(
+                    "https://management.azure.com/subscriptions/{}/resourceGroups/{}/providers/Microsoft.ContainerService/managedClusters/{}/commandResults/{}?api-version={}",
+                    self.subscription_id, resource_group, cluster, command_id, AKS_API
+                )
+            }
+        };
+        use std::time::{Duration, Instant};
+        const MAX_WAIT_SECS: u64 = 30 * 60;
+        const POLL_INTERVAL_SECS: u64 = 10;
+        let started = Instant::now();
+        loop {
+            let r = self
+                .client
+                .get(&result_url)
+                .bearer_auth(self.access_token())
+                .send()
+                .context("poll AKS runCommand result")?;
+            let st = r.status();
+            if st.is_success() {
+                let t = r.text().unwrap_or_default();
+                if let Ok(v) = serde_json::from_str::<Value>(&t) {
+                    if let Some(res) = parse_run_command_result(&v) {
+                        if matches!(
+                            res.provisioning_state.as_str(),
+                            "Succeeded" | "Failed" | "Canceled"
+                        ) {
+                            return Ok(res);
+                        }
+                    }
+                }
+            } else if st.as_u16() == 401 {
+                // Best-effort token refresh; the next poll iteration retries.
+                self.try_refresh_token().ok();
+            }
+            if started.elapsed().as_secs() > MAX_WAIT_SECS {
+                bail!("AKS runCommand on '{cluster}' still running after {MAX_WAIT_SECS}s");
+            }
+            std::thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+        }
+    }
 }
 
 /// Parse ISO8601 duration string (e.g., "PT1H30M45S") to seconds.
@@ -1058,5 +1279,36 @@ mod tests {
         ];
         let deduped = super::dedup_ops_by_target(ops);
         assert!(deduped.is_empty());
+    }
+
+    #[test]
+    fn run_command_result_parses_terminal_success_with_nonzero_exit() {
+        let v = json!({
+            "properties": {
+                "provisioningState": "Succeeded",
+                "exitCode": 1,
+                "logs": "helm: release already exists\n"
+            }
+        });
+        let r = super::parse_run_command_result(&v).expect("parsed");
+        assert_eq!(r.provisioning_state, "Succeeded");
+        assert_eq!(r.exit_code, 1);
+        assert!(r.logs.contains("already exists"));
+    }
+
+    #[test]
+    fn run_command_result_in_progress_has_no_exit_code() {
+        let v = json!({ "properties": { "provisioningState": "Running" } });
+        let r = super::parse_run_command_result(&v).expect("parsed");
+        assert_eq!(r.provisioning_state, "Running");
+        assert_eq!(r.exit_code, -1);
+        assert!(r.logs.is_empty());
+    }
+
+    #[test]
+    fn run_command_result_none_without_provisioning_state() {
+        let v = json!({ "properties": { "exitCode": 0 } });
+        assert!(super::parse_run_command_result(&v).is_none());
+        assert!(super::parse_run_command_result(&json!({})).is_none());
     }
 }

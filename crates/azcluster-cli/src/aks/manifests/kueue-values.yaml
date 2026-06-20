@@ -1,0 +1,4 @@
+controllerManager:
+  featureGates:
+    - name: TopologyAwareScheduling
+      enabled: true
