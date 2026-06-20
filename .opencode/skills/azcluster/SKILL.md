@@ -1,11 +1,15 @@
 ---
 name: azcluster
-description: "Deploy and operate azcluster Slurm/Pyxis/Enroot HPC-AI clusters on Azure (NDv5 H100/H200, multi-node NCCL, containerised MPI). Use for: deploying a cluster, ssh/exec/scp into login/scheduler/compute, scaling pools, running validation/NCCL tests, submitting Slurm jobs, managing LDAP users, monitoring (Grafana), reading install logs, tearing down, purging Key Vaults. Downloads the latest azcluster CLI from GitHub Releases — no local repo required. Also covers cloning the repo to debug cloud-init/Bicep/CLI internals."
+description: "Deploy and operate azcluster HPC-AI GPU clusters on Azure — either Slurm (Pyxis/Enroot) or Kubernetes (AKS) — on NDv5 H100/H200 with InfiniBand + NCCL. Use for: deploying a cluster (--target slurm|aks), ssh/exec/scp/tunnel into nodes (or into pods/nodes via the native Kubernetes operate client), fetching kubeconfig, scaling pools, NCCL/training/inference benchmarks, submitting Slurm jobs or applying AKS manifests, managing LDAP users, monitoring (Grafana), reading install logs, tearing down, purging Key Vaults. Downloads the latest azcluster CLI from GitHub Releases — no local repo required. Also covers cloning the repo to debug cloud-init/Bicep/CLI internals."
 ---
 
 # azcluster
 
-`azcluster` is a single Rust binary that deploys a production HPC/AI Slurm cluster on Azure (Slurm + Pyxis + Enroot, NDv5 H100/H200, IB + NCCL tunings, ANF `/shared`, per-cluster blob storage, Key Vault, LDAP multi-user, Grafana). It runs on your machine, authenticates to Azure via OAuth2 (no `az` CLI dependency), and calls ARM REST natively. The cluster runs entirely on Azure; there is no laptop-side daemon.
+`azcluster` is a single Rust binary that deploys a production HPC/AI GPU cluster on Azure — as either a **Slurm** cluster (`azcluster deploy`) or a **Kubernetes (AKS)** cluster (`azcluster deploy --target aks`). It runs on your machine, authenticates to Azure via OAuth2 (no `az` CLI dependency), and calls ARM REST natively. The cluster runs entirely on Azure; there is no laptop-side daemon.
+
+- **Slurm target:** Slurm + Pyxis + Enroot, NDv5 H100/H200, IB + NCCL tunings, ANF `/shared`, LDAP multi-user, Slurm accounting.
+- **AKS target:** managed Kubernetes, ND GPU pool, NVIDIA Network + GPU operators (`rdma/ib: 8`), Kueue + MPI/Training operators, Azure Container Storage + blobcache-over-IB, a **native Kubernetes operate client** (`exec`/`logs`/`ssh`/`tunnel` over the API — no laptop `kubectl`).
+- **Both share:** native ARM REST, per-cluster Azure Storage + Key Vault, Azure Monitor Workspace + Managed Grafana, and the same runnable benchmark workloads under `examples/{slurm,aks}/`.
 
 - **Repo:** https://github.com/edwardsp/azcluster (owner `edwardsp`)
 - **Issues / roadmap:** https://github.com/edwardsp/azcluster/issues
@@ -102,6 +106,7 @@ azcluster deploy --name demo \
 
 | Flag | Type / default | Notes |
 |---|---|---|
+| `--target {slurm,aks}` | `slurm` | Deployment backend: Slurm/Pyxis/Enroot HPC cluster, or an AKS GPU cluster (NVIDIA operators + Kueue) |
 | `--name <name>` | required | Cluster name; drives RG (`rg-azcluster-<name>`), VM/KV names |
 | `--location <region>` | required | Azure region for compute |
 | `--grafana-location <region>` | defaults to `--location` | AMG isn't in every region (e.g. use `uksouth` for `southafricanorth`) |
@@ -152,6 +157,18 @@ azcluster deploy --name demo --no-wait --bastion \
 azcluster resume --name demo     # waits for ARM + runs post-deploy hooks
 ```
 
+### AKS target deploy
+
+```bash
+azcluster deploy --target aks --name demo \
+  --location mexicocentral --grafana-location eastus \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
+```
+
+- Registers the subscription InfiniBand feature, deploys the parallel `aks-main.json` ARM template (AKS + system pool + ND GPU agent pool, driver owned by the GPU Operator), then installs **cert-manager → NVIDIA Network Operator → NVIDIA GPU Operator → Kueue → MPI-Operator → Training-Operator → Azure Container Storage (`local-csi`)** via AKS `runCommand` (server-side; nothing on your laptop).
+- AKS uses the **common flag subset**: `--target`, `--name`, `--location`, `--grafana-location`, `--pool`, `--monitoring`/`--no-monitoring`, `--storage`/`--no-storage` (+ `--storage-*`). Slurm-only flags (`--bastion`, `--shared-storage`, `--anf-*`, `--amlfs-*`, `--accounting`, `--scheduler-sku`, `--login-sku`) are ignored.
+- `Microsoft.Dashboard/grafana` isn't in every region — use `--grafana-location <supported-region>` (e.g. `eastus` when deploying GPU in `mexicocentral`).
+
 ---
 
 ## 4. Operator commands (authoritative surface)
@@ -165,12 +182,11 @@ azcluster resume --name demo     # waits for ARM + runs post-deploy hooks
 | `azcluster resume` | `--name <name>` | Finish a `--no-wait`/interrupted deploy + run hooks |
 | `azcluster status` | `<name>` | Pool capacities + bootstrap probe (READY / in-progress) |
 | `azcluster scale` | `<name> <pool> <count>` | Set pool to a **target absolute count**, e.g. `azcluster scale demo gpu 2` (NOT `0/2`) |
-| `azcluster ssh` | `<name> [--scheduler\|--host <node>] [-u/--user <ldap>] [--identity <path>] [--no-bastion] [--local-port <p>]` | Interactive shell |
-| `azcluster exec` | `<name> [--scheduler\|--host <node>] [-u/--user <ldap>] [-A/--forward-agent] [--no-bastion] -- <cmd...>` | One-shot remote command |
-| `azcluster scp` | `<name> [-r] [-p] [-i <key>] [-u <ldap>] [--no-bastion] <SRC>... <DST>` | scp-style; remote path `[node]:path`, empty node = login |
-| `azcluster tunnel` | `<name> <local-port> [--scheduler\|--host <node>] [-u <ldap>]` | Local TCP forward through login |
-| `azcluster validate` | `<name> [--gpu] [--multi-node] [--no-container] [--partition <p>] [--identity <path>]` | `sinfo` + `srun hostname` + Pyxis import + (opt) 2-node NCCL all-reduce |
-| `azcluster logs` | `<name> --component {scheduler\|login\|<node>} [--tail N] [--follow] [--identity <path>]` | Tail `/var/log/azcluster/install.log` or journalctl |
+| `azcluster ssh` | `<name> [--scheduler\|--host <node>] [-u/--user <ldap>] [--identity <path>] [--no-bastion] [--local-port <p>]` | Interactive shell. **AKS:** `--host <nodeName>` opens a privileged host-root debug shell via the K8s API |
+| `azcluster exec` | `<name> [--scheduler\|--host <node>] [-u/--user <ldap>] [-A/--forward-agent] [--no-bastion] -- <cmd...>` | One-shot remote command. **AKS:** `--host [namespace/]pod -- <cmd>` runs native K8s exec (omit `<cmd>` for `/bin/sh`) |
+| `azcluster scp` | `<name> [-r] [-p] [-i <key>] [-u <ldap>] [--no-bastion] <SRC>... <DST>` | scp-style; remote path `[node]:path`, empty node = login (Slurm) |
+| `azcluster tunnel` | `<name> <local-port> [--scheduler\|--host <node>] [-u <ldap>]` | Local TCP forward through login. **AKS:** `--host [ns/]pod --remote-port <podPort>` forwards to a pod port (may print an interim `kubectl port-forward` command) |
+| `azcluster logs` | `<name> --component {scheduler\|login\|<node>} [--tail N] [--follow] [--identity <path>]` | Tail `/var/log/azcluster/install.log` or journalctl. **AKS:** `--component [namespace/]pod` streams pod logs |
 | `azcluster monitor` | `<name>` | Print the Grafana URL |
 | `azcluster timings` | `<name> [--last N] [--trend]` | Per-resource ARM deploy times |
 | `azcluster delete` | `<name> [--yes]` | Delete the resource group (async) |
@@ -202,22 +218,40 @@ azcluster user sshkey list   <name> --username <u>
 
 ---
 
-## 5. Typical end-to-end session
+## 5. Typical end-to-end sessions
+
+### Slurm
 
 ```bash
 azcluster deploy --name demo --bastion \
   --pool name=gpu,sku=Standard_ND96isr_H100_v5,count=2,default
 azcluster status demo                                   # wait for both nodes READY
-azcluster validate demo --gpu --multi-node              # sinfo + NCCL all-reduce
+azcluster scp demo --user clusteradmin examples/slurm/nccl-allreduce.sbatch :/shared/home/clusteradmin/
+azcluster exec demo --user clusteradmin -- "sbatch nccl-allreduce.sbatch"   # 16-rank NCCL all-reduce
 azcluster ssh demo --user clusteradmin                  # interactive login shell
-azcluster exec demo --user clusteradmin -- \
-  "sbatch /shared/examples/dgxc-nemo-multinode-smoke.sbatch"
 azcluster monitor demo                                  # Grafana URL
 azcluster delete demo                                   # tear down (releases GPU quota)
 azcluster purge-kv --name demo --location eastus --yes  # release the soft-deleted KV name
 ```
 
-Example sbatch templates ship on the cluster under `/shared/examples/`. Storage pipeline for big models: HuggingFace → per-cluster blob (`azcp`, once per model) → IB broadcast to per-node NVMe (`azcp-cluster`, every job).
+Workloads ship in the repo under `examples/slurm/` — copy them up with `azcluster scp` (the `--user` key must be enrolled: `azcluster user sshkey add demo --username clusteradmin --key-file <pub>`). Storage pipeline for big models: HuggingFace → per-cluster blob (`azcp`, once per model) → IB broadcast to per-node NVMe (`azcp-cluster`, every job).
+
+### AKS
+
+```bash
+azcluster deploy --target aks --name demo \
+  --location mexicocentral --grafana-location eastus \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
+azcluster status demo                                   # node-pool + operator health
+azcluster exec demo --host gpu-operator/<pod> -- nvidia-smi -L   # native K8s exec, no laptop kubectl
+azcluster kubeconfig demo --print > /tmp/demo.kc && export KUBECONFIG=/tmp/demo.kc
+NODES=2 NP=16 envsubst '${NODES} ${NP}' < examples/aks/nccl-allreduce-mpijob.yaml | kubectl apply -f -
+azcluster monitor demo                                  # Grafana URL
+azcluster delete demo
+azcluster purge-kv --name demo --location mexicocentral --yes
+```
+
+AKS workloads are runnable manifests under `examples/aks/` (NCCL MPIJob, Megatron-Bridge PyTorchJob, vLLM/SGLang inference, azcp staging + blobcache peer reads over IB). Fill `${...}` placeholders with `envsubst` from `azcluster status` values (storage account, kubelet client id). `azcluster` provisions infrastructure only.
 
 ---
 
@@ -235,14 +269,18 @@ cd azcluster
 ```
 crates/azcluster-cli/src/main.rs   clap CLI definition (every command/flag); dispatch fns: deploy(), ssh(), exec()...
 crates/azcluster-cli/src/          user.rs, bastion/ (tunnel.rs ws bridge), cluster_resolver.rs, cluster_state.rs (KV/identity)
-crates/azcluster-server/           scheduler control daemon (axum)
-crates/azhealthcheck/              per-node health probe (5 checks)
-bicep/main.bicep, cluster.bicep    ARM entrypoint + per-cluster orchestration
-bicep/modules/                     network, scheduler, login, compute, anf, amlfs, accounting, monitoring, keyvault, storage, bastion
-bicep/main.json                    transpiled ARM template (generated from main.bicep, gitignored; CLI embeds it via include_str!)
-cloud-init/{scheduler,login,compute}.yaml.tmpl   per-node bootstrap (slurm, pyxis/enroot, NCCL/IB, NVMe RAID, prometheus)
-grafana/dashboards/                4 auto-imported dashboards
-doc/full-walkthrough-plan.md       canonical version-agnostic end-to-end recipe (every sbatch inlined)
+crates/azcluster-cli/src/aks/      AKS target: manifests/ (operator Helm/YAML), k8s/ (native Rust K8s client — TLS+WebSocket exec/logs/attach)
+crates/azcluster-server/           scheduler control daemon (axum)  [Slurm]
+crates/azhealthcheck/              per-node health probe (5 checks)  [Slurm]
+bicep/main.bicep, cluster.bicep    Slurm ARM entrypoint + per-cluster orchestration
+bicep/aks-main.bicep, aks-cluster.bicep   AKS target ARM tree (parallel to Slurm; modules/aks.bicep)
+bicep/modules/                     network, scheduler, login, compute, anf, amlfs, accounting, monitoring, keyvault, storage, bastion, aks
+bicep/{main,aks-main}.json         transpiled ARM templates (generated, gitignored; CLI embeds them via include_str!)
+cloud-init/{scheduler,login,compute}.yaml.tmpl   Slurm per-node bootstrap (slurm, pyxis/enroot, NCCL/IB, NVMe RAID, prometheus)
+examples/slurm/, examples/aks/     runnable benchmark workloads (NCCL, training, vLLM, SGLang, storage) — matched across targets
+grafana/dashboards/                auto-imported dashboards
+doc/walkthrough-plan.md            canonical version-agnostic recipe (references examples/ files, not inlined)
+doc/full-walkthrough-{slurm,aks}-v0.25.0.md   latest live runs (2× ND H200) with per-GPU charts
 doc/healthchecks.md                azhealthcheck reference
 CHANGELOG.md                       per-version history
 AGENTS.md                          ⭐ operating manual + a huge per-version "gotchas" log — READ THIS for any non-obvious bug
@@ -259,7 +297,7 @@ azcluster logs <name> --component <compute-hostname> --follow
 azcluster exec <name> -- "tail -50 /var/log/azcluster/install.log"   # cloud-init inner script log
 azcluster exec <name> --host <node> -- "sinfo -R"        # why a node is drained
 azcluster timings <name> --last 1                        # per-resource ARM durations
-azcluster validate <name> --gpu --multi-node             # functional smoke test
+azcluster exec <name> --host gpu-operator/<pod> -- nvidia-smi -L   # AKS: GPUs visible inside a pod
 ```
 
 Key truth: `cloud-init status` reports `done` even when an inner `install-*.sh` aborted (the log is piped through `tee`). **Always `tail /var/log/azcluster/install.log` and grep `Error|fail|exit`** rather than trusting cloud-init. `/var/log/azcluster/ready` existing = that node's bootstrap fully completed.
@@ -267,10 +305,11 @@ Key truth: `cloud-init status` reports `done` even when an inner `install-*.sh` 
 ### Build / verify when editing the repo
 
 ```bash
-# bicep/main.json is generated, not committed. The CLI's build.rs embeds it via
-# include_str! and FAILS the build with instructions if it is missing — so generate
-# it first (and after editing any bicep/*.bicep):
+# bicep/main.json + bicep/aks-main.json are generated, not committed. The CLI's
+# build.rs embeds them via include_str! and FAILS the build with instructions if
+# either is missing — so generate them first (and after editing any bicep/*.bicep):
 az bicep build --file bicep/main.bicep --outfile bicep/main.json
+az bicep build --file bicep/aks-main.bicep --outfile bicep/aks-main.json
 
 cargo build --workspace
 cargo test --workspace
@@ -283,5 +322,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 - **RBAC propagation:** Grafana Admin / KV Secrets Officer / Storage Blob Data Contributor take 5–20 min to propagate; first dashboard import or first `azcp` may 401/403 — retry. Re-running `azcluster deploy` is idempotent (or `--skip-arm` to re-run hooks only).
 - **Soft-deleted KVs** block name reuse; `azcluster purge-kv --name <n> --location <loc> --yes` after `delete`.
 - **Grafana region:** Managed Grafana isn't available everywhere — use `--grafana-location <supported-region>`.
-- **Bastion clusters** (no public IP): `ssh`/`exec`/`scp`/`tunnel`/`validate` auto-route through Bastion; `--no-bastion` opts out.
+- **Bastion clusters** (no public IP): `ssh`/`exec`/`scp`/`tunnel` auto-route through Bastion; `--no-bastion` opts out.
+- **AKS `NCCL_TOPO_FILE` (required for multi-node decode):** latency-bound SGLang TP=16 decode needs the NDv5 topology — the AKS sglang example mounts it via an `ndv5-topo` ConfigMap (`examples/aks/ndv5-topo.xml`). Without it decode is ~20% slower. Slurm gets it for free from the HPC image (`/opt/microsoft/ndv5-topo.xml`). Don't reformat the busids to `nvidia-smi`'s 8-hex form — NCCL uses 4-hex and silently ignores a mismatched file.
+- **AKS manifest rendering:** use the **allowlist** form of `envsubst` (e.g. `envsubst '${NODES} ${NP}'`) so runtime shell vars (`$RANK`, `$WORLD_SIZE`, `$POD_IP`, `$MASTER_ADDR`) aren't clobbered to empty; pass the templated values via the environment.
+- **AKS worker-DNS race:** MPIJob/PyTorchJob workers can briefly fail to resolve the headless-service head; the examples loop on `getent hosts` first, but if a job's pods vanish, delete + re-apply. The blobcache sidecar must point at *this* cluster's storage account + kubelet client-id (from `azcluster status`) or `/hydrate` hangs.
 ```

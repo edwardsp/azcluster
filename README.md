@@ -1,39 +1,45 @@
 # azcluster
 
-**Fast Rust-based Slurm cluster deployer for Azure.** Slurm + Pyxis + Enroot for containerised AI workloads on NDv5 H100. One CLI invocation, ~15 minutes wall-clock, no daemons on your laptop.
+**Deploy production HPC/AI GPU clusters on Azure from a single Rust binary — Slurm *or* Kubernetes (AKS).** NDv5 H100/H200 with InfiniBand + NCCL + SHARP, containerised multi-node training and inference. One CLI invocation, ~15–20 minutes wall-clock, no laptop daemon and no `az` CLI.
 
-> **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history.
->
-> **End-to-end walkthrough:** [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) (canonical, version-agnostic) and [`doc/full-walkthrough-slurm-v0.25.0.md`](doc/full-walkthrough-slurm-v0.25.0.md) (latest live results, `cmpsl8`, 2× ND H200 in mexicocentral, with per-GPU nvidia-smi charts: NCCL 483.26 GB/s containerized / 483.31 GB/s non-containerized, training 515 TFLOP/s/GPU, vLLM 9,880 tok/s, DeepSeek SGLang TP=16 1,529 tok/s). AKS target: [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md) (matched-params `cmpaks8` run: NCCL 482.9 GB/s, training 506 TFLOP/s/GPU, vLLM 9,839 tok/s, DeepSeek SGLang TP=16 1,603 tok/s with the `ndv5-topo` NCCL topology — plus a blobcache-over-InfiniBand graph showing node-1 fetched its full 708.6 GB copy of the 688 GB DeepSeek model 100% over IB RDMA from node-0 — see the walkthrough for why the topology file is required).
+> **Current release:** `v0.25.0`. See [CHANGELOG.md](CHANGELOG.md) for per-version history and [End-to-end walkthroughs](#end-to-end-walkthroughs) for live Slurm + AKS benchmark results on 2× ND H200.
 
 ## What it is
 
-`azcluster` is a single Rust binary that deploys a production-style HPC/AI Slurm cluster on Azure from scratch in under 20 minutes. You run it on your laptop; the cluster runs entirely on Azure. There is no laptop-side daemon, no control plane to maintain, and no Python/Node toolchain to install — the CLI authenticates to Azure directly via OAuth2 (PKCE in a browser or `--device-code` for headless) and calls ARM REST natively.
+`azcluster` is a single Rust binary that deploys a production-style HPC/AI GPU cluster on Azure from scratch in 15–20 minutes — as either a **Slurm** cluster or a **Kubernetes (AKS)** cluster. You run it on your laptop; the cluster runs entirely on Azure. There is no laptop-side daemon, no control plane to maintain, and no Python/Node toolchain to install — the CLI authenticates to Azure directly via OAuth2 (PKCE in a browser or `--device-code` for headless) and calls ARM REST natively (no `az` CLI, and no `kubectl`/`kube-rs` for the AKS path).
 
-A deployed cluster has:
+### Two deployment targets
+
+**Slurm** (`azcluster deploy`) — the default, a classic HPC scheduler:
 
 - **Scheduler VM** running `slurmctld` + the per-cluster `azcluster-server` control daemon
-- **Login VM** for interactive shells and job submission (no public IP by default; reach it via Azure Bastion)
-- **One or more compute pools** (VMSS Flex) — pick any Azure VM SKU; defaults target `Standard_ND96isr_H100_v5` for AI work
-- **Per-cluster Azure Storage account** (StorageV2 + Private Endpoint) for blob-staged datasets and model weights
-- **Azure NetApp Files** mounted at `/shared` (default) or scheduler-exported NFS for test mode
-- **Azure Monitor Workspace + Managed Grafana** with four auto-imported dashboards (Node Health, Slurm Scheduler, GPU + InfiniBand, Health Checks)
-- **Per-cluster Azure Key Vault** holding the cluster manifest and admin SSH keypair so any operator with KV RBAC can run commands from a fresh laptop
-- **LDAP-backed multi-user setup** (slapd on scheduler, SSSD on login + compute) with two default users (`clusteradmin` + `clusteruser`) provisioned at deploy time
-- **Slurm accounting** via Azure Database for MySQL Flexible Server
-- **Per-node `azhealthcheck`** running every 5 minutes via Slurm `HealthCheckProgram` to drain misbehaving nodes automatically (see [`doc/healthchecks.md`](doc/healthchecks.md))
+- **Login VM** for interactive shells and job submission (Azure Bastion, or `--login-public-ip`)
+- **Compute pools** (VMSS Flex) — any Azure VM SKU; defaults to `Standard_ND96isr_H100_v5`
+- **Pyxis + Enroot** wired from boot, so containerised `srun --container-image=docker://nvcr.io/...` works the moment a node registers
+- **Azure NetApp Files** at `/shared` (or scheduler-exported NFS for test mode)
+- **LDAP multi-user** (slapd + SSSD, default `clusteradmin`/`clusteruser`) and **Slurm accounting** (Azure Database for MySQL Flexible Server)
+- **Per-node `azhealthcheck`** draining misbehaving nodes every 5 min (see [`doc/healthchecks.md`](doc/healthchecks.md))
+
+**AKS** (`azcluster deploy --target aks`) — managed Kubernetes:
+
+- **AKS managed cluster** + a system pool + an **ND GPU agent pool** (driver lifecycle owned by the NVIDIA GPU Operator)
+- **NVIDIA Network + GPU Operators** (MOFED/SR-IOV → `rdma/ib: 8` per node, DCGM), **Kueue**, **MPI-Operator**, **Training-Operator** — installed server-side via AKS `runCommand`, nothing on your laptop
+- **Azure Container Storage** (`local-csi`, auto-RAID-0 of the node's local NVMe) + **blobcache** peer reads over InfiniBand (UCX/RDMA)
+- **Native Kubernetes operate client** — `azcluster exec`/`logs`/`ssh`/`tunnel` talk to the API server directly over TLS + WebSocket (no laptop `kubectl`)
+
+**Both targets share**: native ARM REST provisioning, IB + NCCL + SHARP tunings, a per-cluster **Azure Storage** account, a per-cluster **Azure Key Vault** (cluster manifest + admin SSH key, so any laptop with KV RBAC can operate the cluster), **Azure Monitor Workspace + Managed Grafana** with DCGM/InfiniBand dashboards, and the same runnable example workloads in [`examples/`](examples/) so Slurm-vs-AKS numbers differ only by orchestration/runtime.
 
 ## Why azcluster
 
-- **Single binary, no laptop daemon.** Pure-Rust CLI, no `az` CLI dependency, no Python venv, no agent, no controller node. Authenticates to Azure directly.
-- **AI-first defaults.** Default GPU pool is NDv5 H100 with IB + NCCL tunings preconfigured (NCCL topology file, `mlx5_ib0..7` device list, SHARP enabled). Pyxis + Enroot wired from boot so `srun --container-image=docker://nvcr.io/...` works the moment a node registers.
-- **Multi-pool, dynamic Slurm.** One VMSS Flex per pool. Nodes self-register via `slurmd --conf-server`; `slurm.conf` uses `NodeSet+PartitionName` so CPU and GPU partitions can coexist with hot reconfiguration.
-- **Containerised multi-node MPI works out of the box.** Cross-container PMIx world (slurmd env + enroot hooks), IB devices visible inside the container via `MELLANOX_VISIBLE_DEVICES=all` — validated end-to-end on 2-node H100 NeMo containers.
-- **Storage pipeline for big models.** Per-cluster blob + `azcp` + `azcp-cluster` for HuggingFace → blob → MPI broadcast → per-node NVMe RAID-0. 642 GiB DeepSeek-R1 distributed across 2 nodes in 134 s at 41 Gbps.
-- **Managed observability out of the box.** Four Grafana dashboards live in an `azcluster` folder, populated from boot. DCGM metrics include `PIPE_TENSOR_ACTIVE`, `SM_ACTIVE`, thermal limits, throttle reasons, NVLink errors, and ECC.
-- **Stateless operator UX.** Cluster manifest + admin SSH key live in per-cluster Key Vault. Any laptop with `azcluster login` + KV RBAC can manage any cluster.
+- **Single binary, no laptop daemon.** Pure-Rust CLI, no `az` CLI dependency, no Python venv, no agent, no controller node. Authenticates to Azure directly; the AKS path drives Kubernetes over native TLS/WebSocket without `kubectl` or `kube-rs`.
+- **AI-first defaults on both targets.** Default GPU pool is NDv5 H100/H200 with IB + NCCL tunings preconfigured (NCCL topology file, `mlx5_ib0..7` device list, SHARP enabled). Slurm wires Pyxis + Enroot from boot; AKS installs the NVIDIA Network + GPU Operators so `rdma/ib: 8` is allocatable per node.
+- **Containerised multi-node training/inference works out of the box.** Slurm: cross-container PMIx world + enroot hooks, IB visible via `MELLANOX_VISIBLE_DEVICES=all`. AKS: MPIJob/PyTorchJob with the same IB fabric. Both validated end-to-end on 2-node ND H200 (NCCL ~483 GB/s, no TCP fallback).
+- **Storage pipeline for big models.** Slurm uses `azcp` + `azcp-cluster` (HuggingFace → blob → MPI broadcast → per-node NVMe RAID-0). AKS uses Azure Container Storage + **blobcache peer reads over InfiniBand** — in one live run node-1 fetched its full 708.6 GB copy of DeepSeek-R1 100% over IB RDMA from node-0.
+- **Same workloads, controlled comparison.** The NCCL / Megatron-Bridge training / vLLM / SGLang benchmarks ship as runnable files under [`examples/{slurm,aks}/`](examples/) with identical images, models, and parameters — so Slurm-vs-AKS numbers differ only by orchestration. See the [walkthroughs](#end-to-end-walkthroughs).
+- **Managed observability out of the box.** Per-cluster Azure Monitor Workspace + Managed Grafana with DCGM (`PIPE_TENSOR_ACTIVE`, `SM_ACTIVE`, thermal/throttle, NVLink, ECC) and InfiniBand dashboards, populated from boot.
+- **Stateless operator UX.** Cluster manifest + admin SSH key live in per-cluster Key Vault. Any laptop with `azcluster login` + KV RBAC can manage any cluster, Slurm or AKS.
 - **Observable provisioning.** Every deploy captures per-resource ARM timings to `~/.config/azcluster/deployments/<cluster>/`. `azcluster timings` prints a sorted table and trends across runs.
-- **Test mode that's actually fast.** `--shared-storage nfs-scheduler --no-monitoring --no-accounting` deploys a functional 1-CPU cluster in ~7 minutes.
+- **Test mode that's actually fast.** Slurm `--shared-storage nfs-scheduler --no-monitoring --no-accounting` deploys a functional 1-CPU cluster in ~7 minutes.
 
 ## Install
 
@@ -71,6 +77,8 @@ Tokens cache at `~/.azure/azcli_tokens.json` (mode 0600).
 
 ## Quickstart
 
+### Slurm
+
 Production-style deploy (ANF + monitoring + accounting + Bastion, no public IPs):
 
 ```bash
@@ -96,13 +104,58 @@ azcluster exec demo --user clusteradmin -- "sbatch nccl-allreduce.sbatch"
 # 16-rank NCCL all-reduce across 2 nodes in a NeMo container
 ```
 
-Tear down (releases H100 capacity quota immediately):
+### AKS
 
 ```bash
-azcluster delete demo
+azcluster deploy --target aks --name demo \
+  --location mexicocentral \
+  --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
 ```
 
-See [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) for the full end-to-end recipe (deploy → smoke → NCCL → containerised NCCL multi-node → Llama-FP8 vLLM inference → DeepSeek-R1-0528 SGLang TP=16 inference → observability → tear-down).
+~15–20 min (AKS + ND GPU pool + the operator stages). Then operate it with the same verbs — no laptop `kubectl`:
+
+```bash
+azcluster status demo                                       # node-pool + operator health
+azcluster exec demo --host gpu-operator/<pod> -- nvidia-smi -L   # native K8s exec
+azcluster ssh  demo --host aks-gpu-...-vmss000000           # host-root debug shell
+azcluster kubeconfig demo                                    # fetch admin kubeconfig if you DO want kubectl
+azcluster monitor demo                                       # opens Grafana URL
+```
+
+Run the matched 2-node NCCL benchmark (manifests are visible/runnable, not embedded):
+
+```bash
+azcluster kubeconfig demo --print > ~/.kube/demo.config && export KUBECONFIG=~/.kube/demo.config
+NODES=2 NP=16 envsubst '${NODES} ${NP}' < examples/aks/nccl-allreduce-mpijob.yaml | kubectl apply -f -
+```
+
+### Tear down (either target)
+
+```bash
+azcluster delete demo                                        # releases GPU capacity quota immediately (async)
+azcluster purge-kv --name demo --location <region> --yes     # hard-purge the soft-deleted Key Vault
+```
+
+See the [walkthroughs](#end-to-end-walkthroughs) for the full Slurm and AKS recipes (deploy → smoke → NCCL → training → vLLM → DeepSeek SGLang TP=16 → observability → tear-down).
+
+## End-to-end walkthroughs
+
+[`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) is the canonical, version-agnostic recipe. Each release that completes a clean run gets a version-stamped walkthrough with per-GPU charts:
+
+- **Slurm** — [`doc/full-walkthrough-slurm-v0.25.0.md`](doc/full-walkthrough-slurm-v0.25.0.md)
+- **AKS** — [`doc/full-walkthrough-aks-v0.25.0.md`](doc/full-walkthrough-aks-v0.25.0.md)
+
+Both were captured on the **same hardware, region, models, and parameters** (2× `Standard_ND96isr_H200_v5` / mexicocentral) so the only variable is the orchestration/runtime stack. Live results from the matched run:
+
+| Benchmark | Slurm (`cmpsl8`) | AKS (`cmpaks8`) |
+|---|---|---|
+| NCCL all-reduce, containerized (16 ranks) | 483.26 GB/s | 482.94 GB/s |
+| NCCL all-reduce, non-containerized (HPC-X) | 483.31 GB/s | — |
+| Megatron-Bridge training, Llama-3.1-8B (16 GPU) | 515 TFLOP/s/GPU | 506 TFLOP/s/GPU |
+| vLLM Llama-3.1-8B-FP8 | 9,880 tok/s | 9,839 tok/s |
+| DeepSeek-R1-0528 SGLang TP=16 | 1,529 tok/s | 1,603 tok/s (with `ndv5-topo`) |
+
+Every workload lands within run-to-run variance across the two stacks. The AKS walkthrough also includes a **blobcache-over-InfiniBand** graph: loading the 688 GB DeepSeek-R1 model, node-0 pulled the full copy from Blob while node-1 fetched its entire 708.6 GB copy **100% over IB RDMA** from node-0. (The walkthroughs also document why `NCCL_TOPO_FILE` is required for the latency-bound TP=16 decode — auto-set on Slurm via the HPC image, mounted via a ConfigMap on AKS.)
 
 ## Deploy options
 
@@ -110,6 +163,7 @@ See [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) for the full end-to-end
 
 | Flag | Default | Notes |
 |---|---|---|
+| `--target {slurm,aks}` | `slurm` | Deployment target: a Slurm cluster (default) or a managed Kubernetes (AKS) cluster |
 | `--name <name>` | required | Cluster name; appears in RG name (`rg-azcluster-<name>`), VM names, KV name |
 | `--location <region>` | required | Azure region for compute. Some regions don't host AMG — see `--grafana-location`. |
 | `--grafana-location <region>` | `--location` | Use a different region for Managed Grafana (e.g. `southafricanorth` → `uksouth`) |
@@ -135,6 +189,8 @@ See [`doc/walkthrough-plan.md`](doc/walkthrough-plan.md) for the full end-to-end
 | `--azcluster-version vX.Y.Z` | current | Pin a specific release tag (cloud-init fetches the matching tarball from GitHub Releases) |
 | `--extra-package <pkg>` | — | Repeatable. Extra apt packages installed on every node at boot. |
 
+Most flags above configure the **Slurm** target. **AKS** (`--target aks`) uses the common subset — `--name`, `--location`, `--grafana-location`, `--pool`, `--no-monitoring`, and `--storage`/`--no-storage` (Azure Container Storage + per-cluster Blob, on by default) — and ignores Slurm-only flags (`--bastion`, `--shared-storage`, `--anf-*`, `--amlfs-*`, `--no-accounting`, `--scheduler-sku`, `--login-sku`).
+
 ### Deploy variants
 
 **Production**, ANF + monitoring on, Bastion (no public IPs):
@@ -146,7 +202,7 @@ azcluster deploy --name demo \
   --bastion
 ```
 
-**AKS target preview** (AKS + ND GPU pool + NVIDIA operators + Kueue; no Slurm commands yet):
+**AKS target** (managed Kubernetes + ND GPU pool + NVIDIA operators + Kueue/MPI/Training operators + storage):
 
 ```bash
 azcluster deploy --target aks --name demo \
@@ -154,7 +210,7 @@ azcluster deploy --target aks --name demo \
   --pool name=gpu,sku=Standard_ND96isr_H200_v5,count=2,default
 ```
 
-The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, and MPI Operator via AKS `runCommand`. Monitoring is on by default: AKS managed Prometheus is linked to the per-cluster Azure Monitor Workspace, a DCGM ServiceMonitor scrapes `nvidia-dcgm-exporter`, and GPU/IB metrics are visible in Azure Managed Grafana; pass `--no-monitoring` to skip AMW/AMG and that scrape config. Workloads live under [`examples/aks/`](examples/aks/): run `nccl-allreduce-mpijob.yaml` with `envsubst ... | kubectl apply -f -` for the 2-node NCCL MPIJob, then install `training-operator.yaml`, create the `examples/megatron-pretrain.py` ConfigMap, and apply `training-megatron-pytorchjob.yaml` for the Llama-3.1-8B Megatron-Bridge benchmark. With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; the storage examples (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are also run with `kubectl`/`helm`, not embedded in the binary. `azcluster` provisions infrastructure only.
+The AKS path registers the subscription InfiniBand feature, deploys the parallel `bicep/aks-main.json` template, and installs cert-manager, NVIDIA Network Operator, NVIDIA GPU Operator, Kueue, MPI-Operator, and Training-Operator via AKS `runCommand`. Operate it with the same verbs as Slurm — `azcluster exec/logs/ssh/tunnel` talk to the Kubernetes API directly (no laptop `kubectl`; `azcluster kubeconfig` fetches the admin kubeconfig if you want one). Monitoring is on by default: AKS managed Prometheus is linked to the per-cluster Azure Monitor Workspace, a DCGM ServiceMonitor scrapes `nvidia-dcgm-exporter`, and GPU/IB metrics are visible in Azure Managed Grafana; pass `--no-monitoring` to skip AMW/AMG and that scrape config. Workloads live under [`examples/aks/`](examples/aks/): run `nccl-allreduce-mpijob.yaml` with `envsubst ... | kubectl apply -f -` for the 2-node NCCL MPIJob, then install `training-operator.yaml`, create the `examples/megatron-pretrain.py` ConfigMap, and apply `training-megatron-pytorchjob.yaml` for the Llama-3.1-8B Megatron-Bridge benchmark. With `--storage` (on by default) the deploy also installs **Azure Container Storage** (`local-csi-driver`, an auto-RAID-0 of the node's local NVMe at StorageClass `local-csi`) and a per-cluster Blob account; the storage examples (azcp staging + **blobcache peer reads over InfiniBand** + a training-with-blobcache PyTorchJob) are also run with `kubectl`/`helm`, not embedded in the binary. `azcluster` provisions infrastructure only.
 
 **Mixed CPU + GPU pools** (Slurm sees both partitions):
 
@@ -233,6 +289,8 @@ Notes:
 
 ## Architecture
 
+### Slurm target
+
 ```mermaid
 flowchart LR
     operator([operator laptop])
@@ -298,6 +356,18 @@ flowchart LR
 - The deployer principal gets `Grafana Admin` on AMG (so the CLI can `POST /api/dashboards/db`) and `Key Vault Secrets Officer` on the per-cluster KV.
 
 **Distribution**: CI builds release artifacts on tag (`v*`): `azcluster-cli-{x86_64-linux,aarch64-darwin}`, `azcluster-server-x86_64-linux`, `spank_pyxis-vX.Y.Z-x86_64-linux.so`, `azhealthcheck-x86_64-linux`, versioned tarball, `SHA256SUMS`. Cloud-init on each node fetches the tarball from GitHub Releases, verifies SHA256, and starts the relevant systemd unit.
+
+### AKS target
+
+The AKS path uses a parallel Bicep tree (`aks-main.bicep` → `aks-cluster.bicep` → `modules/aks.bicep`) — kept entirely separate from the Slurm `main.bicep` so the live-validated Slurm path is untouched.
+
+- **Control plane**: an AKS managed cluster (public API server) in the same per-cluster VNet, with a system node pool and an **ND GPU agent pool** (`gpuProfile.driver: None` — the NVIDIA GPU Operator owns the driver). The InfiniBand fabric is exposed once the subscription `AKSInfinibandSupport` feature is registered (the CLI does this pre-gate).
+- **Operators** (installed server-side via AKS `runCommand`, embedded manifests/Helm values in the binary): cert-manager → NVIDIA Network Operator (MOFED/SR-IOV → `rdma/ib: 8` per node) → NVIDIA GPU Operator (drivers + DCGM) → Kueue → MPI-Operator → Training-Operator → Azure Container Storage `local-csi`.
+- **Identity**: the AKS **kubelet managed identity** holds `Storage Blob Data Contributor` on the per-cluster Blob account; in-pod workloads select it via IMDS (`AZURE_CLIENT_ID`).
+- **Monitoring**: AKS managed Prometheus (ama-metrics addon) → the per-cluster AMW via a DCE/DCR/DCRA chain, with a DCGM ServiceMonitor (`azmonitoring.coreos.com/v1`) scraping `nvidia-dcgm-exporter`.
+- **Operate plane**: `azcluster exec/logs/ssh/tunnel` reach the API server directly over client-cert TLS + WebSocket (`v5.channel.k8s.io` for exec/attach) — no laptop `kubectl`, and no `kube-rs`/`k8s-openapi` dependency (the workspace is pinned below their MSRV).
+
+The per-cluster **Key Vault** and **Azure Monitor Workspace + Managed Grafana** are shared with the Slurm path (same provisioning + discovery-tag model).
 
 ## Storage pipeline for big models
 
@@ -396,7 +466,7 @@ bicep/
   modules/              network, scheduler, login, compute, anf, amlfs,
                         accounting, monitoring, keyvault, storage, bastion, aks
   main.json             ARM template embedded into the CLI binary (generated from main.bicep; not committed)
-  aks-main.json         AKS ARM template generated for the future --target aks path (not committed)
+  aks-main.json         AKS target ARM template embedded into the CLI binary (generated from aks-main.bicep; not committed)
 cloud-init/
   scheduler.yaml.tmpl   slurmctld, slurmdbd, slapd LDAP, prometheus, NFS exports (test mode)
   login.yaml.tmpl       mounts /shared + /amlfs; slurm client + Pyxis + SSSD
@@ -407,10 +477,11 @@ examples/
   aks/                   runnable AKS manifests (NCCL, training, inference, storage)
 doc/
   walkthrough-plan.md                  canonical version-agnostic walkthrough
-  full-walkthrough-slurm-v0.25.0.md    latest Slurm live run (2x ND H200)
-  full-walkthrough-aks-v0.25.0.md      latest AKS live run (2x ND H200)
+  full-walkthrough-slurm-v0.25.0.md    latest Slurm live run (2x ND H200) + charts
+  full-walkthrough-slurm-v0.25.0/      per-GPU charts for the Slurm run
+  full-walkthrough-aks-v0.25.0.md      latest AKS live run (2x ND H200) + charts
+  full-walkthrough-aks-v0.25.0/        per-GPU charts + blobcache-over-IB graph
   full-walkthrough-slurm-v0.24.20.md   historical v0.24.20 Slurm run
-  full-walkthrough-slurm-v0.24.20/     PNG charts for above
   healthchecks.md                      operator-facing health check reference
 .github/workflows/      ci.yml + release.yml
 research/               local reference checkouts (gitignored)
