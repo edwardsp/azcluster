@@ -37,7 +37,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
       {
         name: 'aks-nodes'
         properties: {
-          addressPrefix: cidrSubnet(vnetAddressPrefix, 20, 1)
+          // /18 (16k IPs): Azure CNI pre-allocates (maxPods+1) IPs per node, so a
+          // large GPU pool (e.g. 70 nodes x 110 maxPods ~= 7770 IPs) overflows a /20.
+          addressPrefix: cidrSubnet(vnetAddressPrefix, 18, 1)
         }
       }
     ]

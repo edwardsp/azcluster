@@ -10,6 +10,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - **Matched re-run numbers** (controlled comparison, all within run-to-run variance across the two stacks): NCCL containerized Slurm 483.26 / AKS 482.94 GB/s (Slurm non-containerized 483.31 GB/s); Megatron training Slurm 515 / AKS 506 TFLOP/s/GPU; vLLM Slurm 9,880 / AKS 9,839 tok/s; DeepSeek-R1 SGLang TP=16 Slurm 1,529 / AKS 1,603 tok/s (AKS with the `ndv5-topo` ConfigMap matches and exceeds Slurm). The Slurm cluster was deployed `--azcluster-version v0.24.20` (no `v0.25.0` release exists yet; the Slurm cloud-init needs real GitHub-release artifacts, AKS does not) — the workloads are the current `examples/slurm` working tree, only the infra binary differs.
 - **`examples/slurm/inference-vllm.sbatch` exports `MODEL_PREFIX`** so the in-container `set -u` no longer aborts with `MODEL_PREFIX: unbound variable` when `--export=ALL,MODEL_PREFIX` passes a non-exported shell var.
 
+### Fixed
+- **AKS large GPU pools (70→140 ND H200).** Two scaling defaults broke large `--target aks` pools, both found while scaling a pool to 140 nodes: (1) the `aks-nodes` subnet was `/20` (4091 usable IPs) but Azure CNI pre-allocates `maxPods+1` (=111) IPs per node, so ~37+ nodes overflowed it with `InsufficientSubnetSize` — widened to `/18` (16384 IPs) in `bicep/aks-cluster.bicep`; (2) the NVIDIA Network Operator controller's chart-default memory limit (`128Mi`) OOMKilled it at ~140 nodes, crash-looping so newly-added nodes never received the SR-IOV device plugin / `rdma/ib` resource — pinned `operator.resources` to `1Gi` in `network-operator-values.yaml`.
+
 ## [0.25.0] - 2026-06-18
 
 ### Added
