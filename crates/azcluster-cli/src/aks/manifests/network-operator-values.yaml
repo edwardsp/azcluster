@@ -1,2 +1,12 @@
 nfd:
   deployNodeFeatureRules: false
+# Operator controller resources. The chart default (128Mi) OOMKills the controller at
+# large node counts (~140 GPU nodes): it crash-loops and can no longer reconcile new
+# nodes, so they never get the SR-IOV device plugin / rdma:ib resource. 1Gi is ample.
+operator:
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 5m
+      memory: 256Mi
