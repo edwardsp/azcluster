@@ -200,6 +200,7 @@ pub fn kmsg(runner: &dyn Runner) -> CheckOutcome {
         &[
             "--dmesg",
             "--no-pager",
+            "--quiet",
             "--priority=crit",
             "--since",
             "1 hour ago",
@@ -220,6 +221,10 @@ pub fn kmsg(runner: &dyn Runner) -> CheckOutcome {
         .lines()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        // journalctl emits meta lines like "-- No entries --" or
+        // "-- Boot <id> --" even with --quiet in some versions; never
+        // count them as kernel messages.
+        .filter(|s| !(s.starts_with("-- ") && s.ends_with(" --")))
         .collect();
     if lines.is_empty() {
         return CheckOutcome::ok(name, "no critical kernel messages in last hour");
@@ -429,8 +434,19 @@ mod tests {
     #[test]
     fn kmsg_clean() {
         let r = FakeRunner::new().with(
-            "journalctl --dmesg --no-pager --priority=crit --since 1 hour ago",
+            "journalctl --dmesg --no-pager --quiet --priority=crit --since 1 hour ago",
             "",
+            0,
+        );
+        let out = kmsg(&r);
+        assert_eq!(out.severity, Severity::Ok);
+    }
+
+    #[test]
+    fn kmsg_no_entries_placeholder_is_ok() {
+        let r = FakeRunner::new().with(
+            "journalctl --dmesg --no-pager --quiet --priority=crit --since 1 hour ago",
+            "-- No entries --\n",
             0,
         );
         let out = kmsg(&r);
@@ -440,7 +456,7 @@ mod tests {
     #[test]
     fn kmsg_critical() {
         let r = FakeRunner::new().with(
-            "journalctl --dmesg --no-pager --priority=crit --since 1 hour ago",
+            "journalctl --dmesg --no-pager --quiet --priority=crit --since 1 hour ago",
             "kernel panic - not syncing\n",
             0,
         );
