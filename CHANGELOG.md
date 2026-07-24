@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [0.25.2]
+
+### Fixed
+- **`azcluster logs` now works on Bastion clusters.** `logs` was the only remote command that never learned Bastion routing — it hard-required a login public IP and failed with `cluster '<name>' has no login public IP. Redeploy with --login-public-ip.` on any `--bastion` cluster (while `ssh`/`exec`/`scp`/`tunnel` route through Bastion fine). `logs` now reuses the same tested `resolve_scp_route` + `should_use_bastion` path as `scp`, so it auto-routes through the `bastion-proxy` ProxyCommand when there is no public IP, and gained a `--no-bastion` opt-out for parity with the other remote commands. Component routing (login / scheduler / compute hostname) is unchanged.
+
 ## [0.25.1]
 
 ### Fixed

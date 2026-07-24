@@ -482,6 +482,19 @@ mod tests {
     }
 
     #[test]
+    fn logs_routes_through_bastion_without_public_ip() {
+        let s = fixture_state(None);
+        let use_bastion = should_use_bastion(&s, false);
+        assert!(use_bastion);
+        for component in ["login", "scheduler", "vmss-t-gpu000000"] {
+            assert!(
+                resolve_scp_route(&s, component, use_bastion).is_ok(),
+                "logs component {component} must route via bastion, not error on missing public IP"
+            );
+        }
+    }
+
+    #[test]
     fn resolve_scp_route_compute_via_public_jump() {
         let s = fixture_state(Some("1.2.3.4"));
         let (proxy, jump, host) = resolve_scp_route(&s, "vmss-t-cpu000000", false).unwrap();
@@ -650,6 +663,9 @@ struct LogsArgs {
     follow: bool,
     #[arg(long)]
     identity: Option<PathBuf>,
+    /// Disable auto-routing through Azure Bastion when no login public IP is set.
+    #[arg(long, default_value_t = false)]
+    no_bastion: bool,
 }
 
 #[derive(Args)]
@@ -2621,13 +2637,8 @@ fn logs(args: LogsArgs) -> Result<()> {
     if state.target == cluster_state::Target::Aks {
         return aks_logs(&state, &args);
     }
-    let host = state.login_public_ip.as_deref().ok_or_else(|| {
-        anyhow!(
-            "cluster '{}' has no login public IP. Redeploy with --login-public-ip.",
-            args.name
-        )
-    })?;
-    let login_target = format!("{}@{}", state.admin_username, host);
+    let use_bastion = should_use_bastion(&state, args.no_bastion);
+    let user = state.admin_username.clone();
     let log_path = "/var/log/azcluster/install.log";
     let tail_arg = if args.follow {
         format!("tail -F -n {} {}", args.tail, log_path)
@@ -2636,32 +2647,39 @@ fn logs(args: LogsArgs) -> Result<()> {
     } else {
         format!("tail -n {} {}", args.tail, log_path)
     };
-    let remote_cmd = match args.component.as_str() {
-        "login" => tail_arg.clone(),
-        "scheduler" => format!(
-            "ssh -o StrictHostKeyChecking=accept-new {}@{} {}",
-            state.admin_username,
-            state.scheduler_private_ip,
-            shell_quote(&tail_arg),
-        ),
-        other => format!(
-            "ssh -o StrictHostKeyChecking=accept-new {}@{} {}",
-            state.admin_username,
-            other,
-            shell_quote(&tail_arg),
-        ),
-    };
+
+    let (proxy_target, jump_login_host, dest_host) =
+        resolve_scp_route(&state, &args.component, use_bastion)?;
+
     let mut cmd = Command::new("ssh");
     cmd.args(["-A"]);
     let identity = resolve_identity(args.identity.as_deref(), &args.name)?;
     cmd.args(["-i", &identity.display().to_string()]);
-    cmd.arg(&login_target).arg(&remote_cmd);
+    match (proxy_target.as_deref(), jump_login_host.as_deref()) {
+        (Some("login"), Some(_)) => {
+            let inner_id = resolve_identity(None, &args.name)?;
+            let outer_proxy =
+                bastion_compute_proxy_command(&args.name, &state.admin_username, &inner_id)?;
+            cmd.args(["-o", &format!("ProxyCommand={}", outer_proxy)]);
+        }
+        (Some(target), _) => {
+            let exe = self_exe_path()?;
+            let proxy = format!(
+                "{} bastion-proxy --cluster {} --target {}",
+                exe, args.name, target
+            );
+            cmd.args(["-o", &format!("ProxyCommand={}", proxy)]);
+        }
+        (None, Some(login)) => {
+            let jump = format!("{}@{}", user, login);
+            add_ssh_jump(&mut cmd, Some(identity.as_path()), &jump);
+        }
+        (None, None) => {}
+    }
+    cmd.arg(format!("{}@{}", user, dest_host));
+    cmd.arg(&tail_arg);
     let status = cmd.status().context("spawn ssh logs")?;
     std::process::exit(status.code().unwrap_or(1));
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn kubeconfig(args: KubeconfigArgs) -> Result<()> {
